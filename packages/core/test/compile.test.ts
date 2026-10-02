@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { compileCity } from '../src/compile';
+import { CutGround } from '../src/cuttings';
 import {
   LocalProjection,
   closestOnSegment,
@@ -212,6 +213,345 @@ describe('compileCity', () => {
     expect(along(ruled, 60)).toHaveLength(1);
     const open = compileCity(withNetwork(false), { infill: false, decorate: false });
     expect(along(open, -59)).toHaveLength(2);
+  });
+
+  it('gives an authoritative road the grade of a bridge along it and keeps crossings', () => {
+    const road = (
+      ref: string,
+      pts: [number, number][],
+      tags: Record<string, string>,
+      authoritative = false,
+    ) => ({
+      ref,
+      source: ref.split(':')[0],
+      priority: authoritative ? 10 : 0,
+      authoritative,
+      kind: 'road' as const,
+      geometry: { type: 'LineString' as const, coordinates: pts.map(([x, y]) => ll(x, y)) },
+      tags,
+    });
+    const src: CitySource = {
+      ...gridSource(),
+      osm: [],
+      features: [
+        // Municipal centreline without grade information.
+        road(
+          'belediye:1',
+          [
+            [-150, 0],
+            [0, 0],
+            [150, 0],
+          ],
+          { highway: 'tertiary' },
+          true,
+        ),
+        // OSM viaduct along the middle of it, 1.5 m off.
+        road(
+          'osm:w1',
+          [
+            [-40, 1.5],
+            [40, 1.5],
+          ],
+          { highway: 'tertiary', bridge: 'yes', layer: '1' },
+        ),
+        // OSM overpass crossing over it.
+        road(
+          'osm:w2',
+          [
+            [0, -30],
+            [0, 30],
+          ],
+          { highway: 'secondary', bridge: 'yes', layer: '1' },
+        ),
+        // A motorway ramp next to it, not in the register.
+        road(
+          'osm:w3',
+          [
+            [-100, 25],
+            [100, 25],
+          ],
+          { highway: 'motorway_link' },
+        ),
+      ],
+    };
+    const m = compileCity(src, { infill: false, decorate: false });
+    const pieces = m.roads.filter((r) => r.ref?.startsWith('belediye:1'));
+    expect(pieces.map((r) => r.grade)).toEqual(['ground', 'bridge', 'ground']);
+    expect(pieces[1].layer).toBe(1);
+    const refs = m.roads.map((r) => r.ref);
+    expect(refs).not.toContain('osm:w1');
+    expect(refs).toContain('osm:w2');
+    expect(refs).toContain('osm:w3');
+  });
+
+  it('leaves the island of a roundabout empty when it infills blocks', () => {
+    const R = 30;
+    const ring: [number, number][] = [];
+    for (let k = 0; k <= 24; k++) {
+      const a = (k / 24) * Math.PI * 2;
+      ring.push([Math.cos(a) * R, Math.sin(a) * R]);
+    }
+    const road = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'road' as const,
+      geometry: { type: 'LineString' as const, coordinates: pts.map(([x, y]) => ll(x, y)) },
+      tags,
+    });
+    const src: CitySource = {
+      ...gridSource(),
+      osm: [],
+      features: [
+        road('osm:rb', ring, { highway: 'secondary', junction: 'roundabout', oneway: 'yes' }),
+        road(
+          'osm:e',
+          [
+            [R, 0],
+            [200, 0],
+          ],
+          { highway: 'secondary' },
+        ),
+        road(
+          'osm:w',
+          [
+            [-R, 0],
+            [-200, 0],
+          ],
+          { highway: 'secondary' },
+        ),
+        road(
+          'osm:n',
+          [
+            [0, R],
+            [0, 200],
+          ],
+          { highway: 'secondary' },
+        ),
+        road(
+          'osm:s',
+          [
+            [0, -R],
+            [0, -200],
+          ],
+          { highway: 'secondary' },
+        ),
+      ],
+    };
+    const m = compileCity(src, { infill: true, decorate: false });
+    const inside = m.buildings.filter((b) => {
+      const c = ringCentroid(b.footprint.outer);
+      return Math.hypot(c[0], c[1]) < R;
+    });
+    expect(inside).toHaveLength(0);
+    // Blocks around it are still filled.
+    expect(m.buildings.filter((b) => b.source === 'synthetic').length).toBeGreaterThan(0);
+  });
+
+  it('cuts an underpass trench with walls and portals, and only portals into a hill', () => {
+    const road = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'road' as const,
+      geometry: { type: 'LineString' as const, coordinates: pts.map(([x, y]) => ll(x, y)) },
+      tags,
+    });
+    const [west, south] = ll(-400, -400);
+    const [east, north] = ll(400, 400);
+    const flat = (h: number) => ({
+      source: 'test',
+      west,
+      east,
+      north,
+      south,
+      cols: 9,
+      rows: 9,
+      heights: new Array(81).fill(h),
+    });
+    const src: CitySource = {
+      ...gridSource(),
+      osm: [],
+      terrain: flat(50),
+      features: [
+        road(
+          'osm:a',
+          [
+            [-250, 0],
+            [-40, 0],
+          ],
+          { highway: 'primary' },
+        ),
+        road(
+          'osm:t',
+          [
+            [-40, 0],
+            [40, 0],
+          ],
+          { highway: 'primary', tunnel: 'yes', layer: '-1' },
+        ),
+        road(
+          'osm:b',
+          [
+            [40, 0],
+            [250, 0],
+          ],
+          { highway: 'primary' },
+        ),
+        road(
+          'osm:x',
+          [
+            [0, -250],
+            [0, 250],
+          ],
+          { highway: 'secondary' },
+        ),
+      ],
+    };
+    const m = compileCity(src, { infill: false, decorate: false });
+    expect(m.cuttings).toHaveLength(2);
+    expect(m.portals).toHaveLength(2);
+    // The terrain keeps street level; the trench is a footprint with a floor of its own.
+    expect(terrainHeightAt(m.terrain, -42, 0)).toBeGreaterThan(49.5);
+    const ground = new CutGround(m.terrain, m.terrainCut);
+    expect(ground.inTrench(-42, 0)).toBe(true);
+    // Trench floor at the portal ≈ 6.5 m below the street; back to street level up the ramp.
+    expect(ground.heightAt(-42, 0)).toBeLessThan(45);
+    expect(ground.heightAt(-200, 0)).toBeGreaterThan(49.5);
+    // The crossing street above stays at street level.
+    expect(ground.heightAt(0, 20)).toBeGreaterThan(49.5);
+    // Flat trench floor wall to wall: no floor triangle rises inside the walls.
+    const cut = m.cuttings.find((c) => c.path[0][0] < 0)!;
+    const half = cut.width / 2;
+    expect(ground.inTrench(-70, half + 0.5)).toBe(false);
+    for (const x of [-41, -48, -70, -100]) {
+      const floor = ground.heightAt(x, 0);
+      for (const y of [-half + 0.3, -half / 2, half / 2, half - 0.3])
+        expect(Math.abs(ground.heightAt(x, y) - floor)).toBeLessThan(0.05);
+    }
+    // The tube's road continues the trench floor at the mouth.
+    expect(m.tunnels).toHaveLength(1);
+    const mouth = m.tunnels[0].path[0][2];
+    expect(Math.abs(mouth - cut.path[0][2])).toBeLessThan(0.05);
+
+    // The same tunnel under a hill: portals only, no trench.
+    const hill = flat(50);
+    for (let j = 3; j <= 5; j++) for (let i = 3; i <= 5; i++) hill.heights[j * 9 + i] = 110;
+    const h = compileCity(
+      {
+        ...src,
+        terrain: hill,
+        // Portals at the foot of the hill, 190 m either side of its top.
+        features: [
+          road(
+            'osm:a',
+            [
+              [-350, 0],
+              [-190, 0],
+            ],
+            { highway: 'primary' },
+          ),
+          road(
+            'osm:t',
+            [
+              [-190, 0],
+              [190, 0],
+            ],
+            { highway: 'primary', tunnel: 'yes' },
+          ),
+          road(
+            'osm:b',
+            [
+              [190, 0],
+              [350, 0],
+            ],
+            { highway: 'primary' },
+          ),
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    expect(h.cuttings).toHaveLength(0);
+    expect(h.portals).toHaveLength(2);
+    // The shallow first metres into the hill are under a lid clear of the tube.
+    const hg = new CutGround(h.terrain, h.terrainCut);
+    const road0 = h.tunnels[0].path[0][2];
+    expect(hg.inLid(-186, 0)).toBe(true);
+    for (const y of [-3, 0, 3]) expect(hg.heightAt(-186, y)).toBeGreaterThan(road0 + 5.4);
+  });
+
+  it('keeps a viaduct of several bridge ways at height, on piers, with no ground markings', () => {
+    const road = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'road' as const,
+      geometry: { type: 'LineString' as const, coordinates: pts.map(([x, y]) => ll(x, y)) },
+      tags,
+    });
+    const viaduct = { highway: 'trunk', bridge: 'viaduct', layer: '1', lanes: '4' };
+    const m = compileCity(
+      {
+        ...gridSource(),
+        osm: [],
+        features: [
+          road(
+            'osm:in',
+            [
+              [-195, 0],
+              [-150, 0],
+            ],
+            { highway: 'trunk', lanes: '4' },
+          ),
+          road(
+            'osm:v1',
+            [
+              [-150, 0],
+              [0, 0],
+            ],
+            viaduct,
+          ),
+          road(
+            'osm:v2',
+            [
+              [0, 0],
+              [150, 0],
+            ],
+            viaduct,
+          ),
+          road(
+            'osm:out',
+            [
+              [150, 0],
+              [195, 0],
+            ],
+            { highway: 'trunk', lanes: '4' },
+          ),
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    const ground = terrainHeightAt(m.terrain, 0, 0);
+    const deckAt = (x: number) => {
+      for (const br of m.bridges)
+        for (let k = 1; k < br.path.length; k++) {
+          const [a, b] = [br.path[k - 1], br.path[k]];
+          if (Math.min(a[0], b[0]) <= x && x <= Math.max(a[0], b[0]) && Math.abs(a[1]) < 1)
+            return a[2] + ((b[2] - a[2]) * (x - a[0])) / (b[0] - a[0] || 1);
+        }
+      return NaN;
+    };
+    // At the joint of the two ways the deck stays up; it comes down only at the outer ends.
+    expect(deckAt(0) - ground).toBeGreaterThan(5);
+    expect(deckAt(-148) - ground).toBeLessThan(1);
+    expect(m.bridges.flatMap((b) => b.piers).length).toBeGreaterThanOrEqual(8);
+    // The two ways form one continuous structure (no joint in the deck).
+    expect(m.bridges).toHaveLength(1);
+    // No lane markings painted on the ground under the deck.
+    const under = m.markings.filter((mk) =>
+      mk.points.some(([x, y]) => Math.abs(x) < 120 && Math.abs(y) < 6),
+    );
+    expect(under).toHaveLength(0);
   });
 
   it('marks every synthetic building and inferred level as such', () => {

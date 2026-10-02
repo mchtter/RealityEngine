@@ -17,4 +17,11 @@ export {
   utmInverse,
   utmZoneOf,
 } from './tiles';
-export { intersection as clipPolygons, rect as rectPolygon } from './poly';
+export {
+  difference as subtractPolygons,
+  intersection as clipPolygons,
+  rect as rectPolygon,
+  union as unionPolygons,
+} from './poly';
+export { CutGround } from './cuttings';
+export { barrelRise } from './styles';

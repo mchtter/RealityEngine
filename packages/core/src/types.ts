@@ -151,6 +151,8 @@ export interface Road {
   oneway: boolean;
   /** Road bounds city blocks (vehicular / pedestrian street at ground level). */
   formsBlocks: boolean;
+  /** Part of a roundabout ring (OSM junction=roundabout / circular). */
+  roundabout?: boolean;
   provenance: { width: Provenance; lanes: Provenance };
 }
 
@@ -217,9 +219,12 @@ export interface CityBlock {
 }
 
 export type Archetype = 'mustakil' | 'eski' | 'klasik' | 'modern' | 'yuksek';
-export type RoofShape = 'hip' | 'gable' | 'flat';
+/** `barrel`: arched (segmental) roof over the top floor, 2010s blocks. */
+export type RoofShape = 'hip' | 'gable' | 'flat' | 'barrel';
 export type BayKind =
   | 'window'
+  /** Three-casement living-room window, about twice as wide. */
+  | 'wide-window'
   | 'balcony'
   | 'glazed-balcony'
   | 'blank'
@@ -239,6 +244,13 @@ export interface FacadeEdge {
   /** Per-bay wall finish index into Building.finishes (vertical colour bands). */
   bands: number[];
   front: boolean;
+  /**
+   * Cumba / çıkma: bays [from, to] project from the wall on the upper floors
+   * (closed bay with windows), as on older Anatolian apartments.
+   */
+  oriel?: [number, number];
+  /** Bay boundary (0…bays) carrying a full-height ornamental motif strip. */
+  ornament?: number;
 }
 
 export interface BuildingPalette {
@@ -266,8 +278,10 @@ export interface Building {
   area: number;
   /** Lowest terrain under the footprint (walls start here). */
   baseZ: number;
-  /** Street level at the front edge; floor 0 starts here. */
+  /** Ground floor level; floor 0 starts here. */
   floorZ: number;
+  /** Height of the ground floor above the street at the front door (steps up). */
+  plinth: number;
   levels: number;
   floorHeight: number;
   groundFloorHeight: number;
@@ -282,6 +296,11 @@ export interface Building {
   windowHeight: number;
   shopfront: boolean;
   facades: FacadeEdge[];
+  /**
+   * Corner balconies on the upper floors: edge indices k whose end corner
+   * (shared with edge k+1, convex, near-square) carries an L-shaped balcony.
+   */
+  cornerBalconies: number[];
   provenance: { footprint: Provenance; levels: Provenance; style: Provenance };
   fixIds: string[];
   seed: number;
@@ -334,7 +353,75 @@ export interface Bridge {
   roadId: string;
   /** Deck centreline with deck-top heights. */
   path: Vec3[];
+  /** Whole deck width (carriageway + walkways). */
   width: number;
+  /** Carriageway width, lanes and direction, for the deck's lane markings. */
+  carriageway: number;
+  lanes: number;
+  oneway: boolean;
+  /** Edge lines on fast roads (motorway / trunk / primary), as on the ground. */
+  edgeLines: boolean;
+  /** Piers where the deck stands clear of the ground: base on the terrain, top under the deck. */
+  piers: { at: Vec2; dir: Vec2; base: number; top: number }[];
+}
+
+/** Open trench of an underpass approach: retaining walls along both sides. */
+export interface Cutting {
+  id: string;
+  /** Tunnel road the ramp leads into. */
+  roadId: string;
+  /** Ramp centreline from the portal outwards, with (flat) trench-floor heights. */
+  path: Vec3[];
+  /** Distance between the two retaining walls. */
+  width: number;
+}
+
+/** Concrete headwall around a tunnel mouth. */
+export interface Portal {
+  id: string;
+  roadId: string;
+  /** Road level at the mouth (centre). */
+  at: Vec3;
+  /** Unit vector pointing out of the tunnel. */
+  facing: Vec2;
+  /** Headwall width. */
+  width: number;
+  /** Clear opening: tube width and height. */
+  opening: number;
+  height: number;
+  /** Headwall height above road level. */
+  wall: number;
+}
+
+/**
+ * Where underpass trenches and tunnel mouths cut the ground. The terrain grid
+ * keeps the natural heights and is not drawn inside either footprint: inside
+ * `trenches` the ground is the trench floor, inside `lids` the cut-and-cover
+ * lid over the shallow first metres of a tube. Both surfaces are the terrain
+ * grid with the listed nodes (model x, y, height) changed.
+ */
+export interface TerrainCut {
+  trenches: Polygon[];
+  lids: Polygon[];
+  floor: Vec3[];
+  lid: Vec3[];
+}
+
+/** Drivable tunnel tube: road, walkways, lit walls and ceiling. */
+export interface Tunnel {
+  id: string;
+  roadId: string;
+  name?: string;
+  /** Centreline with road (floor) heights. */
+  path: Vec3[];
+  /** Wall to wall. */
+  width: number;
+  /** Clear height above the road. */
+  height: number;
+  carriageway: number;
+  lanes: number;
+  oneway: boolean;
+  edgeLines: boolean;
 }
 
 export interface CityModel {
@@ -353,6 +440,11 @@ export interface CityModel {
   crossings: Crossing[];
   junctions: Junction[];
   bridges: Bridge[];
+  /** Underpass trenches (retaining walls), tunnel portals and tubes. */
+  cuttings: Cutting[];
+  portals: Portal[];
+  tunnels: Tunnel[];
+  terrainCut?: TerrainCut;
   areas: Area[];
   blocks: CityBlock[];
   buildings: Building[];

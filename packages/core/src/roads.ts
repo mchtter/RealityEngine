@@ -107,6 +107,9 @@ export function classifyRoads(source: SourceRoad[]): Road[] {
       lanes,
       oneway,
       formsBlocks: spec.formsBlocks && grade === 'ground' && r.tags.area !== 'yes',
+      ...(r.tags.junction === 'roundabout' || r.tags.junction === 'circular'
+        ? { roundabout: true }
+        : {}),
       provenance: {
         width: Number.isFinite(tagWidth) ? 'observed' : 'inferred',
         lanes: Number.isFinite(tagLanes) ? 'observed' : 'inferred',
@@ -253,7 +256,8 @@ export function buildMarkings(roads: Road[], junctions: Junction[]): Marking[] {
       !isVehicular(road.cls) ||
       road.cls === 'service' ||
       road.cls === 'track' ||
-      road.grade === 'tunnel'
+      // Tunnels are not drawn; bridge decks get their markings on the deck (renderer).
+      road.grade !== 'ground'
     )
       continue;
     if (road.lanes < 2 && !road.oneway) continue;

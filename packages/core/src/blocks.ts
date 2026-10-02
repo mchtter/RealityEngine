@@ -294,9 +294,58 @@ function onLand(p: Polygon, t: TerrainGrid): boolean {
 }
 
 /** Share of the block covered by observed buildings. */
+/**
+ * The island of a roundabout: most of the block's edge runs along roundabout
+ * roads. Never infilled (a landscaped centre, not a missing city block).
+ */
+export function isRoundaboutIsland(block: CityBlock, roundabouts: Road[]): boolean {
+  if (!roundabouts.length) return false;
+  const ring = block.polygon.outer;
+  let near = 0;
+  let total = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % ring.length];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const n = Math.max(1, Math.ceil(len / 3));
+    for (let k = 0; k < n; k++) {
+      const t = (k + 0.5) / n;
+      const p: Vec2 = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+      total++;
+      if (
+        roundabouts.some((r) => {
+          const reach = r.width / 2 + r.sidewalk + 4;
+          for (let j = 1; j < r.centerline.length; j++) {
+            const c = r.centerline[j - 1];
+            const d = r.centerline[j];
+            const dx = d[0] - c[0];
+            const dy = d[1] - c[1];
+            const l2 = dx * dx + dy * dy;
+            const u =
+              l2 > 0 ? Math.max(0, Math.min(1, ((p[0] - c[0]) * dx + (p[1] - c[1]) * dy) / l2)) : 0;
+            if (Math.hypot(p[0] - c[0] - dx * u, p[1] - c[1] - dy * u) <= reach) return true;
+          }
+          return false;
+        })
+      )
+        near++;
+    }
+  }
+  return near / total >= 0.6;
+}
+
 export function observedCoverage(block: CityBlock, observed: Building[]): number {
-  const covered = totalArea(intersection([block.polygon], union(observed.map((b) => b.footprint))));
-  return block.area > 0 ? covered / block.area : 0;
+  // Only footprints whose box touches the block can overlap it. Unioning the
+  // whole tile per block made this O(blocks × buildings): a dense 1 km tile
+  // (Bornova, ~7 000 buildings) compiled for tens of minutes (2026-10-02).
+  const [minX, minY, maxX, maxY] = ringBounds(block.polygon.outer);
+  const near = observed.filter((b) => {
+    const [x0, y0, x1, y1] = ringBounds(b.footprint.outer);
+    return x1 >= minX && x0 <= maxX && y1 >= minY && y0 <= maxY;
+  });
+  if (!near.length || block.area <= 0) return 0;
+  const covered = totalArea(intersection([block.polygon], union(near.map((b) => b.footprint))));
+  return covered / block.area;
 }
 
 export function regionRect(bounds: {

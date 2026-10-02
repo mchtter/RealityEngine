@@ -2,9 +2,11 @@ import type { Rng } from './random';
 import type { Archetype, BuildingPalette, RailKind, RoofShape, WallFinish } from './types';
 
 /**
- * Anatolian building families. Palettes are taken from typical Turkish town
- * fabric: plastered apartments in cream / salmon / sky blue / ochre, terracotta
- * hip roofs, 2010s blocks with wood-look and composite-panel cladding bands.
+ * Anatolian building families. Palettes are sampled from the reference renders
+ * in `soul_of_anatolia/` (2026-10-02): dusty, weathered plaster — salmon-beige,
+ * grey-blue, greige, cream, faded mustard, brick red — with antrasit, wood-look
+ * and salmon cladding bands, muted terracotta hip roofs, white PVC or brown
+ * joinery. Saturation stays low (≈0.05–0.35): Anatolian paint fades.
  */
 interface ArchetypeSpec {
   walls: string[];
@@ -23,22 +25,22 @@ interface ArchetypeSpec {
   finishes: WallFinish[][];
 }
 
-const TERRACOTTA = ['#a4502f', '#b0603a', '#9a4a30', '#b86a44', '#8f4a36'];
+const TERRACOTTA = ['#a0644e', '#a86e58', '#93604c', '#a3765f', '#8a5e4e', '#ad7a63'];
 
 export const ARCHETYPES: Record<Archetype, ArchetypeSpec> = {
   mustakil: {
-    walls: ['#e6d9b0', '#d8cf8e', '#a9504a', '#e8e1cf', '#c9b48a', '#b9c4c9'],
-    bands: ['#8b3b33', '#7d6a4f', '#c9b48a'],
-    trims: ['#f1ece0', '#b8563f', '#d9d2c3'],
+    walls: ['#ddd0b4', '#e0d2a4', '#c8c08a', '#a65a50', '#c3bbb0', '#c49a8a', '#d6cfc0'],
+    bands: ['#8a4f3f', '#6b4a3a', '#e3d8c0', '#a65a50'],
+    trims: ['#ece6da', '#a85d47', '#d8d0c0'],
     roofs: TERRACOTTA,
-    bases: ['#5d5a55', '#6b655c', '#4f4c48'],
-    frames: ['#f4f2ec', '#6b4a33', '#8a5a3a'],
+    bases: ['#5d5a55', '#6e675e', '#4f4c48', '#7a7266'],
+    frames: ['#eeece6', '#5a3e2e', '#8a5a3a'],
     glass: ['#2d3a40', '#34444c'],
     floorHeight: [2.8, 3.0],
     window: { w: [1.1, 1.4], h: [1.2, 1.4] },
     bay: [2.6, 3.4],
     rails: [['metal', 1]],
-    glazedBalcony: 0.05,
+    glazedBalcony: 0.1,
     hipRoof: 0.95,
     finishes: [
       ['plaster', 'stone'],
@@ -46,12 +48,12 @@ export const ARCHETYPES: Record<Archetype, ArchetypeSpec> = {
     ],
   },
   eski: {
-    walls: ['#cfc9bf', '#b9a79a', '#c47f6d', '#9fb3c4', '#d8d0c0', '#a8a39a'],
-    bands: ['#8e8479', '#a45b4b', '#6f7f8f'],
-    trims: ['#ece7dc', '#d8d1c4'],
+    walls: ['#c7baaa', '#a9a39a', '#9e6a5e', '#8d9aa6', '#baa27e', '#d8d0c2', '#b5ada2'],
+    bands: ['#8e8479', '#7d5a4b', '#6f7f8f', '#a08c70'],
+    trims: ['#e6e0d4', '#d2cabd'],
     roofs: TERRACOTTA,
-    bases: ['#8a7f6d', '#7a7466'],
-    frames: ['#f0eee8', '#d8d4ca', '#5f4a3a'],
+    bases: ['#b09a78', '#7a7466', '#8a8172'],
+    frames: ['#e8e5de', '#cfcac0', '#5f4a3a', '#6e5a48'],
     glass: ['#2c373d', '#3a474d'],
     floorHeight: [2.9, 3.1],
     window: { w: [1.0, 1.3], h: [1.3, 1.5] },
@@ -60,7 +62,7 @@ export const ARCHETYPES: Record<Archetype, ArchetypeSpec> = {
       ['metal', 0.7],
       ['solid', 0.3],
     ],
-    glazedBalcony: 0.15,
+    glazedBalcony: 0.35,
     hipRoof: 0.85,
     finishes: [
       ['plaster', 'plaster'],
@@ -68,12 +70,12 @@ export const ARCHETYPES: Record<Archetype, ArchetypeSpec> = {
     ],
   },
   klasik: {
-    walls: ['#c99582', '#e3d7bf', '#8fa6c4', '#d9a441', '#d6c6a8', '#c7b299', '#b7c3cf'],
-    bands: ['#b0735e', '#39414a', '#e8ddc8', '#c9794a', '#5f6f86'],
-    trims: ['#f2eee6', '#e5ddd0'],
+    walls: ['#c0a093', '#ddd2b8', '#cfccc6', '#6d819a', '#c9a967', '#bfc2c4', '#b9978a', '#d5cbb6'],
+    bands: ['#a8786a', '#3c3e40', '#4a5d78', '#8a4f3f', '#b8783f', '#e3dccd'],
+    trims: ['#ece8e0', '#e2ddd2'],
     roofs: TERRACOTTA,
-    bases: ['#7c7a76', '#8f877b', '#6e6a64'],
-    frames: ['#f5f4f0', '#e9e6df'],
+    bases: ['#6e6a64', '#5a5c5e', '#8a857c'],
+    frames: ['#efede8', '#e6e3dc', '#6a4a32', '#8a5a36'],
     glass: ['#29353b', '#324048'],
     floorHeight: [2.85, 3.0],
     window: { w: [1.2, 1.5], h: [1.35, 1.5] },
@@ -82,7 +84,7 @@ export const ARCHETYPES: Record<Archetype, ArchetypeSpec> = {
       ['solid', 0.6],
       ['metal', 0.4],
     ],
-    glazedBalcony: 0.35,
+    glazedBalcony: 0.6,
     hipRoof: 0.9,
     finishes: [
       ['plaster', 'plaster'],
@@ -90,11 +92,11 @@ export const ARCHETYPES: Record<Archetype, ArchetypeSpec> = {
     ],
   },
   modern: {
-    walls: ['#ece8df', '#d9cdb2', '#f3f1ec', '#b9b4ab', '#e2dccf'],
-    bands: ['#b8743f', '#d9773a', '#6b4a36', '#5a5d62', '#8b5a3c', '#c98a4b'],
-    trims: ['#5a5d62', '#6b4a36', '#e9e6df'],
-    roofs: ['#5a4034', '#4f4a46', '#6b4a36', '#a4502f'],
-    bases: ['#d9d6cf', '#9aa0a6', '#4f5358'],
+    walls: ['#e3d6bc', '#d5c7a8', '#ecebe6', '#a7a19a', '#8d8984', '#ddd8cf'],
+    bands: ['#b8733f', '#c27a42', '#6b4f40', '#5a5d62', '#c96a35', '#9a6a4a'],
+    trims: ['#6b4f40', '#5a5d62', '#e9e6df'],
+    roofs: ['#5a4034', '#4f4a46', '#6b4a36', '#a8644a'],
+    bases: ['#dcd7cf', '#9aa0a6', '#4f5358', '#c9c4bb'],
     frames: ['#3b3f44', '#5a5d62', '#e9e6df'],
     glass: ['#3c5560', '#2f4550', '#4a6570'],
     floorHeight: [3.0, 3.1],
@@ -104,7 +106,7 @@ export const ARCHETYPES: Record<Archetype, ArchetypeSpec> = {
       ['glass', 0.8],
       ['metal', 0.2],
     ],
-    glazedBalcony: 0.25,
+    glazedBalcony: 0.35,
     hipRoof: 0.25,
     finishes: [
       ['plaster', 'cladding-wood'],
@@ -113,12 +115,12 @@ export const ARCHETYPES: Record<Archetype, ArchetypeSpec> = {
     ],
   },
   yuksek: {
-    walls: ['#e9e6df', '#cfd4d8', '#d9cdb2'],
-    bands: ['#5a5d62', '#8b5a3c', '#3e5566'],
-    trims: ['#3b3f44', '#e9e6df'],
+    walls: ['#d9cdb2', '#cfd4d8', '#c4a27a', '#b98a5e', '#e2ddd2'],
+    bands: ['#8b5a3c', '#5a5d62', '#3e5566', '#b8733f'],
+    trims: ['#3b3f44', '#e9e6df', '#8b5a3c'],
     roofs: ['#4f4a46', '#5a5d62'],
-    bases: ['#4f5358', '#9aa0a6'],
-    frames: ['#2f3338', '#5a5d62'],
+    bases: ['#4f5358', '#9aa0a6', '#6b6e70'],
+    frames: ['#2f3338', '#5a5d62', '#e9e6df'],
     glass: ['#3c5560', '#2f4550'],
     floorHeight: [3.1, 3.2],
     window: { w: [1.5, 1.9], h: [1.6, 1.8] },
@@ -130,7 +132,18 @@ export const ARCHETYPES: Record<Archetype, ArchetypeSpec> = {
   },
 };
 
+/**
+ * Building family. `dt:archetype` forces one (style gallery, hand-set
+ * landmarks); otherwise it follows the building type and floor count.
+ */
+/** Rise of a barrel (arched) roof above the wall top, for a plan half-width in metres. */
+export function barrelRise(halfWidth: number): number {
+  return Math.min(3.5, halfWidth * 0.45);
+}
+
 export function pickArchetype(levels: number, tags: Record<string, string>, rng: Rng): Archetype {
+  const forced = tags['dt:archetype'];
+  if (forced && forced in ARCHETYPES) return forced as Archetype;
   const b = tags.building;
   if (['house', 'detached', 'bungalow', 'hut', 'farm', 'cabin', 'semidetached_house'].includes(b)) {
     return levels <= 2 ? 'mustakil' : 'eski';
@@ -225,13 +238,23 @@ export function pickStyle(
   if (roofShape !== 'flat' && rectangularity < 0.7) roofShape = 'flat';
   // Deep plans (> 20 m across) are never tiled in Anatolian towns; they carry flat roofs.
   if (roofShape !== 'flat' && !shapeTag && depth > 20) roofShape = 'flat';
+  // 2010s blocks: arched roof over the top floor on regular, not too deep plans.
+  if (
+    roofShape === 'flat' &&
+    !shapeTag &&
+    archetype === 'modern' &&
+    rectangularity > 0.85 &&
+    depth <= 18 &&
+    rng.chance(0.35)
+  )
+    roofShape = 'barrel';
 
   return {
     style: {
       palette,
       finishes: rng.pick(spec.finishes),
       roofShape,
-      pitchDeg: roofShape === 'flat' ? 0 : rng.range(20, 28),
+      pitchDeg: roofShape === 'flat' || roofShape === 'barrel' ? 0 : rng.range(20, 28),
       rail: rng.weighted(spec.rails),
       windowWidth: rng.range(...spec.window.w),
       windowHeight: rng.range(...spec.window.h),

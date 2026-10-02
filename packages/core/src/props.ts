@@ -14,6 +14,7 @@ import type { SourcePoint } from './osm';
 import { Rng } from './random';
 import { isVehicular } from './roads';
 import { GridIndex, type PolygonIndex, type RoadIndex } from './spatial';
+import { barrelRise } from './styles';
 import { terrainHeightAt } from './terrain';
 import type {
   Building,
@@ -50,9 +51,17 @@ const OBSERVED_KINDS: [(t: Record<string, string>) => boolean, PropKind][] = [
 export const carriageReach = (r: Road): number =>
   r.grade === 'ground' && isVehicular(r.cls) ? r.width / 2 + 0.3 : 0;
 
-/** Whole street corridor of a ground-level road: carriageway, sidewalks, paths. */
+/**
+ * Whole street corridor of a ground-level road: carriageway, sidewalks, paths.
+ * Under a bridge deck it is the deck plus a tree crown, so no park tree grows
+ * up through the deck.
+ */
 export const corridorReach = (r: Road): number =>
-  r.grade === 'ground' ? r.width / 2 + r.sidewalk + 0.5 : 0;
+  r.grade === 'ground'
+    ? r.width / 2 + r.sidewalk + 0.5
+    : r.grade === 'bridge'
+      ? r.width / 2 + 2.5
+      : 0;
 
 /**
  * Horizontal radius (m) a ground prop occupies at scale 1 — the extent of the
@@ -355,7 +364,9 @@ export function buildingDetails(buildings: Building[]): Prop[] {
       b.topZ +
       (b.roof.shape === 'flat'
         ? 0
-        : Math.tan((b.roof.pitchDeg * Math.PI) / 180) * box.halfWidth * 0.55);
+        : b.roof.shape === 'barrel'
+          ? barrelRise(box.halfWidth) * 0.9
+          : Math.tan((b.roof.pitchDeg * Math.PI) / 180) * box.halfWidth * 0.55);
     const onRoof = (u: number, v: number): Vec2 =>
       add(box.center, add(scale(box.axis, u * box.halfLength), scale(nrm, v * box.halfWidth)));
     const push = (kind: PropKind, p: Vec2, z: number, heading: number, s = 1) =>
@@ -370,14 +381,17 @@ export function buildingDetails(buildings: Building[]): Prop[] {
       });
 
     if (b.archetype !== 'modern' && b.archetype !== 'yuksek') {
-      const chimneys = b.archetype === 'mustakil' ? rng.int(1, 2) : rng.int(2, 4);
+      // One stove flue per flat stack (reference: soul_of_anatolia): apartments
+      // carry a row of tall plastered chimneys along the ridge, often in pairs.
+      const chimneys =
+        b.archetype === 'mustakil'
+          ? rng.int(1, 3)
+          : Math.min(9, Math.max(3, Math.round(box.halfLength / 2.6) + rng.int(0, 2)));
+      const paired = b.archetype !== 'mustakil' && rng.chance(0.5);
       for (let k = 0; k < chimneys; k++) {
-        push(
-          'chimney',
-          onRoof(rng.range(-0.7, 0.7), rng.range(-0.2, 0.2)),
-          roofTop - 0.3,
-          headingOf(box.axis),
-        );
+        const u = -0.72 + (1.44 * (k + 0.5)) / chimneys + rng.range(-0.04, 0.04);
+        const v = paired ? (k % 2 ? 0.12 : -0.12) : rng.range(-0.12, 0.12);
+        push('chimney', onRoof(u, v), roofTop - 0.6, headingOf(box.axis), rng.range(0.9, 1.15));
       }
     }
     if (rng.chance(b.archetype === 'yuksek' ? 0.2 : 0.45)) {
@@ -411,7 +425,22 @@ export function buildingDetails(buildings: Building[]): Prop[] {
       const out3 = scale(perp(dir), -1);
       for (let floor = 1; floor < b.levels; floor++) {
         for (let i = 0; i < f.bays.length; i++) {
-          if (f.bays[i] !== 'window' || !rng.chance(f.front ? 0.12 : 0.2)) continue;
+          const bay = f.bays[i];
+          if (bay !== 'window' && bay !== 'wide-window') continue;
+          // Wall-mounted dishes next to windows on older blocks (reference: eski apartments).
+          if (
+            (b.archetype === 'eski' || b.archetype === 'klasik') &&
+            rng.chance(f.front ? 0.06 : 0.1)
+          ) {
+            const td = (i + 0.5) / f.bays.length - (b.windowWidth / 2 + 0.5) / f.length;
+            if (td > 0.03) {
+              const pd = add(lerp2(a, c, td), scale(out3, 0.35));
+              const zd = b.floorZ + b.groundFloorHeight + (floor - 1) * b.floorHeight + 1.6;
+              push('satellite-dish', pd, zd, headingOf(out3));
+            }
+            continue;
+          }
+          if (!rng.chance(f.front ? 0.22 : 0.3)) continue;
           const t = (i + 0.5) / f.bays.length + (b.windowWidth / 2 + 0.45) / f.length;
           if (t > 0.97) continue;
           const p = add(lerp2(a, c, t), scale(out3, 0.18));

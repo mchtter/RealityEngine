@@ -151,7 +151,6 @@ export function makeBuilding(
   const baseZ = Math.min(...heights) - 0.3;
   const fe = edgeOutward(ring, front.edge);
   const street = terrainHeightAt(ctx.terrain, fe.mid[0] + fe.out[0] * 2, fe.mid[1] + fe.out[1] * 2);
-  const floorZ = Math.min(Math.max(street, baseZ + 0.3), baseZ + 9);
 
   const shopTag = Boolean(tags.shop) || ['commercial', 'retail', 'shop'].includes(tags.building);
   const shopfront =
@@ -161,6 +160,12 @@ export function makeBuilding(
       front.road !== null &&
       [...MAJOR, ...MEDIUM].includes(front.road.cls) &&
       rng.chance(0.85));
+  // Houses and older apartments sit on a raised ground floor (stone / concrete
+  // plinth, a few steps up to the door); shops and modern blocks open at street level.
+  const raise =
+    !shopfront && archetype !== 'modern' && archetype !== 'yuksek' ? rng.range(0.45, 1.0) : 0;
+  const floorZ = Math.min(Math.max(street + raise, baseZ + 0.3), baseZ + 9);
+  const plinth = Math.max(0, floorZ - street);
   const groundFloorHeight = shopfront ? rng.range(3.8, 4.4) : style.floorHeight + 0.2;
   const topZ = floorZ + groundFloorHeight + (levels - 1) * style.floorHeight;
 
@@ -172,6 +177,7 @@ export function makeBuilding(
     area,
     baseZ,
     floorZ,
+    plinth,
     levels,
     floorHeight: style.floorHeight,
     groundFloorHeight,
@@ -182,7 +188,8 @@ export function makeBuilding(
     roof: {
       shape: style.roofShape,
       pitchDeg: style.pitchDeg,
-      overhang: style.roofShape === 'flat' ? 0 : rng.range(0.4, 0.7),
+      overhang:
+        style.roofShape === 'flat' ? 0 : style.roofShape === 'barrel' ? 0.3 : rng.range(0.4, 0.7),
       parapet: style.roofShape === 'flat' ? rng.range(0.6, 1.0) : 0,
     },
     rail: style.rail,
@@ -192,6 +199,7 @@ export function makeBuilding(
     facades: [
       { edge: front.edge, length: fe.len, bays: [], groundBays: [], bands: [], front: true },
     ],
+    cornerBalconies: [],
     provenance: {
       footprint: source === 'synthetic' ? 'synthetic' : 'observed',
       levels: levelsHint !== undefined ? 'synthetic' : inferred.provenance,
@@ -380,6 +388,21 @@ export function placeObservedBuildings(
 // ─── Facades ─────────────────────────────────────────────────────────────────
 
 type BalconyPattern = 'ends' | 'alternate' | 'center' | 'inner-pair' | 'all';
+
+/**
+ * How often a building family shows a facade feature (reference renders,
+ * soul_of_anatolia): three-casement living-room windows, a closed cumba,
+ * an ornamental motif strip, L-shaped corner balconies.
+ */
+const FEATURE_CHANCE: Record<
+  'wide' | 'oriel' | 'ornament' | 'corner',
+  Record<Building['archetype'], number>
+> = {
+  wide: { mustakil: 0.5, eski: 0.45, klasik: 0.6, modern: 0.5, yuksek: 0.3 },
+  oriel: { mustakil: 0, eski: 0.45, klasik: 0.25, modern: 0.1, yuksek: 0 },
+  ornament: { mustakil: 0, eski: 0, klasik: 0.3, modern: 0.3, yuksek: 0.25 },
+  corner: { mustakil: 0, eski: 0.1, klasik: 0.3, modern: 0.45, yuksek: 0.45 },
+};
 type BandPattern = 'none' | 'balconies' | 'edges' | 'center' | 'alternate-pairs';
 
 function balconyBays(n: number, pattern: BalconyPattern): Set<number> {
@@ -405,6 +428,37 @@ function balconyBays(n: number, pattern: BalconyPattern): Set<number> {
       break;
   }
   return s;
+}
+
+/**
+ * Convex, near-square corners between two walls with openings, front corners
+ * first; the bays next to a chosen corner become windows (the balcony wraps them).
+ */
+function cornerBalconies(b: Building, ring: Vec2[], rng: Rng): number[] {
+  const n = ring.length;
+  const candidates: { k: number; score: number }[] = [];
+  for (let k = 0; k < n; k++) {
+    const fa = b.facades[k];
+    const fb = b.facades[(k + 1) % n];
+    if (!fa?.bays.length || !fb?.bays.length) continue;
+    const ea = edgeOutward(ring, k);
+    const eb = edgeOutward(ring, (k + 1) % n);
+    if (ea.len < 6 || eb.len < 6) continue;
+    if (dot(normalize(sub(eb.b, eb.a)), ea.out) > -0.9) continue;
+    if (fa.oriel && fa.oriel[1] === fa.bays.length - 1) continue;
+    if (fb.oriel && fb.oriel[0] === 0) continue;
+    candidates.push({ k, score: (fa.front || fb.front ? 0 : 1) + rng.next() * 0.5 });
+  }
+  candidates.sort((x, y) => x.score - y.score);
+  const chosen = candidates.slice(0, rng.chance(0.5) ? 2 : 1).map((c) => c.k);
+  for (const k of chosen) {
+    const fa = b.facades[k];
+    const fb = b.facades[(k + 1) % n];
+    const last = fa.bays.length - 1;
+    if (fa.bays[last] === 'balcony' || fa.bays[last] === 'glazed-balcony') fa.bays[last] = 'window';
+    if (fb.bays[0] === 'balcony' || fb.bays[0] === 'glazed-balcony') fb.bays[0] = 'window';
+  }
+  return chosen;
 }
 
 function bandFor(k: number, n: number, pattern: BandPattern, balconies: Set<number>): number {
@@ -464,6 +518,10 @@ export function layoutFacades(buildings: Building[], index: PolygonIndex<Buildin
             : 'none';
     const hasBalconies = b.levels >= 2 && (b.archetype !== 'mustakil' || rng.chance(0.3));
     const glazed = rng.chance(spec.glazedBalcony * 1.6);
+    const hasWide = rng.chance(FEATURE_CHANCE.wide[b.archetype]);
+    const wantOriel = b.levels >= 3 && rng.chance(FEATURE_CHANCE.oriel[b.archetype]);
+    const wantOrnament = b.levels >= 3 && rng.chance(FEATURE_CHANCE.ornament[b.archetype]);
+    const wantCorner = b.levels >= 3 && rng.chance(FEATURE_CHANCE.corner[b.archetype]);
 
     const facades: FacadeEdge[] = [];
     for (let k = 0; k < ring.length; k++) {
@@ -518,9 +576,35 @@ export function layoutFacades(buildings: Building[], index: PolygonIndex<Buildin
 
         bands.push(bandFor(i, n, bandPattern, balconies));
       }
-      facades.push({ edge: k, length: e.len, bays, groundBays, bands, front: isFront });
+      // Living-room windows: whole columns, so they line up floor by floor.
+      if (hasWide) {
+        for (let i = 0; i < n; i++) {
+          if (bays[i] !== 'window' || !rng.chance(0.4)) continue;
+          bays[i] = 'wide-window';
+          if (groundBays[i] === 'window') groundBays[i] = 'wide-window';
+        }
+      }
+      let oriel: [number, number] | undefined;
+      if (wantOriel && (isFront || isBack) && n >= 3) {
+        const c = Math.floor((n - 1) / 2);
+        oriel = n >= 5 && rng.chance(0.5) ? [c, c + 1] : [c, c];
+        for (let i = oriel[0]; i <= oriel[1]; i++)
+          if (bays[i] !== 'wide-window') bays[i] = 'window';
+      }
+      const ornament = wantOrnament && isFront && n >= 4 && !oriel ? Math.round(n / 2) : undefined;
+      facades.push({
+        edge: k,
+        length: e.len,
+        bays,
+        groundBays,
+        bands,
+        front: isFront,
+        ...(oriel ? { oriel } : {}),
+        ...(ornament !== undefined ? { ornament } : {}),
+      });
     }
     b.facades = facades;
+    b.cornerBalconies = wantCorner ? cornerBalconies(b, ring, rng) : [];
   }
 }
 

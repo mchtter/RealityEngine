@@ -1,7 +1,24 @@
-import { buildBlocks, infillAlongRoads, observedCoverage, regionRect, scatter } from './blocks';
+import {
+  buildBlocks,
+  infillAlongRoads,
+  isRoundaboutIsland,
+  observedCoverage,
+  regionRect,
+  scatter,
+} from './blocks';
 import { layoutFacades, makeBuilding, placeObservedBuildings } from './buildings';
-import { LocalProjection, dist, polylineLength, ringCentroid } from './geo';
-import { type SourceFeatures, mergeFeatures, readFeatures, readOsm } from './osm';
+import { CutGround, buildCuttings } from './cuttings';
+import {
+  LocalProjection,
+  dist,
+  normalize,
+  polylineLength,
+  ringCentroid,
+  samplePolyline,
+  sub,
+} from './geo';
+import { isGraded, transferGrades } from './grade';
+import { type SourceFeatures, type SourceRoad, mergeFeatures, readFeatures, readOsm } from './osm';
 import { bufferPolyline, difference, intersection, offset, union } from './poly';
 import {
   buildingDetails,
@@ -45,7 +62,7 @@ import type {
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '9';
+export const COMPILER_VERSION = '17';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -109,14 +126,29 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   );
   // Authoritative road network (e.g. the municipality's centrelines): other
   // sources' roads yield where it has data, so two networks never overlap.
+  // Exceptions: national roads (motorway / trunk and their ramps, outside a
+  // municipal register) and grade-separated roads. A bridge or tunnel running
+  // along an authoritative centreline hands its grade to it (the register has
+  // none); one crossing over or under it is kept as it is.
+  const authoritativeRoads = features.roads.filter((r) => r.authoritative);
   const roadCovered = authorityCoverage(
-    features.roads.filter((r) => r.authoritative).map((r) => ({ points: r.points, area: false })),
+    authoritativeRoads.map((r) => ({ points: r.points, area: false })),
     g,
     ROAD_COVER_REACH,
   );
-  const sourceRoads = features.roads.filter(
-    (r) => r.authoritative || !roadCovered(r.points[Math.floor(r.points.length / 2)]),
+  const national = (r: SourceRoad) => /^(motorway|trunk)(_link)?$/.test(r.tags.highway ?? '');
+  const yielding = features.roads.filter(
+    (r) =>
+      !r.authoritative && !national(r) && roadCovered(r.points[Math.floor(r.points.length / 2)]),
   );
+  const yieldingSet = new Set(yielding);
+  const graded = transferGrades(authoritativeRoads, yielding.filter(isGraded));
+  const sourceRoads = [
+    ...graded.roads,
+    ...features.roads.filter(
+      (r) => !r.authoritative && (!yieldingSet.has(r) || (isGraded(r) && !graded.absorbed.has(r))),
+    ),
+  ];
   const roads = classifyRoads(sourceRoads);
 
   // Terrain on a grid aligned to the global frame, levelled under every street.
@@ -140,11 +172,30 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       .filter((r) => r.grade === 'ground' && (isVehicular(r.cls) || r.cls === 'pedestrian'))
       .map((r) => ({ points: r.centerline, halfWidth: r.width / 2 + r.sidewalk })),
   );
+  // Underpass ramps and tunnel mouths: where they cut the levelled terrain.
+  const { cuttings, portals, tunnels, cut } = buildCuttings(roads, terrain);
+  const cutGround = new CutGround(terrain, cut);
 
   // Road network.
   const signals = features.points.filter((p) => p.tags.highway === 'traffic_signals');
   const junctions = findJunctions(sourceRoads, roads, signals, g);
   const net = buildSurfaces(roads, [regionPoly]);
+  // A ramp road's round end cap reaches past the portal over the tube (and
+  // would lie on its lid): surfaces stop at the portal plane. Kept short of
+  // the tunnel's middle so a street crossing over a short underpass stays.
+  const tubeLength = new Map(
+    tunnels.map((tn) => [tn.roadId, polylineLength(tn.path.map((q): Vec2 => [q[0], q[1]]))]),
+  );
+  const mouths: Polygon[] = portals.map((p) => {
+    const n: Vec2 = [-p.facing[1], p.facing[0]];
+    const w = p.width / 2 + 3;
+    const len = Math.min(7, 0.3 * (tubeLength.get(p.roadId) ?? 0));
+    const q = (along: number, across: number): Vec2 => [
+      p.at[0] - p.facing[0] * along + n[0] * across,
+      p.at[1] - p.facing[1] * along + n[1] * across,
+    ];
+    return { outer: [q(0, -w), q(0, w), q(len, w), q(len, -w)], holes: [] };
+  });
   const markings = clipMarkings(buildMarkings(roads, junctions), inRegion);
   const crossings = buildCrossings(roads, junctions, features.points).filter((c) =>
     inRegion(c.center),
@@ -202,12 +253,17 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   for (const block of blocks) block.observedCoverage = observedCoverage(block, observed);
   const synthetic: Building[] = [];
   if (infill) {
-    const lots = infillAlongRoads(blocks, roads, {
-      terrain,
-      blocked: noBuild,
-      globalOffset: g,
-      region,
-    });
+    const roundabouts = roads.filter((r) => r.roundabout);
+    const lots = infillAlongRoads(
+      blocks.filter((bl) => !isRoundaboutIsland(bl, roundabouts)),
+      roads,
+      {
+        terrain,
+        blocked: noBuild,
+        globalOffset: g,
+        region,
+      },
+    );
     const perBlock = new Map<string, number>();
     for (const lot of lots) {
       if (covered(ringCentroid(lot.footprint.outer))) continue;
@@ -282,9 +338,16 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       .map((a) => a.polygon),
   );
 
+  // Lamps and the like along an underpass ramp stand on the trench floor.
+  for (const p of props) {
+    if (cutGround.inTrench(p.position[0], p.position[1]))
+      p.position[2] = terrainHeightAt(cutGround.floor, p.position[0], p.position[1]);
+  }
+
   let outTerrain = terrain;
+  let outCut = cut;
   let outSurfaces = [
-    ...net.surfaces,
+    ...net.surfaces.map((sf) => ({ kind: sf.kind, polygons: difference(sf.polygons, mouths) })),
     { kind: 'island' as const, polygons: islands },
     { kind: 'yard' as const, polygons: yards },
   ];
@@ -321,10 +384,21 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     );
     outBlocks = blocks.filter((b) => inCore(ringCentroid(b.polygon.outer)));
     outRoads = roads.filter((r) => r.centerline.some(inCore));
-    bridges = bridges.filter((br) =>
-      inCore([br.path[br.path.length >> 1][0], br.path[br.path.length >> 1][1]]),
-    );
+    // A viaduct crossing tiles: each tile draws the part over its core, split
+    // at deck vertices so the neighbour's part starts exactly where this ends.
+    bridges = bridges.flatMap((br) => clipBridgeToCore(br, inCore));
     outTerrain = cropTerrain(terrain, core);
+    const onGrid = (q: Vec3) =>
+      q[0] >= core.minX - 0.01 &&
+      q[0] <= core.maxX + 0.01 &&
+      q[1] >= core.minY - 0.01 &&
+      q[1] <= core.maxY + 0.01;
+    outCut = {
+      trenches: intersection(cut.trenches, [corePoly]),
+      lids: intersection(cut.lids, [corePoly]),
+      floor: cut.floor.filter(onGrid),
+      lid: cut.lid.filter(onGrid),
+    };
   }
 
   const observedOut = buildings.filter((b) => b.source !== 'synthetic');
@@ -343,6 +417,16 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     crossings: outCrossings,
     junctions: outJunctions,
     bridges,
+    cuttings: cuttings.filter((c) => inCore([c.path[0][0], c.path[0][1]])),
+    portals: portals.filter((p) => inCore([p.at[0], p.at[1]])),
+    tunnels: tunnels.flatMap((tn) =>
+      corePathRuns(tn.path, inCore).map((path, k) => ({
+        ...tn,
+        id: k ? `${tn.id}~${k}` : tn.id,
+        path,
+      })),
+    ),
+    ...(outCut.trenches.length || outCut.lids.length ? { terrainCut: outCut } : {}),
     areas: outAreas,
     blocks: outBlocks,
     buildings,
@@ -464,30 +548,239 @@ function greenTrees(
 }
 
 /** Bridge decks: straight grade between the ends, lifted over the terrain in between. */
-function buildBridges(roads: Road[], terrain: CityModel['terrain']): Bridge[] {
-  return roads
-    .filter((r) => r.grade === 'bridge')
-    .map((r) => {
-      const pts = r.centerline;
-      const total = polylineLength(pts);
-      const za = terrainHeightAt(terrain, pts[0][0], pts[0][1]);
-      const zb = terrainHeightAt(terrain, pts[pts.length - 1][0], pts[pts.length - 1][1]);
-      const clearance = 5.5 * Math.max(1, r.layer);
-      let walked = 0;
-      const path: Vec3[] = pts.map((p, k) => {
-        if (k > 0) walked += dist(pts[k - 1], p);
-        const t = total > 0 ? walked / total : 0;
-        const ramp = Math.min(1, Math.min(walked, total - walked) / 25 || 0);
-        const ground = terrainHeightAt(terrain, p[0], p[1]);
-        return [p[0], p[1], Math.max(za + (zb - za) * t, ground + clearance * ramp)];
+/** Spacing of bridge piers along the deck (m). */
+const PIER_SPACING = 26;
+/** Deck structure depth below the running surface (m). */
+const DECK_DEPTH = 1.4;
+
+/**
+ * Bridge ways joined end to end into one continuous structure: OSM splits a
+ * viaduct wherever a tag changes, and drawing each piece separately leaves
+ * butt joints, gaps at bends and barrier breaks. Pieces merge at a node where
+ * exactly two bridge ends of the same layer meet and the line carries on.
+ */
+function bridgeChains(bridges: Road[]): Road[][] {
+  const key = (p: Vec2) => `${Math.round(p[0] * 2)},${Math.round(p[1] * 2)}`;
+  const at = new Map<string, Road[]>();
+  for (const r of bridges) {
+    for (const p of [r.centerline[0], r.centerline[r.centerline.length - 1]]) {
+      const k = key(p);
+      at.set(k, [...(at.get(k) ?? []), r]);
+    }
+  }
+  const used = new Set<Road>();
+  const chains: Road[][] = [];
+  const dirAt = (pts: Vec2[], fromEnd: boolean): Vec2 =>
+    fromEnd
+      ? normalize(sub(pts[pts.length - 1], pts[pts.length - 2]))
+      : normalize(sub(pts[0], pts[1]));
+  // The piece continuing `road` through its end (start when !fromEnd), if any.
+  const next = (road: Road, pts: Vec2[], fromEnd: boolean): Road | null => {
+    const p = fromEnd ? pts[pts.length - 1] : pts[0];
+    const there = at.get(key(p)) ?? [];
+    if (there.length !== 2) return null;
+    const other = there[0] === road ? there[1] : there[0];
+    if (used.has(other) || other.layer !== road.layer) return null;
+    const c = other.centerline;
+    const otherAway = dist(c[0], p) < dist(c[c.length - 1], p) ? dirAt(c, false) : dirAt(c, true);
+    // `otherAway` points from the joint back into the other piece: opposite to our heading out.
+    const out = dirAt(pts, fromEnd);
+    return out[0] * otherAway[0] + out[1] * otherAway[1] < -0.5 ? other : null;
+  };
+  for (const r of bridges) {
+    if (used.has(r)) continue;
+    used.add(r);
+    const chain: { road: Road; pts: Vec2[] }[] = [{ road: r, pts: r.centerline }];
+    // Forward.
+    for (;;) {
+      const last = chain[chain.length - 1];
+      const o = next(last.road, last.pts, true);
+      if (!o) break;
+      used.add(o);
+      const end = last.pts[last.pts.length - 1];
+      const c = o.centerline;
+      chain.push({
+        road: o,
+        pts: dist(c[0], end) <= dist(c[c.length - 1], end) ? c : [...c].reverse(),
       });
-      return {
-        id: `br${r.id}`,
-        roadId: r.id,
-        path,
-        width: r.width + 2 * Math.min(r.sidewalk, 1.5),
-      };
+    }
+    // Backward.
+    for (;;) {
+      const first = chain[0];
+      const o = next(first.road, first.pts, false);
+      if (!o) break;
+      used.add(o);
+      const start = first.pts[0];
+      const c = o.centerline;
+      chain.unshift({
+        road: o,
+        pts: dist(c[c.length - 1], start) <= dist(c[0], start) ? c : [...c].reverse(),
+      });
+    }
+    chains.push(
+      chain.map(({ road, pts }) => (pts === road.centerline ? road : { ...road, centerline: pts })),
+    );
+  }
+  return chains;
+}
+
+function buildBridges(roads: Road[], terrain: CityModel['terrain']): Bridge[] {
+  const bridges = roads.filter((r) => r.grade === 'bridge');
+  // Chain ends where other bridges meet (a Y split) stay up; ends on the ground road ramp down.
+  const key = (p: Vec2) => `${Math.round(p[0] * 2)},${Math.round(p[1] * 2)}`;
+  const ends = new Map<string, number>();
+  for (const r of bridges) {
+    for (const p of [r.centerline[0], r.centerline[r.centerline.length - 1]])
+      ends.set(key(p), (ends.get(key(p)) ?? 0) + 1);
+  }
+  return bridgeChains(bridges).map((chain) => {
+    const first = chain[0];
+    const pts: Vec2[] = [];
+    for (const r of chain) {
+      for (const p of r.centerline) {
+        const last = pts[pts.length - 1];
+        if (!last || dist(last, p) > 0.05) pts.push(p);
+      }
+    }
+    const layer = first.layer;
+    const total = polylineLength(pts);
+    const clearance = 5.5 * Math.max(1, layer);
+    const inner = (p: Vec2) => (ends.get(key(p)) ?? 0) > 1;
+    const startInner = inner(pts[0]);
+    const endInner = inner(pts[pts.length - 1]);
+    const endZ = (p: Vec2, isInner: boolean) =>
+      terrainHeightAt(terrain, p[0], p[1]) + (isInner ? clearance : 0);
+    const za = endZ(pts[0], startInner);
+    const zb = endZ(pts[pts.length - 1], endInner);
+    const at: number[] = [0];
+    for (let k = 1; k < pts.length; k++) at.push(at[k - 1] + dist(pts[k - 1], pts[k]));
+    const grounds = pts.map((p) => terrainHeightAt(terrain, p[0], p[1]));
+    // A short bridge spans straight between its ground ends. A long viaduct
+    // follows the ground (averaged over ±60 m) at clearance height: that depends
+    // only on nearby terrain, so neighbouring tiles compute the same deck.
+    const straight = !startInner && !endInner && total < 400;
+    const path: Vec3[] = pts.map((p, k) => {
+      const s = at[k];
+      // Ramps only at ends that meet the ground road.
+      const fromStart = startInner ? Infinity : s;
+      const fromEnd = endInner ? Infinity : total - s;
+      const ramp = Math.min(1, Math.min(fromStart, fromEnd) / 25 || 0);
+      let base: number;
+      if (straight) {
+        base = Math.max(
+          za + (zb - za) * (total > 0 ? s / total : 0),
+          grounds[k] + clearance * ramp,
+        );
+      } else {
+        let sum = 0;
+        let n = 0;
+        for (let m = 0; m < pts.length; m++) {
+          if (Math.abs(at[m] - s) <= 60) {
+            sum += grounds[m];
+            n++;
+          }
+        }
+        // Ramp ends sit exactly on the ground at this point; full height beyond 25 m.
+        base = grounds[k] + (sum / n + clearance - grounds[k]) * ramp;
+        base = Math.max(base, grounds[k] + 2 * ramp);
+      }
+      return [p[0], p[1], base];
     });
+    // Piers every PIER_SPACING m where the deck stands clear of the ground.
+    const piers: Bridge['piers'] = [];
+    for (const s of samplePolyline(pts, PIER_SPACING, PIER_SPACING / 2)) {
+      const deck = deckHeightAt(path, s.at);
+      const base = terrainHeightAt(terrain, s.point[0], s.point[1]);
+      if (deck - DECK_DEPTH - base > 2.5) {
+        piers.push({ at: s.point, dir: s.dir, base: base - 0.5, top: deck - DECK_DEPTH });
+      }
+    }
+    // Where the deck meets the ground road it runs on under the road surface,
+    // so no seam opens between the two.
+    const extend = (end: Vec3, toward: Vec3): Vec3 => {
+      const dx = end[0] - toward[0];
+      const dy = end[1] - toward[1];
+      const l = Math.hypot(dx, dy) || 1;
+      return [end[0] + (dx / l) * 1.5, end[1] + (dy / l) * 1.5, end[2]];
+    };
+    if (!startInner && path.length >= 2) path.unshift(extend(path[0], path[1]));
+    if (!endInner && path.length >= 2)
+      path.push(extend(path[path.length - 1], path[path.length - 2]));
+    const widthOf = (r: Road) => r.width + 2 * Math.min(r.sidewalk, 1.5);
+    return {
+      id: `br${first.id}`,
+      roadId: first.id,
+      path,
+      width: Math.max(...chain.map(widthOf)),
+      carriageway: Math.max(...chain.map((r) => r.width)),
+      lanes: Math.max(...chain.map((r) => r.lanes)),
+      oneway: chain.every((r) => r.oneway),
+      edgeLines: chain.some((r) => ['motorway', 'trunk', 'primary'].includes(r.cls)),
+      piers,
+    };
+  });
+}
+
+/** Runs of a path whose segments lie over the tile core (midpoint test), split at vertices. */
+function corePathRuns(path: Vec3[], inCore: (p: Vec2) => boolean): Vec3[][] {
+  const runs: Vec3[][] = [];
+  let run: Vec3[] = [];
+  for (let k = 1; k < path.length; k++) {
+    const a = path[k - 1];
+    const b = path[k];
+    if (inCore([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2])) {
+      if (!run.length) run.push(a);
+      run.push(b);
+    } else {
+      if (run.length >= 2) runs.push(run);
+      run = [];
+    }
+  }
+  if (run.length >= 2) runs.push(run);
+  return runs;
+}
+
+/** The runs of a bridge whose segments lie over the tile core (midpoint test). */
+function clipBridgeToCore(br: Bridge, inCore: (p: Vec2) => boolean): Bridge[] {
+  const out: Bridge[] = [];
+  let run: Vec3[] = [];
+  const flush = () => {
+    if (run.length >= 2) {
+      out.push({
+        ...br,
+        id: out.length ? `${br.id}~${out.length}` : br.id,
+        path: run,
+        piers: br.piers.filter((p) => inCore(p.at)),
+      });
+    }
+    run = [];
+  };
+  for (let k = 1; k < br.path.length; k++) {
+    const a = br.path[k - 1];
+    const b = br.path[k];
+    if (inCore([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2])) {
+      if (!run.length) run.push(a);
+      run.push(b);
+    } else flush();
+  }
+  flush();
+  // Piers belong to the first run only (the list is the whole bridge's).
+  out.slice(1).forEach((b) => (b.piers = []));
+  return out;
+}
+
+/** Deck height at arc length `s` along a bridge path. */
+function deckHeightAt(path: Vec3[], s: number): number {
+  let walked = 0;
+  for (let k = 1; k < path.length; k++) {
+    const seg = Math.hypot(path[k][0] - path[k - 1][0], path[k][1] - path[k - 1][1]);
+    if (walked + seg >= s) {
+      const t = seg > 0 ? (s - walked) / seg : 0;
+      return path[k - 1][2] + (path[k][2] - path[k - 1][2]) * t;
+    }
+    walked += seg;
+  }
+  return path[path.length - 1][2];
 }
 
 /** Coverage cell size (metres) of authoritative sources. */
