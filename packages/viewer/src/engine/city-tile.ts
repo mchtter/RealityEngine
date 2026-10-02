@@ -1,4 +1,4 @@
-import { terrainHeightAt } from '@opentwin/city-core';
+import { CutGround } from '@opentwin/city-core';
 import * as THREE from 'three/webgpu';
 import { toThree } from './geom';
 import { BUILDING_SLOT, type DtMaterials } from './materials';
@@ -45,6 +45,7 @@ export class CityTile {
   private readonly local = new THREE.Vector3();
   private data = false;
   readonly summary: TileSummary;
+  private readonly ground: CutGround;
   /** Building ids per shell layer, in slot order (see TilePayload.slots). */
   readonly slots: TilePayload['slots'];
 
@@ -60,6 +61,7 @@ export class CityTile {
   ) {
     this.slots = payload.slots;
     this.summary = payload.summary;
+    this.ground = new CutGround(payload.summary.terrain, payload.summary.terrainCut);
     this.buildingsById = new Map(payload.summary.buildings.map((b) => [b.id, b]));
     this.group.name = `tile-${key}`;
     this.group.position.set(...toThree(offset[0], offset[1], 0));
@@ -168,13 +170,40 @@ export class CityTile {
     for (const m of this.fix) m.visible = this.data;
   }
 
-  /** Terrain height at a world point, or null when outside this tile. */
+  /** Ground height (trench floor in an underpass) at a world point, or null when outside this tile. */
   heightAt(x: number, y: number): number | null {
     const lx = x - this.offset[0];
     const ly = y - this.offset[1];
     const b = this.summary.bounds;
     if (lx < b.minX || lx > b.maxX || ly < b.minY || ly > b.maxY) return null;
-    return terrainHeightAt(this.summary.terrain, lx, ly);
+    return this.ground.heightAt(lx, ly);
+  }
+
+  /**
+   * Bridge decks and tunnel roads over / under a world point, a tunnel road
+   * with its clear height. Not limited to the tile's bounds: a deck's part in
+   * this tile may end a little past its edge, at a vertex the neighbour's
+   * part starts from.
+   */
+  decksAt(x: number, y: number): { h: number; clear?: number }[] {
+    const lx = x - this.offset[0];
+    const ly = y - this.offset[1];
+    const out: { h: number; clear?: number }[] = [];
+    for (const d of this.summary.decks ?? []) {
+      for (let k = 1; k < d.path.length; k++) {
+        const a = d.path[k - 1];
+        const b = d.path[k];
+        const dx = b[0] - a[0];
+        const dy = b[1] - a[1];
+        const l2 = dx * dx + dy * dy;
+        const t = l2 > 0 ? Math.max(0, Math.min(1, ((lx - a[0]) * dx + (ly - a[1]) * dy) / l2)) : 0;
+        if (Math.hypot(lx - a[0] - dx * t, ly - a[1] - dy * t) <= d.half) {
+          out.push({ h: a[2] + (b[2] - a[2]) * t, clear: d.clear });
+          break;
+        }
+      }
+    }
+    return out;
   }
 
   pick(ray: THREE.Raycaster): { d: number; b: BuildingInfo } | null {

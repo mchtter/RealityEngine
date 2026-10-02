@@ -3,6 +3,9 @@ import {
   attribute,
   cameraPosition,
   clamp,
+  cross,
+  dFdx,
+  dFdy,
   color,
   dot,
   float,
@@ -20,11 +23,14 @@ import {
   mx_noise_float,
   normalLocal,
   normalize,
+  normalView,
   normalWorld,
   oneMinus,
   positionLocal,
+  positionView,
   positionWorld,
   pow,
+  sign,
   sin,
   smoothstep,
   step,
@@ -130,6 +136,8 @@ export interface DtMaterials {
   wall: THREE.MeshStandardNodeMaterial;
   trim: THREE.MeshStandardNodeMaterial;
   glass: THREE.MeshStandardNodeMaterial;
+  /** Three-casement window glass (wide living-room windows). */
+  glassWide: THREE.MeshStandardNodeMaterial;
   shopGlass: THREE.MeshStandardNodeMaterial;
   frame: THREE.MeshStandardNodeMaterial;
   roofTile: THREE.MeshStandardNodeMaterial;
@@ -153,6 +161,14 @@ export interface DtMaterials {
   prop: THREE.MeshStandardNodeMaterial;
   lampGlow: THREE.MeshStandardNodeMaterial;
   lampPool: THREE.MeshBasicNodeMaterial;
+  /** The dark inside of a tunnel mouth. */
+  tunnelDark: THREE.MeshBasicNodeMaterial;
+  /** Tunnel tube walls: light ceramic panels up to 3.5 m, dark coating above. */
+  tunnelWall: THREE.MeshStandardNodeMaterial;
+  /** Tunnel lights, illuminated signs and lane signals (vertex colour, unlit). */
+  tunnelGlow: THREE.MeshBasicNodeMaterial;
+  /** Tunnel fittings: sign boards, SOS cabinets, jet fans (vertex colour). */
+  tunnelFixture: THREE.MeshStandardNodeMaterial;
   holoSynthetic: THREE.MeshBasicNodeMaterial;
   holoSuggested: THREE.MeshBasicNodeMaterial;
   holoBuilding: THREE.MeshBasicNodeMaterial;
@@ -161,6 +177,26 @@ export interface DtMaterials {
 }
 
 const viewDir = () => normalize(cameraPosition.sub(positionWorld));
+
+/**
+ * Surface-gradient bump mapping (Mikkelsen) for a procedural height: the
+ * height's screen-space derivatives tilt the view-space normal. `fade` scales
+ * it down with distance so far surfaces do not shimmer.
+ */
+function bumpedNormal(height: ReturnType<typeof float>, strength: number, fadeFar = 90) {
+  const fade = smoothstep(fadeFar, fadeFar * 0.25, positionView.z.negate());
+  const h = height.mul(strength).mul(fade);
+  const sigmaX = normalize(dFdx(positionView));
+  const sigmaY = normalize(dFdy(positionView));
+  const n = normalView;
+  const r1 = cross(sigmaY, n);
+  const r2 = cross(n, sigmaX);
+  const det = sigmaX.dot(r1);
+  // dFdx / dFdy are typed for vectors only: differentiate the height as x of a vec3.
+  const hv = vec3(h, 0, 0);
+  const grad = sign(det).mul(r1.mul(dFdx(hv).x).add(r2.mul(dFdy(hv).x)));
+  return normalize(abs(det).mul(n).sub(grad));
+}
 const fresnel = (power: number) =>
   pow(oneMinus(clamp(abs(dot(viewDir(), normalWorld)), 0, 1)), power);
 
@@ -257,12 +293,33 @@ export function createMaterials(): DtMaterials {
       float(1.25),
       brickEdge,
     );
+    // Motif strip: a relief lattice of diamonds with a boss in each (Seljuk-style
+    // geometric band seen on the reference fronts).
+    const mu = fract(u.div(0.28));
+    const mv = fract(v.div(0.28));
+    const md = abs(mu.sub(0.5)).add(abs(mv.sub(0.5)));
+    const motif = float(1.06)
+      .sub(step(abs(md.sub(0.38)), 0.05).mul(0.32))
+      .sub(step(md, 0.1).mul(0.22));
     const pattern = plaster
       .mul(is(0))
       .add(wood.mul(is(1)))
       .add(panel.mul(is(2)))
       .add(stone.mul(is(3)))
-      .add(brick.mul(is(4)));
+      .add(brick.mul(is(4)))
+      .add(motif.mul(is(5)));
+    // Weathering (reference: soul_of_anatolia): faded patches, rain streaks running
+    // down from sills and eaves, and a darker band where the street splashes the wall.
+    const fl0 = attribute<'vec3'>('floorInfo', 'vec3');
+    const patches = mx_noise_float(vec3(u.mul(0.11), v.mul(0.07), fl0.y.mul(3.1))).mul(0.09);
+    const streaks = smoothstep(
+      0.15,
+      0.75,
+      mx_noise_float(vec3(u.mul(2.4), v.mul(0.09), fl0.x.mul(0.7))),
+    ).mul(0.08);
+    const groundLevel = fl0.x.sub(3.6);
+    const splash = oneMinus(smoothstep(0, 1.4, v.sub(groundLevel))).mul(0.14);
+    const weathering = float(1).add(patches).sub(streaks).sub(splash);
     // Far windows: drawn by the shader on every window bay; near buildings add
     // 3D frames / glass instances on top that cover these exactly.
     const bay = attribute<'vec3'>('bay', 'vec3');
@@ -281,8 +338,23 @@ export function createMaterials(): DtMaterials {
         .add(floor(rel.div(fl.y)).mul(17.3))
         .add(fl.x.mul(1.31)),
     );
-    wall.colorNode = mix(scenarioTint(vertexColor().rgb.mul(pattern)), vec3(0.07, 0.09, 0.11), win);
+    wall.colorNode = mix(
+      scenarioTint(vertexColor().rgb.mul(pattern).mul(weathering)),
+      vec3(0.07, 0.09, 0.11),
+      win,
+    );
     wall.roughnessNode = mix(mix(float(0.92), float(0.75), is(2)), float(0.12), win);
+    // Relief under raking light: stucco grain, recessed mortar / plank / panel
+    // joints, the motif's grooves. Window glass stays flat.
+    const relief = grain
+      .mul(4)
+      .mul(is(0))
+      .sub(oneMinus(smoothstep(0.02, 0.12, plank)).mul(is(1)))
+      .sub(joint.mul(is(2)))
+      .add(grain.mul(3).sub(stoneEdge).mul(is(3)))
+      .sub(brickEdge.mul(is(4)))
+      .add(motif.sub(1).mul(2).mul(is(5)));
+    wall.normalNode = mix(bumpedNormal(relief, 0.05), normalView, win);
     wall.emissiveNode = vec3(1.0, 0.74, 0.44)
       .mul(night)
       .mul(step(0.62, lightId))
@@ -295,22 +367,30 @@ export function createMaterials(): DtMaterials {
 
   // ─── Windows ──────────────────────────────────────────────────────────────
   const curtainTone = hash(instanceIndex.add(11));
-  const hasCurtain = step(0.35, hash(instanceIndex.add(3)));
+  const hasCurtain = step(0.5, hash(instanceIndex.add(3)));
+  // Some windows carry a tilt-turn top light (vasistas) above the casements.
+  const hasTransom = step(0.6, hash(instanceIndex.add(13)));
   const lit = step(0.62, hash(instanceIndex.add(7))).mul(night);
   // Window = one quad: frame, centre mullion, inner reveal shadow, curtains
   // and night lighting are all drawn here (2 triangles per window).
-  const glass = new THREE.MeshStandardNodeMaterial({ roughness: 0.06, metalness: 0.1 });
-  {
+  /** Window glass with `panes` casements (2: standard, 3: wide living-room window). */
+  const windowGlass = (panes: 2 | 3) => {
+    const glass = new THREE.MeshStandardNodeMaterial({ roughness: 0.06, metalness: 0.1 });
     const wu = uv().x;
     const wv = uv().y;
     const frameColor = attribute<'vec3'>('frameColor', 'vec3');
-    const fx = 0.06;
-    const fy = 0.05;
+    // PVC / timber frames read thick in the reference renders.
+    const fx = 0.085;
+    const fy = 0.07;
     const opening = step(fx, wu)
       .mul(step(wu, 1 - fx))
       .mul(step(fy, wv))
       .mul(step(wv, 1 - fy));
-    const mullion = step(abs(wu.sub(0.5)), 0.016);
+    const mullionX =
+      panes === 2
+        ? step(abs(wu.sub(0.5)), 0.022)
+        : max(step(abs(wu.sub(1 / 3)), 0.014), step(abs(wu.sub(2 / 3)), 0.014));
+    const mullion = max(mullionX, hasTransom.mul(step(abs(wv.sub(0.74)), 0.025)));
     const frameMask = max(oneMinus(opening), mullion);
     const reveal = smoothstep(fx, fx + 0.07, wu)
       .mul(smoothstep(1 - fx, 1 - fx - 0.07, wu))
@@ -318,9 +398,15 @@ export function createMaterials(): DtMaterials {
       .mul(0.45)
       .add(0.55);
     const folds = sin(wu.mul(70)).mul(0.04).add(0.96);
-    const curtain = mix(vec3(0.86, 0.84, 0.78), vec3(0.95, 0.93, 0.9), curtainTone).mul(folds);
+    // Net curtains (tül), drawn back a little at the sides.
+    const gathered = smoothstep(0.34, 0.44, abs(wu.sub(0.5)))
+      .mul(0.25)
+      .add(0.75);
+    const curtain = mix(vec3(0.78, 0.76, 0.71), vec3(0.88, 0.86, 0.82), curtainTone)
+      .mul(folds)
+      .mul(gathered);
     const pane = vec3(0.1, 0.13, 0.15);
-    const inside = mix(pane, curtain.mul(0.55), hasCurtain.mul(smoothstep(0.1, 0.25, wv))).mul(
+    const inside = mix(pane, curtain.mul(0.42), hasCurtain.mul(smoothstep(0.1, 0.25, wv))).mul(
       reveal,
     );
     glass.colorNode = mix(inside, frameColor, frameMask);
@@ -334,7 +420,10 @@ export function createMaterials(): DtMaterials {
           .mul(hash(instanceIndex.add(5)).mul(0.45).add(0.2)),
       )
       .mul(oneMinus(frameMask));
-  }
+    return glass;
+  };
+  const glass = windowGlass(2);
+  const glassWide = windowGlass(3);
   const shopGlass = new THREE.MeshStandardNodeMaterial({ roughness: 0.05, metalness: 0.1 });
   {
     const shelves = step(0.8, fract(uv().y.mul(5))).mul(0.25);
@@ -369,6 +458,8 @@ export function createMaterials(): DtMaterials {
       .mul(0.2)
       .add(0.9);
     const moss = mx_noise_float(positionWorld.mul(0.35)).mul(0.06);
+    // Each course of tiles bulges and laps over the next one.
+    roofTile.normalNode = bumpedNormal(tileShade, 0.12, 70);
     roofTile.colorNode = scenarioTint(
       vertexColor().rgb.mul(vec3(tileShade.mul(tileTone).add(moss))),
     );
@@ -400,15 +491,23 @@ export function createMaterials(): DtMaterials {
   );
   railMetal.alphaTest = 0.5;
 
-  const glazed = new THREE.MeshStandardNodeMaterial({ roughness: 0.08, metalness: 0.15 });
+  // Semi-transparent tinted glass: the door and window behind the cam balkon show
+  // through, dimmed, with the sky reflected at grazing angles.
+  const glazed = new THREE.MeshStandardNodeMaterial({
+    roughness: 0.05,
+    metalness: 0.25,
+    transparent: true,
+  });
   {
-    const mullion = max(step(0.95, fract(uv().x.div(0.75))), step(0.94, uv().y)).max(
+    // Four aluminium sliding sashes with top and bottom rails; the glass between is
+    // see-through (the door, window and curtains behind it are the real ones).
+    const mullion = max(step(0.94, fract(uv().x.mul(4))), step(0.94, uv().y)).max(
       step(uv().y, 0.04),
     );
-    const g = mix(vec3(0.16, 0.22, 0.25), vec3(0.85, 0.85, 0.82), mullion);
-    glazed.colorNode = mix(g, vec3(0.8, 0.78, 0.72), hasCurtain.mul(0.25).mul(oneMinus(mullion)));
+    glazed.colorNode = mix(vec3(0.1, 0.14, 0.15), vec3(0.78, 0.78, 0.76), mullion);
+    glazed.opacityNode = mix(fresnel(2).mul(0.35).add(0.5), float(1), mullion);
     glazed.emissiveNode = skyTint
-      .mul(fresnel(3).mul(0.45))
+      .mul(fresnel(3).mul(0.35).add(0.04))
       .mul(day)
       .mul(oneMinus(mullion))
       .add(vec3(1, 0.8, 0.5).mul(lit.mul(0.7)).mul(oneMinus(mullion)));
@@ -499,19 +598,34 @@ export function createMaterials(): DtMaterials {
   // Terrain: grass / dry grass / bare soil by noise, rock on steep slopes, sand at the shore.
   const terrain = new THREE.MeshStandardNodeMaterial({ roughness: 0.97, metalness: 0 });
   {
+    // Black Sea hillside meadow: green grass in several hues, olive and straw
+    // patches, bare soil spots, clumps and blades — five noise scales so no
+    // repetition shows from street level to the overview.
+    const macro = mx_noise_float(wp.mul(0.004)).mul(0.5).add(0.5);
     const n1 = mx_noise_float(wp.mul(0.03)).mul(0.5).add(0.5);
     const n2 = mx_noise_float(wp.mul(0.25)).mul(0.5).add(0.5);
     const n3 = mx_noise_float(wp.mul(2.2));
-    const grass = mix(vec3(0.24, 0.33, 0.13), vec3(0.37, 0.4, 0.19), n2);
-    const dry = vec3(0.55, 0.5, 0.33);
-    const soil = vec3(0.42, 0.35, 0.26);
-    let g = mix(grass, dry, smoothstep(0.55, 0.85, n1));
-    g = mix(g, soil, smoothstep(0.72, 0.9, n2).mul(0.7));
+    const n4 = mx_noise_float(wp.mul(9));
+    const lush = mix(vec3(0.17, 0.26, 0.08), vec3(0.27, 0.34, 0.12), n2);
+    const olive = vec3(0.36, 0.36, 0.17);
+    const straw = vec3(0.55, 0.49, 0.3);
+    const soil = vec3(0.36, 0.29, 0.21);
+    let g = mix(lush, olive, smoothstep(0.35, 0.8, macro).mul(0.7));
+    g = mix(g, straw, smoothstep(0.62, 0.88, n1).mul(0.75));
+    g = mix(
+      g,
+      soil,
+      smoothstep(0.78, 0.93, n2)
+        .mul(smoothstep(0.4, 0.7, n1))
+        .mul(0.8),
+    );
     const slope = oneMinus(normalWorld.y);
     g = mix(g, vec3(0.45, 0.43, 0.4), smoothstep(0.35, 0.6, slope));
     const shore = smoothstep(2.2, 0.6, wp.y);
     g = mix(g, vec3(0.62, 0.57, 0.45), shore);
-    terrain.colorNode = g.mul(n3.mul(0.07).add(1));
+    terrain.colorNode = g.mul(n3.mul(0.1).add(n4.mul(0.06)).add(1));
+    // Grass clumps and tussocks catch the low sun.
+    terrain.normalNode = bumpedNormal(n2.mul(0.6).add(n3.mul(0.3)).add(n4.mul(0.15)), 0.9, 120);
   }
 
   const water = new THREE.MeshStandardNodeMaterial({
@@ -576,6 +690,31 @@ export function createMaterials(): DtMaterials {
   const holoSuggested = holo(new THREE.Color(1.0, 0.68, 0.18), 1.2);
   const holoBuilding = holo(new THREE.Color(0.3, 0.6, 1.0), 0.11);
 
+  const tunnelDark = new THREE.MeshBasicNodeMaterial();
+  tunnelDark.colorNode = vec3(0.015, 0.016, 0.018);
+
+  const tunnelWall = new THREE.MeshStandardNodeMaterial({ roughness: 0.35, metalness: 0 });
+  {
+    // Height above the tube's road is not known per pixel; the panel band is
+    // found from the world height relative to a 1.2 × 0.6 m panel grid along
+    // the wall, and the vertex colour carries the zone (light panels / dark top).
+    const along = positionWorld.x.add(positionWorld.z);
+    const joint = max(
+      step(0.97, fract(along.div(1.2))),
+      step(0.95, fract(positionWorld.y.div(0.6))),
+    );
+    const panel = mix(float(1), float(0.72), joint).mul(
+      float(0.96).add(
+        hash(floor(along.div(1.2)).add(floor(positionWorld.y.div(0.6)).mul(31))).mul(0.06),
+      ),
+    );
+    tunnelWall.colorNode = vertexColor().rgb.mul(panel);
+  }
+  const tunnelGlow = new THREE.MeshBasicNodeMaterial();
+  tunnelGlow.colorNode = vertexColor().rgb;
+  const tunnelFixture = new THREE.MeshStandardNodeMaterial({ roughness: 0.5, metalness: 0.2 });
+  tunnelFixture.colorNode = vertexColor().rgb;
+
   const fix = new THREE.MeshBasicNodeMaterial({
     transparent: true,
     side: THREE.DoubleSide,
@@ -588,6 +727,7 @@ export function createMaterials(): DtMaterials {
     wall,
     trim,
     glass,
+    glassWide,
     shopGlass,
     frame,
     roofTile,
@@ -614,6 +754,10 @@ export function createMaterials(): DtMaterials {
     holoBuilding,
     fix,
     lampPool,
+    tunnelDark,
+    tunnelWall,
+    tunnelGlow,
+    tunnelFixture,
   ];
 
   return {
@@ -624,6 +768,7 @@ export function createMaterials(): DtMaterials {
     wall,
     trim,
     glass,
+    glassWide,
     shopGlass,
     frame,
     roofTile,
@@ -646,6 +791,10 @@ export function createMaterials(): DtMaterials {
     prop,
     lampGlow,
     lampPool,
+    tunnelDark,
+    tunnelWall,
+    tunnelGlow,
+    tunnelFixture,
     holoSynthetic,
     holoSuggested,
     holoBuilding,

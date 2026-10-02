@@ -126,9 +126,10 @@ function createPropModules(): Record<PropKind | 'tree-pine', THREE.BufferGeometr
       cyl(0.1, 0.14, 9, 8, C('#8a8580'), 0, 4.5, 0),
       box(1.8, 0.1, 0.1, C('#5b5650'), 0, 8.4, 0),
     ]),
+    // Plastered stove flue with a concrete cap and a small rain hood (reference renders).
     chimney: merge([
-      box(0.5, 1.4, 0.5, C('#9a5a44'), 0, 0.7, 0),
-      box(0.62, 0.08, 0.62, C('#6b6f73'), 0, 1.45, 0),
+      box(0.78, 2.3, 0.78, C('#b8afa3'), 0, 1.15, 0),
+      box(0.92, 0.16, 0.92, C('#7d7a75'), 0, 2.38, 0),
     ]),
     'solar-heater': merge([
       cyl(0.24, 0.24, 1.6, 12, C('#d9d9d6'), 0, 1.25, -0.35, 0, Math.PI / 2),

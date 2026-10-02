@@ -12,6 +12,7 @@ import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import { float, mix, mrt, normalView, output, pass, renderOutput, uniform } from 'three/tsl';
 import * as THREE from 'three/webgpu';
+import { CameraRig, type DtCameraMode } from './camera-modes';
 import { CityTile } from './city-tile';
 import { toThree } from './geom';
 import { seaPlane } from './ground';
@@ -26,6 +27,7 @@ import { type BuildingInfo, type TilePayload, type TileSummary, instancesOf } fr
 
 export type DtViewMode = 'showcase' | 'data';
 export type DtQuality = 'high' | 'medium' | 'low';
+export type { DtCameraMode } from './camera-modes';
 
 export interface DtEngineStats {
   backend: 'webgpu' | 'webgl';
@@ -76,6 +78,10 @@ export class DtEngine {
   private readonly scene = new THREE.Scene();
   private readonly camera: THREE.PerspectiveCamera;
   private readonly controls: MapControls;
+  /** Camera modes (orbit / isometric / street / fly) and keyboard navigation. */
+  private readonly rig: CameraRig;
+  private lastFrame = performance.now();
+  private readonly lodEye = new THREE.Vector3();
   private readonly sun = new THREE.DirectionalLight(0xffffff, 3);
   private readonly hemi = new THREE.HemisphereLight(0xbfd6ff, 0x5b5a48, 1.1);
   private readonly sky = new SkyMesh();
@@ -166,6 +172,8 @@ export class DtEngine {
     this.sky.mieDirectionalG.value = 0.8;
     this.sky.cloudCoverage.value = 0.42;
     this.sky.cloudDensity.value = 0.5;
+    // The dome is far beyond the fog's far distance: fogged, it renders flat grey.
+    (this.sky.material as THREE.NodeMaterial).fog = false;
     this.scene.add(this.sky);
     this.envSky.scale.setScalar(50);
     this.envSky.turbidity.value = 2.6;
@@ -175,7 +183,7 @@ export class DtEngine {
     this.envSky.cloudCoverage.value = 0.42;
     this.envScene.add(this.envSky);
     this.pmrem = new THREE.PMREMGenerator(renderer);
-    this.scene.environmentIntensity = 0.3;
+    this.scene.environmentIntensity = 0.22;
     this.scene.fog = new THREE.Fog(0xb9c9d8, 1300, 5200);
 
     this.sun.castShadow = true;
@@ -214,6 +222,15 @@ export class DtEngine {
     this.controls.zoomToCursor = true;
     this.camera.position.set(260, 230, 330);
     this.controls.update();
+    this.rig = new CameraRig(
+      this.camera,
+      this.controls,
+      renderer.domElement,
+      this.scene,
+      (x, y) => this.heightAt(x, y),
+      () => this.controls.dispatchEvent({ type: 'change' }),
+      (x, y, foot) => this.standHeightAt(x, y, foot),
+    );
 
     // Post-processing: AO + bloom (night lights) + FXAA.
     this.pipeline = new THREE.RenderPipeline(renderer);
@@ -305,7 +322,7 @@ export class DtEngine {
     );
     if (this.scenarioColor) this.scenarioCounts.set(key, this.paintScenario(tile));
     if (this.mode !== 'showcase') tile.setMode(this.mode);
-    tile.updateDetail(this.camera.position);
+    tile.updateDetail(this.rig.lodEye(this.lodEye));
     this.tiles.set(key, tile);
     this.scene.add(tile.group);
     if (!this.placed) {
@@ -361,7 +378,26 @@ export class DtEngine {
     this.scenarioCounts.delete(key);
   }
 
-  /** Terrain height at a world point (0 outside loaded tiles). */
+  /**
+   * Where someone at foot height `foot` stands at (x, y). Inside a tunnel tube
+   * (feet between its road and ceiling) only the tube's road: the hill over it
+   * rises gently at the mouth and would otherwise be climbed step by step.
+   * Elsewhere the highest surface (ground, bridge deck) no more than a step
+   * above the feet, so walking climbs onto a bridge along its ramp; falls back
+   * to the lowest surface.
+   */
+  standHeightAt(x: number, y: number, foot: number): number {
+    const hs = [{ h: this.heightAt(x, y) } as { h: number; clear?: number }];
+    for (const tile of this.tiles.values()) hs.push(...tile.decksAt(x, y));
+    const tube = hs.find(
+      (s) => s.clear !== undefined && foot > s.h - 1.5 && foot < s.h + s.clear - 1,
+    );
+    if (tube) return tube.h;
+    const below = hs.filter((s) => s.h <= foot + 1.2).map((s) => s.h);
+    return below.length ? Math.max(...below) : Math.min(...hs.map((s) => s.h));
+  }
+
+  /** Ground height at a world point (0 outside loaded tiles). */
   heightAt(x: number, y: number): number {
     for (const tile of this.tiles.values()) {
       const h = tile.heightAt(x, y);
@@ -381,7 +417,8 @@ export class DtEngine {
     if (!target) return null;
     const t = this.controls.target;
     const c = this.camera.position;
-    const distance = c.distanceTo(t);
+    // Isometric views stand far off with a narrow lens: zoom as the base lens would see it.
+    const distance = c.distanceTo(t) / this.rig.distanceScale;
     const zoom = Math.log2(
       (1.5 * this.viewportHeight() * metresPerPixelAtZoom0(target.lat)) / Math.max(distance, 1),
     );
@@ -442,7 +479,19 @@ export class DtEngine {
   }
 
   private updateDetail(): void {
-    for (const tile of this.tiles.values()) tile.updateDetail(this.camera.position);
+    const eye = this.rig.lodEye(this.lodEye);
+    for (const tile of this.tiles.values()) tile.updateDetail(eye);
+  }
+
+  /** Camera mode: map orbit, isometric, street level, free flight (all with WASD). */
+  setCameraMode(mode: DtCameraMode): void {
+    this.fly = null;
+    this.rig.setMode(mode);
+    this.updateDetail();
+  }
+
+  get cameraMode(): DtCameraMode {
+    return this.rig.mode;
   }
 
   /** Hours 0–24 → sun position, light colour, sky, night factor. */
@@ -462,11 +511,14 @@ export class DtEngine {
     const dayness = THREE.MathUtils.smoothstep(elevation, -6, 8);
     const golden = 1 - THREE.MathUtils.smoothstep(elevation, 4, 25);
     this.mats.night.value = 1 - THREE.MathUtils.smoothstep(elevation, -8, 3);
-    this.sun.intensity = 3.2 * dayness;
+    // Direct sun vs sky light about 5:1, as in clear-day photographs: lit and shaded
+    // walls read clearly apart.
+    this.sun.intensity = 4.4 * dayness;
     this.sun.color.setRGB(1, 1 - 0.28 * golden, 1 - 0.5 * golden);
-    this.hemi.intensity = 0.3 + 0.2 * dayness;
+    this.hemi.intensity = 0.3 - 0.08 * dayness;
     // Night: cool moonlit ambient so streets stay readable.
-    this.hemi.color.setRGB(0.35 + 0.4 * dayness, 0.45 + 0.39 * dayness, 0.75 + 0.25 * dayness);
+    // Day: near-neutral sky light (a blue one pushed grey-blue plaster to saturated blue).
+    this.hemi.color.setRGB(0.35 + 0.53 * dayness, 0.45 + 0.44 * dayness, 0.75 + 0.17 * dayness);
     if (this.glow) {
       this.glow.strength.value = 0.1 + 0.7 * this.mats.night.value;
       this.glow.threshold.value = 3 - 2.4 * this.mats.night.value;
@@ -479,7 +531,8 @@ export class DtEngine {
       0.79 * dayness + 0.06,
       0.86 * dayness + 0.1,
     );
-    this.renderer.toneMappingExposure = 0.78 + 0.25 * (1 - dayness);
+    // Sunlit plaster lands near its own colour (not washed to white); night opens up.
+    this.renderer.toneMappingExposure = 0.42 + 0.6 * (1 - dayness);
     this.envSky.sunPosition.value.copy(this.sunDir);
     this.scheduleEnvironment();
   }
@@ -564,6 +617,12 @@ export class DtEngine {
 
   /** Moves the camera to look at a model-space point from `distance` metres. */
   flyTo(x: number, y: number, distance = 140): void {
+    if (this.rig.mode !== 'orbit') {
+      const dir = this.camera.getWorldDirection(new THREE.Vector3());
+      const heading = (Math.atan2(dir.x, -dir.z) * 180) / Math.PI;
+      this.setView(x, y, distance, heading, 38);
+      return;
+    }
     const z = this.heightAt(x, y);
     const target = new THREE.Vector3(...toThree(x, y, z));
     const dir = this.camera.position.clone().sub(this.controls.target).normalize();
@@ -584,6 +643,19 @@ export class DtEngine {
   setView(x: number, y: number, distance: number, headingDeg: number, pitchDeg: number): void {
     const z = this.heightAt(x, y);
     const target = new THREE.Vector3(...toThree(x, y, z));
+    if (this.rig.mode === 'street' || this.rig.mode === 'fly') {
+      // Street / fly keep their own camera: stand at the point, facing the heading.
+      const [tx, , tz] = toThree(x, y, z);
+      const height =
+        this.rig.mode === 'fly' ? z + distance * Math.sin(Math.max(pitchDeg, 10) * DEG) : null;
+      this.rig.placeAt(tx, tz, headingDeg, height);
+      this.fly = null;
+      return;
+    }
+    if (this.rig.mode === 'isometric') {
+      distance *= this.rig.distanceScale;
+      pitchDeg = 35.264;
+    }
     const h = headingDeg * DEG;
     const p = pitchDeg * DEG;
     // Camera sits opposite to the look direction.
@@ -610,6 +682,12 @@ export class DtEngine {
       e.triangles += tris * n;
     });
     return out;
+  }
+
+  /** Development aid: camera position (world) and mode. */
+  debugEye(): { x: number; y: number; z: number; mode: DtCameraMode } {
+    const p = this.camera.position;
+    return { x: p.x, y: p.y, z: p.z, mode: this.rig.mode };
   }
 
   /** Development aid: toggle post-processing / shadows to isolate frame cost. */
@@ -669,6 +747,7 @@ export class DtEngine {
     this.resize.disconnect();
     this.renderer.domElement.removeEventListener('pointerdown', this.onPointerDown);
     this.renderer.domElement.removeEventListener('pointerup', this.onPointerUp);
+    this.rig.dispose();
     this.controls.dispose();
     for (const tile of this.tiles.values()) tile.dispose();
     this.tiles.clear();
@@ -686,21 +765,28 @@ export class DtEngine {
 
   private readonly frame = () => {
     if (this.disposed) return;
-    if (this.fly) {
+    const now0 = performance.now();
+    const controlsOwnCamera = this.rig.update((now0 - this.lastFrame) / 1000);
+    this.lastFrame = now0;
+    if (this.fly && controlsOwnCamera) {
       this.fly.t = Math.min(1, this.fly.t + 1 / 70);
       const k = this.fly.t < 0.5 ? 4 * this.fly.t ** 3 : 1 - (-2 * this.fly.t + 2) ** 3 / 2;
       this.camera.position.lerpVectors(this.fly.from[0], this.fly.to[0], k);
       this.controls.target.lerpVectors(this.fly.from[1], this.fly.to[1], k);
       if (this.fly.t >= 1) this.fly = null;
     }
-    this.controls.update();
+    if (controlsOwnCamera) this.controls.update();
     this.updateDetail();
 
     // Near plane follows the camera's height above ground: depth precision
     // scales with it, and with a fixed 1 m near plane ground layers a few cm
     // apart z-fought a few hundred metres away.
     const pos = this.camera.position;
-    const near = THREE.MathUtils.clamp((pos.y - this.heightAt(pos.x, -pos.z)) * 0.15, 1, 40);
+    const near = THREE.MathUtils.clamp(
+      (pos.y - this.heightAt(pos.x, -pos.z)) * 0.15,
+      this.rig.minNear,
+      40,
+    );
     if (Math.abs(near - this.camera.near) > this.camera.near * 0.15) {
       this.camera.near = near;
       this.camera.updateProjectionMatrix();

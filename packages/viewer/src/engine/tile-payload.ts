@@ -1,4 +1,11 @@
-import type { Building, CityModel, Fix, TerrainGrid, TileFrameInput } from '@opentwin/city-core';
+import type {
+  Building,
+  CityModel,
+  Fix,
+  TerrainCut,
+  TerrainGrid,
+  TileFrameInput,
+} from '@opentwin/city-core';
 import * as THREE from 'three/webgpu';
 import {
   type DtMaterials,
@@ -76,6 +83,13 @@ export interface TileSummary {
   terrain: TerrainGrid;
   fixes: Fix[];
   buildings: BuildingInfo[];
+  /** Underpass trenches and tunnel lids cut into the terrain. */
+  terrainCut?: TerrainCut;
+  /**
+   * Surfaces off the terrain one can stand on: bridge decks and tunnel roads
+   * (tile coords); a tunnel road has its clear height.
+   */
+  decks: { path: [number, number, number][]; half: number; clear?: number }[];
 }
 
 export interface TilePayload {
@@ -99,7 +113,12 @@ export function summarize(model: CityModel): TileSummary {
     stats: model.stats,
     attribution: model.attribution,
     terrain: model.terrain,
+    ...(model.terrainCut ? { terrainCut: model.terrainCut } : {}),
     fixes: model.fixes,
+    decks: [
+      ...(model.bridges ?? []).map((b) => ({ path: b.path, half: b.width / 2 })),
+      ...(model.tunnels ?? []).map((t) => ({ path: t.path, half: t.width / 2, clear: t.height })),
+    ],
     buildings: model.buildings.map((b) => ({
       id: b.id,
       source: b.source,
