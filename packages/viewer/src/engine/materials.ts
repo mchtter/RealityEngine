@@ -567,10 +567,11 @@ export function createMaterials(): DtMaterials {
     const jointU = oneMinus(smoothstep(0.03, add(0.03, wu), min(fu, oneMinus(fu))));
     const jointV = oneMinus(smoothstep(0.06, add(0.06, wv), min(fv, oneMinus(fv))));
     // Joints thinner than a pixel average into the stone colour.
-    const fade = oneMinus(smoothstep(0.25, 0.6, max(wu, wv)));
+    const fade = oneMinus(smoothstep(0.12, 0.35, max(wu, wv)));
     const joint = max(jointU, jointV).mul(fade);
     const id = floor(u).add(row.mul(131));
-    const tone = hash(id).mul(0.16).add(0.86);
+    // Stone-to-stone tone also fades out with distance (it aliased into rings).
+    const tone = hash(id).mul(0.16).sub(0.08).mul(fade).add(0.94);
     const grey = vec3(0.5, 0.49, 0.465).mul(tone);
     const red = vec3(0.52, 0.41, 0.37).mul(tone);
     // A street's paving scheme: grey, or grey with red stones mixed in.

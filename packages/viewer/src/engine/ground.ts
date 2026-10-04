@@ -2,8 +2,10 @@ import {
   type Bridge,
   type CityModel,
   CutGround,
+  GroundModel,
   type Polygon,
-  RoadSurface,
+  type RoadSurface,
+  SURFACE_LIFT,
   type SurfaceKind,
   type TerrainGrid,
   bufferPolyline,
@@ -13,6 +15,7 @@ import {
   pointInRing,
   rectPolygon,
   subtractPolygons,
+  TWIN_MEDIAN,
   terrainHeightAt,
   triangulate,
   unionPolygons,
@@ -44,17 +47,7 @@ const SURF_KERB = 6;
  * are the whole layer order: terrain < yard < asphalt < markings < path <
  * paving < sidewalk / island (kerb height above the road).
  */
-const LIFT: Record<SurfaceKind, number> = {
-  yard: 0.05,
-  concrete: 0.06,
-  parking: 0.08,
-  playground: 0.09,
-  asphalt: 0.1,
-  path: 0.13,
-  paving: 0.16,
-  sidewalk: 0.24,
-  island: 0.24,
-};
+const LIFT = SURFACE_LIFT;
 /** Lane markings / zebra stripes above the asphalt. */
 const MARKING_LIFT = LIFT.asphalt + 0.025;
 /**
@@ -443,16 +436,9 @@ export function buildGround(
   // it along their own polygon edges, not on the 4 m terrain grid whose
   // triangles across a carriageway edge drew the edge as a wave; the terrain
   // drawn under the street corridors sits 0.3 m lower, out of sight.
-  const surface = new RoadSurface(
-    model.roads
-      .filter((r) => r.grade === 'ground' && r.profile)
-      .map((r) => ({
-        points: r.centerline,
-        profile: r.profile!,
-        halfWidth: r.width / 2 + r.sidewalk,
-        carriage: r.width / 2,
-      })),
-  );
+  // The compiler's ground (GroundModel): same street surface, fill and cuts.
+  const groundModel = new GroundModel(model);
+  const surface = groundModel.street;
   const streetAt = (x: number, y: number) => surface.heightAt(x, y) ?? terrainHeightAt(t, x, y);
   const shown = underStreet(t, surface);
   const trenches = model.terrainCut?.trenches ?? [];
@@ -1026,7 +1012,15 @@ export function buildGround(
     const over = owned(joins[idx].over);
     // Barriers yield only well inside another deck: twin decks side by side
     // that merely touch keep their median barriers.
-    const merged = owned(offsetPolygons(joins[idx].all, -0.6));
+    const joined = owned(offsetPolygons(joins[idx].all, -0.6));
+    // A low deck (culvert, a bridge at street level) meeting a junction: its
+    // barriers and walkways stop where they would stand on another road.
+    const merged: Owned = {
+      inside: (x, y) =>
+        joined.inside(x, y) ||
+        (deckAt(br, [x, y]) - groundModel.streetAt(x, y) < 2 &&
+          groundModel.supportAt(x, y) === 'asphalt'),
+    };
     // A barrier end that lies on another deck's barrier line carries on there.
     const continues = (q: [number, number]) =>
       bridges.some(
@@ -1189,23 +1183,28 @@ export function buildGround(
   // and markings are not draped in a trench) and a retaining wall along each
   // side, up to the ground at the wall line plus a parapet.
   // Twin ramps side by side (one per direction): where the gap between two
-  // trench footprints is under MEDIAN m, one wall fills it (from this trench's
+  // trench footprints is under TWIN_MEDIAN m, one wall fills it (from this trench's
   // floor to the other's), drawn by the earlier trench; the later one leaves
   // its wall out there. Two 0.4 m walls in a 0.7 m gap stood in each other
   // and flickered along the line where they crossed.
-  const MEDIAN = 1.6;
   const cutLines = (model.cuttings ?? []).map((c) => ({
     pts: c.path.map((q) => [q[0], q[1]] as [number, number]),
+    z: c.path.map((q) => q[2]),
     half: c.width / 2,
   }));
-  /** Nearest other trench across the wall at q (outward u): its index and the gap to its footprint. */
+  /**
+   * Nearest other trench across the wall at q (outward u): its index, the gap
+   * to its footprint and its floor height there (from its own ramp profile:
+   * where two footprints overlap the cut ground holds only one of the floors).
+   */
   const across = (self: number, q: [number, number], u: [number, number]) => {
-    let best: { j: number; gap: number } | null = null;
+    let best: { j: number; gap: number; floor: number } | null = null;
     for (let j = 0; j < cutLines.length; j++) {
       const o = cutLines[j];
       if (j === self) continue;
       let d = Infinity;
       let cp: [number, number] = q;
+      let floor = 0;
       for (let k = 1; k < o.pts.length; k++) {
         const a = o.pts[k - 1];
         const b = o.pts[k];
@@ -1218,18 +1217,22 @@ export function buildGround(
         if (dd < d) {
           d = dd;
           cp = c2;
+          floor = o.z[k - 1] + (o.z[k] - o.z[k - 1]) * tt;
         }
       }
-      // On the outward side, footprint within MEDIAN of the wall line.
+      // On the outward side, footprint within TWIN_MEDIAN of the wall line.
       if ((cp[0] - q[0]) * u[0] + (cp[1] - q[1]) * u[1] <= 0) continue;
       const gap = d - o.half;
-      if (gap < MEDIAN && (!best || gap < best.gap)) best = { j, gap: Math.max(0, gap) };
+      if (gap < TWIN_MEDIAN && (!best || gap < best.gap))
+        best = { j, gap: Math.max(0, gap), floor };
     }
     return best;
   };
   (model.cuttings ?? []).forEach((c, ci) => {
     own(`cutting|${c.roadId}|${c.width.toFixed(1)} m genişlik`);
     const path: V[] = [];
+    // Compiler wall tops (rimL / rimR), densified with the path.
+    const rimDense: [number[], number[]] = [[], []];
     for (let k = 0; k < c.path.length; k++) {
       const a = c.path[k] as V;
       if (k > 0) {
@@ -1238,9 +1241,17 @@ export function buildGround(
         for (let i = 1; i < n; i++) {
           const f = i / n;
           path.push([b[0] + (a[0] - b[0]) * f, b[1] + (a[1] - b[1]) * f, b[2] + (a[2] - b[2]) * f]);
+          if (c.rimL && c.rimR) {
+            rimDense[0].push(c.rimL[k - 1] + (c.rimL[k] - c.rimL[k - 1]) * f);
+            rimDense[1].push(c.rimR[k - 1] + (c.rimR[k] - c.rimR[k - 1]) * f);
+          }
         }
       }
       path.push(a);
+      if (c.rimL && c.rimR) {
+        rimDense[0].push(c.rimL[k]);
+        rimDense[1].push(c.rimR[k]);
+      }
     }
     const half = c.width / 2;
     const carriage = Math.min(half - 0.25, (c.carriageway ?? c.width) / 2);
@@ -1262,20 +1273,24 @@ export function buildGround(
       // Ground at the wall line, then the highest of each ±4 m and averaged
       // over ±4 m: the top runs smooth (the 4 m terrain grid is creased along a
       // street) and never below the ground beside it.
-      const ground = path.map((p, k) =>
-        Math.max(
-          p[2] + 0.3,
-          terrainHeightAt(t, ...off(k, side * half)),
-          terrainHeightAt(t, ...off(k, side * (half + 0.4))),
-        ),
-      );
+      // What lies beyond the wall (sidewalk at kerb height, terrain …), from
+      // the one ground model: the wall top meets it, no gap and no overlap.
+      // Beyond a median the next trench's floor lies: the top follows the street
+      // level there instead (a wall top never drops to a trench floor).
+      const ground = path.map((p, k) => {
+        const q = off(k, side * (half + 0.5));
+        const s = groundModel.surfaceAt(...q);
+        return Math.max(p[2] + 0.3, s.support === 'trench' ? groundModel.streetAt(...q) : s.z);
+      });
       const win = (k: number) => {
         const out: number[] = [];
         for (let j = Math.max(0, k - 2); j <= Math.min(path.length - 1, k + 2); j++) out.push(j);
         return out;
       };
       const peak = ground.map((_, k) => Math.max(...win(k).map((j) => ground[j])));
+      const fromCompiler = c.rimL && c.rimR ? rimDense[side > 0 ? 0 : 1] : null;
       const top = path.map((p, k) => {
+        if (fromCompiler) return fromCompiler[k];
         const g = win(k).reduce((sum, j) => sum + peak[j], 0) / win(k).length;
         const depth = g - p[2];
         return Math.max(g, ground[k]) + 0.15 + 0.75 * Math.min(1, Math.max(0, depth / 2));
@@ -1283,12 +1298,16 @@ export function buildGround(
       const inner = side * half;
       // Per point: wall thickness (to the next trench's floor in a narrow
       // median) or none (the other trench draws the median wall).
+      const medianFloor = path.map((p) => p[2]);
       const thick = path.map((_, k) => {
         const len = Math.hypot(n[k][0], n[k][1]) || 1;
         const u: [number, number] = [(n[k][0] / len) * side, (n[k][1] / len) * side];
         const o = across(ci, off(k, side * half), u);
         if (!o) return 0.4;
-        return o.j < ci ? 0 : Math.max(0.4, o.gap);
+        if (o.j < ci) return 0;
+        // The median wall goes down to the deeper of the two floors.
+        medianFloor[k] = Math.min(path[k][2], o.floor);
+        return Math.max(0.4, o.gap);
       });
       for (let k = 1; k < path.length; k++) {
         if (thick[k - 1] === 0 && thick[k] === 0) continue;
@@ -1300,7 +1319,7 @@ export function buildGround(
         };
         const outer = side * (half + 0.4);
         const ks = [k - 1, k];
-        const zb = ks.map((i) => path[i][2] - 0.3);
+        const zb = ks.map((i) => medianFloor[i] - 0.3);
         const zt = ks.map((i) => top[i]);
         const len = Math.hypot(n[k][0], n[k][1]) || 1;
         const nn: V = [n[k][0] / len, n[k][1] / len, 0];
