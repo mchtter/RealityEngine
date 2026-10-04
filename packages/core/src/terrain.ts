@@ -154,6 +154,8 @@ export class RoadSurface {
   constructor(
     roads: SurfaceRoad[],
     private readonly shoulder = 4,
+    /** Street land beyond the corridors (thin gaps between two sidewalks, filled). */
+    private readonly fill?: { contains(x: number, y: number): boolean },
   ) {
     for (const road of roads) {
       for (let k = 1; k < road.points.length; k++) {
@@ -209,6 +211,7 @@ export class RoadSurface {
       sumZ += w * z;
     }
     if (cover <= 0) return null;
+    if (cover < 1 && this.fill?.contains(x, y)) cover = 1;
     return { z: onRoad ? onRoad.z : sumZ / sumW, w: cover, carriage: onRoad !== null };
   }
 
@@ -342,4 +345,28 @@ export function raiseLandAboveSea(
     });
   }
   for (let idx = 0; idx < mark.length; idx++) if (mark[idx]) t.heights[idx] = floor;
+}
+
+/**
+ * Levels the terrain inside street fill polygons (gaps between sidewalks
+ * turned into sidewalk) to the street surface, like the corridors.
+ */
+export function conformTerrainToFill(t: TerrainGrid, surface: RoadSurface, fill: Polygon[]): void {
+  for (const poly of fill) {
+    let b = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const q of poly.outer)
+      b = [Math.min(b[0], q[0]), Math.min(b[1], q[1]), Math.max(b[2], q[0]), Math.max(b[3], q[1])];
+    const i0 = Math.max(0, Math.floor((b[0] - t.minX) / t.cellSize) - 1);
+    const i1 = Math.min(t.cols - 1, Math.ceil((b[2] - t.minX) / t.cellSize) + 1);
+    const j0 = Math.max(0, Math.floor((b[1] - t.minY) / t.cellSize) - 1);
+    const j1 = Math.min(t.rows - 1, Math.ceil((b[3] - t.minY) / t.cellSize) + 1);
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const x = t.minX + i * t.cellSize;
+        const y = t.minY + j * t.cellSize;
+        const s = surface.sample(x, y);
+        if (s && s.w >= 1) t.heights[j * t.cols + i] = Math.round(s.z * 100) / 100;
+      }
+    }
+  }
 }

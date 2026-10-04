@@ -38,8 +38,18 @@ export function buildBlocks(
   corridor: Polygon[],
   roads: RoadIndex,
   globalOffset: Vec2 = [0, 0],
-): { blocks: CityBlock[]; islands: Polygon[] } {
-  const pieces = difference([region], corridor);
+): { blocks: CityBlock[]; islands: Polygon[]; slivers: Polygon[] } {
+  // Land narrower than 3 m between two street corridors (where two roads meet
+  // at a shallow angle, a sidewalk ends against another) is street, not a
+  // block: it joins the sidewalks so they run on without a wedge between them.
+  const pieces: Polygon[] = [];
+  const slivers: Polygon[] = [];
+  for (const p of difference([region], corridor)) {
+    const opened = intersection(offset(offset([p], -1.5, 'round'), 1.5, 'round'), [p]);
+    const thin = difference([p], opened).filter((q) => polygonArea(q) > 0.05);
+    slivers.push(...thin);
+    pieces.push(...opened);
+  }
   const blocks: CityBlock[] = [];
   const islands: Polygon[] = [];
   for (const p of pieces) {
@@ -68,7 +78,7 @@ export function buildBlocks(
       syntheticBuildings: 0,
     });
   }
-  return { blocks, islands };
+  return { blocks, islands, slivers };
 }
 
 export interface InfillContext {

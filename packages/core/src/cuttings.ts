@@ -1,5 +1,5 @@
 import { closestOnSegment, dist, normalize, pointInRing, samplePolyline, sub } from './geo';
-import { bufferPolyline, union } from './poly';
+import { bufferPolyline, offset, union } from './poly';
 import { isVehicular } from './roads';
 import { terrainHeightAt } from './terrain';
 import type {
@@ -33,6 +33,12 @@ const HILL_RISE = 8;
 const WALL_GAP = 0.6;
 /** Clear height of a tunnel tube above the road. */
 export const TUNNEL_HEIGHT = 5.4;
+/**
+ * Twin ramps closer than this (footprint to footprint, metres) share one
+ * solid median wall: the strip between them is too narrow for the 4 m
+ * terrain grid, which sagged into both trenches there as a grass wedge.
+ */
+export const TWIN_MEDIAN = 4;
 /** Maintenance walkway each side inside a tube. */
 const WALKWAY = 1.1;
 
@@ -259,7 +265,11 @@ export function buildCuttings(
     portals,
     tunnels,
     cut: {
-      trenches: trenches.length ? union(trenches) : [],
+      // Closed by TWIN_MEDIAN / 2: twin ramps closer than TWIN_MEDIAN become
+      // one footprint, the strip between them goes under their median wall.
+      trenches: trenches.length
+        ? offset(offset(union(trenches), TWIN_MEDIAN / 2, 'miter'), -TWIN_MEDIAN / 2, 'miter')
+        : [],
       lids: lids.length ? union(lids) : [],
       floor: changed(floorGrid),
       lid: changed(lidGrid),
@@ -401,6 +411,85 @@ function setAlong(
       const idx = j * t.cols + i;
       const z = height(best.s, best.c);
       t.heights[idx] = sign < 0 ? Math.min(t.heights[idx], z) : Math.max(t.heights[idx], z);
+    }
+  }
+}
+
+/**
+ * Wall tops of every trench and the ground beside them made to agree: the top
+ * is the street level just beyond the wall (street surface where there is
+ * one, with the sidewalk's kerb lift, the terrain elsewhere — never another
+ * trench's floor) plus a parapet, smoothed along the wall; then terrain nodes
+ * within 1.5 cells outside the wall are lowered to 0.1 m below the top, so no
+ * ground of this or a neighbouring tile rises over the wall.
+ */
+export function settleTrenchRims(
+  cuttings: Cutting[],
+  t: TerrainGrid,
+  street: (x: number, y: number) => number | null,
+  kerbLift: number,
+): void {
+  for (const c of cuttings) {
+    const p = c.path;
+    const half = c.width / 2;
+    const n = p.map((_, k) => {
+      const a = p[Math.max(0, k - 1)];
+      const b = p[Math.min(p.length - 1, k + 1)];
+      const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      return [-(b[1] - a[1]) / l, (b[0] - a[0]) / l] as Vec2;
+    });
+    const rims: number[][] = [];
+    for (const side of [1, -1]) {
+      const beyond = p.map((q, k) => {
+        const x = q[0] + n[k][0] * side * (half + 0.5);
+        const y = q[1] + n[k][1] * side * (half + 0.5);
+        const s = street(x, y);
+        return Math.max(q[2] + 0.3, s !== null ? s + kerbLift : terrainHeightAt(t, x, y));
+      });
+      // Highest within ±2 points, then averaged: smooth and never below the ground.
+      const win = (k: number) => {
+        const out: number[] = [];
+        for (let j = Math.max(0, k - 2); j <= Math.min(p.length - 1, k + 2); j++) out.push(j);
+        return out;
+      };
+      const peak = beyond.map((_, k) => Math.max(...win(k).map((j) => beyond[j])));
+      rims.push(
+        p.map((q, k) => {
+          const g = Math.max(win(k).reduce((s, j) => s + peak[j], 0) / win(k).length, beyond[k]);
+          const depth = g - q[2];
+          return Math.round((g + 0.15 + 0.75 * Math.min(1, Math.max(0, depth / 2))) * 100) / 100;
+        }),
+      );
+    }
+    c.rimL = rims[0];
+    c.rimR = rims[1];
+    // Ground beside the walls kept below their tops.
+    const pts = p.map((q) => [q[0], q[1]] as Vec2);
+    const reach = half + 0.4 + t.cellSize * 1.5;
+    let b = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const q of pts)
+      b = [Math.min(b[0], q[0]), Math.min(b[1], q[1]), Math.max(b[2], q[0]), Math.max(b[3], q[1])];
+    const i0 = Math.max(0, Math.floor((b[0] - reach - t.minX) / t.cellSize));
+    const i1 = Math.min(t.cols - 1, Math.ceil((b[2] + reach - t.minX) / t.cellSize));
+    const j0 = Math.max(0, Math.floor((b[1] - reach - t.minY) / t.cellSize));
+    const j1 = Math.min(t.rows - 1, Math.ceil((b[3] + reach - t.minY) / t.cellSize));
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const q: Vec2 = [t.minX + i * t.cellSize, t.minY + j * t.cellSize];
+        let best = { d: Infinity, k: 0, side: 1 };
+        for (let k = 1; k < pts.length; k++) {
+          const cl = closestOnSegment(q, pts[k - 1], pts[k]);
+          if (cl.d < best.d) {
+            const ab = sub(pts[k], pts[k - 1]);
+            const cross = ab[0] * (q[1] - pts[k - 1][1]) - ab[1] * (q[0] - pts[k - 1][0]);
+            best = { d: cl.d, k: cl.t < 0.5 ? k - 1 : k, side: cross >= 0 ? 1 : -1 };
+          }
+        }
+        if (best.d < half || best.d > reach) continue;
+        const rim = (best.side > 0 ? rims[0] : rims[1])[best.k];
+        const idx = j * t.cols + i;
+        t.heights[idx] = Math.min(t.heights[idx], rim - 0.1);
+      }
     }
   }
 }

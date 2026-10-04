@@ -17,6 +17,7 @@ import type {
   TerrainGrid,
   Vec2,
 } from './types';
+import { FENCE_WIDTH } from './validate';
 
 /**
  * Ground use the source data describes but nothing drew: car parks (stall
@@ -469,7 +470,10 @@ export function gardenWalls(
         const b = run[0].b;
         const st = styleOf(b);
         if (st) {
-          const pts = run.map((s) => s.p);
+          // Fence centre line half its width (+5 cm) inside the lot: the body
+          // stays off the sidewalk (samples sit 0.15 m inside the block edge).
+          const shift = FENCE_WIDTH[st.style] / 2 + 0.05 - 0.15;
+          const pts = run.map((s) => add(s.p, scale(s.inward, shift)));
           // Gate: the run point nearest the building's front edge midpoint.
           const front = b.facades.find((f) => f.front);
           const fr = b.footprint.outer;

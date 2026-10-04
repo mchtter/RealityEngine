@@ -1,6 +1,6 @@
-import { add, dist, normalize, perp, polylineLength, scale, sub } from './geo';
+import { add, closestOnSegment, dist, normalize, perp, polylineLength, scale, sub } from './geo';
 import type { SourcePoint, SourceRoad } from './osm';
-import { bufferPolylinePaths, difference, intersection, unionPaths } from './poly';
+import { bufferPolylinePaths, clean, difference, intersection, union, unionPaths } from './poly';
 import { RoadIndex } from './spatial';
 import type {
   Crossing,
@@ -174,6 +174,154 @@ export interface RoadSurfaces {
   carriageway: Polygon[];
   /** Carriageway + sidewalks of block-forming roads (city block cutter). */
   corridor: Polygon[];
+  /**
+   * Where two corridor roads meet end to end with sidewalks of different
+   * width, the narrower one widens to the other over its first metres (no
+   * step in the kerb line); these pieces are street fill (see RoadSurface).
+   */
+  tapers: Polygon[];
+}
+
+/** Length (m) over which a sidewalk width step is eased. */
+const TAPER = 12;
+
+function kerbTapers(roads: Road[]): Polygon[] {
+  const key = (p: Vec2) => `${Math.round(p[0] * 2)},${Math.round(p[1] * 2)}`;
+  const ends = new Map<string, { road: Road; start: boolean }[]>();
+  for (const r of roads) {
+    const c = r.centerline;
+    for (const [p, start] of [
+      [c[0], true],
+      [c[c.length - 1], false],
+    ] as [Vec2, boolean][]) {
+      const k = key(p);
+      ends.set(k, [...(ends.get(k) ?? []), { road: r, start }]);
+    }
+  }
+  const out: Polygon[] = [];
+  for (const list of ends.values()) {
+    if (list.length !== 2) continue;
+    const half = (r: Road) => r.width / 2 + r.sidewalk;
+    const [a, b] = list;
+    if (Math.abs(half(a.road) - half(b.road)) <= 0.3) continue;
+    const [wide, narrow] = half(a.road) > half(b.road) ? [a, b] : [b, a];
+    const c = narrow.start ? narrow.road.centerline : [...narrow.road.centerline].reverse();
+    const len = Math.min(TAPER, polylineLength(c) / 2);
+    if (len < 2) continue;
+    const w0 = half(wide.road);
+    const w1 = half(narrow.road);
+    const left: Vec2[] = [];
+    const right: Vec2[] = [];
+    let walked = 0;
+    for (let k = 0; k < c.length - 1 && walked <= len; k++) {
+      const p0 = c[k];
+      const p1 = c[k + 1];
+      const seg = dist(p0, p1);
+      if (seg < 1e-6) continue;
+      const d = normalize(sub(p1, p0));
+      const n = perp(d);
+      for (let s = 0; s < seg && walked + s <= len; s += 1) {
+        const x = (walked + s) / len;
+        const h = w1 + (w0 - w1) * (1 - x * x * (3 - 2 * x));
+        const p = add(p0, scale(d, s));
+        left.push(add(p, scale(n, h)));
+        right.push(add(p, scale(n, -h)));
+      }
+      walked += seg;
+    }
+    if (left.length < 2) continue;
+    out.push({ outer: [...left, ...right.reverse()], holes: [] });
+  }
+  return out;
+}
+
+/** Widest walkway a bridge deck carries, each side (metres). */
+export const BRIDGE_WALKWAY = 1.5;
+
+/** Half width of a bridge deck: carriageway plus walkways. */
+export function deckHalf(r: Road): number {
+  return r.width / 2 + Math.min(r.sidewalk, BRIDGE_WALKWAY);
+}
+
+/**
+ * Streets that run on onto a narrower bridge deck: their sidewalks narrow to
+ * the deck's walkways over the last TAPER m and the round end cap is trimmed
+ * to the deck's width (a 0.7 m kerb step stood beside the barrier). The part
+ * of the cap under the deck stays corridor, so no block reaches under the
+ * ramp. Returns the roads and the strips cut off their corridor.
+ */
+function bridgeLandings(
+  ground: Road[],
+  bridges: Road[],
+  key: (p: Vec2) => string,
+): { roads: Set<Road>; cut: Polygon[] } {
+  const roads = new Set<Road>();
+  const cut: Polygon[] = [];
+  const decks = new Map<string, Road>();
+  for (const b of bridges)
+    for (const p of [b.centerline[0], b.centerline[b.centerline.length - 1]]) decks.set(key(p), b);
+  if (!decks.size) return { roads, cut };
+  const groundEnds = new Map<string, number>();
+  for (const r of ground)
+    for (const p of [r.centerline[0], r.centerline[r.centerline.length - 1]])
+      groundEnds.set(key(p), (groundEnds.get(key(p)) ?? 0) + 1);
+  for (const r of ground) {
+    const half = r.width / 2 + r.sidewalk;
+    for (const start of [true, false]) {
+      const c = start ? r.centerline : [...r.centerline].reverse();
+      const p = c[0];
+      const deck = decks.get(key(p));
+      // Only a street that alone runs on onto the deck (not a junction there).
+      if (!deck || groundEnds.get(key(p)) !== 1) continue;
+      const crossing = ground.some(
+        (o) =>
+          o !== r &&
+          o.centerline.some(
+            (q, k) => k > 0 && closestOnSegment(p, o.centerline[k - 1], q).d < half,
+          ),
+      );
+      if (crossing) continue;
+      const w1 = Math.max(r.width / 2 + 0.3, deckHalf(deck));
+      if (half - w1 <= 0.3) continue;
+      const len = Math.min(TAPER, polylineLength(c) / 2);
+      if (len < 2) continue;
+      roads.add(r);
+      const d0 = normalize(sub(c[0], c[1]));
+      for (const side of [1, -1]) {
+        // The cap beyond the end, beside the deck.
+        const n0 = scale(perp(d0), side);
+        const reach = half + 0.5;
+        cut.push({
+          outer: [
+            add(p, scale(n0, w1)),
+            add(add(p, scale(n0, w1)), scale(d0, reach)),
+            add(add(p, scale(n0, reach)), scale(d0, reach)),
+            add(p, scale(n0, reach)),
+          ],
+          holes: [],
+        });
+        const inner: Vec2[] = [];
+        const outer: Vec2[] = [];
+        let walked = 0;
+        for (let k = 0; k < c.length - 1 && walked <= len; k++) {
+          const seg = dist(c[k], c[k + 1]);
+          if (seg < 1e-6) continue;
+          const d = normalize(sub(c[k + 1], c[k]));
+          const n = scale(perp(d), side);
+          for (let s = 0; s < seg && walked + s <= len; s += 1) {
+            const x = (walked + s) / len;
+            const h = w1 + (half - w1) * x * x * (3 - 2 * x);
+            const q = add(c[k], scale(d, s));
+            inner.push(add(q, scale(n, h)));
+            outer.push(add(q, scale(n, half + 0.5)));
+          }
+          walked += seg;
+        }
+        if (inner.length >= 2) cut.push({ outer: [...inner, ...outer.reverse()], holes: [] });
+      }
+    }
+  }
+  return { roads, cut };
 }
 
 export function buildSurfaces(roads: Road[], clipTo: Polygon[]): RoadSurfaces {
@@ -185,6 +333,11 @@ export function buildSurfaces(roads: Road[], clipTo: Polygon[]): RoadSurfaces {
     roads
       .filter((r) => r.grade === 'tunnel')
       .flatMap((r) => [key(r.centerline[0]), key(r.centerline[r.centerline.length - 1])]),
+  );
+  const landings = bridgeLandings(
+    ground.filter((r) => r.formsBlocks && isVehicular(r.cls)),
+    roads.filter((r) => r.grade === 'bridge'),
+    key,
   );
   const buffer = (r: Road, half: number) => {
     const c = r.centerline;
@@ -204,9 +357,8 @@ export function buildSurfaces(roads: Road[], clipTo: Polygon[]): RoadSurfaces {
   const pathPaths = ground
     .filter((r) => r.cls === 'footway' || r.cls === 'steps' || r.cls === 'cycleway')
     .flatMap((r) => bufferPolylinePaths(r.centerline, r.width / 2));
-  const corridorPaths = ground
-    .filter((r) => r.formsBlocks)
-    .flatMap((r) => buffer(r, r.width / 2 + r.sidewalk));
+  const corridorOf = (r: Road) => buffer(r, r.width / 2 + r.sidewalk);
+  const corridorPaths = ground.filter((r) => r.formsBlocks).flatMap(corridorOf);
 
   const carriageway = intersection(unionPaths(asphaltPaths), clipTo);
   const blockRoads = ground.filter((r) => r.formsBlocks && isVehicular(r.cls));
@@ -215,7 +367,23 @@ export function buildSurfaces(roads: Road[], clipTo: Polygon[]): RoadSurfaces {
     clipTo,
   );
   const paving = difference(intersection(unionPaths(pavingPaths), clipTo), carriageway);
-  const corridor = intersection(unionPaths(corridorPaths), clipTo);
+  const tapers = kerbTapers(ground.filter((r) => r.formsBlocks));
+  // Cleaned: round end caps meeting at a node leave needle spikes (two
+  // vertices a few cm apart) in the kerb line.
+  // Bridge landings trim only their own street: another corridor under a
+  // trimmed strip (a slip road alongside) stays.
+  const kept = landings.cut.length
+    ? union(
+        difference(union(unionPaths(corridorPaths), tapers), landings.cut),
+        intersection(
+          unionPaths(
+            ground.filter((r) => r.formsBlocks && !landings.roads.has(r)).flatMap(corridorOf),
+          ),
+          landings.cut,
+        ),
+      )
+    : union(unionPaths(corridorPaths), tapers);
+  const corridor = clean(intersection(kept, clipTo), 0.15);
   const sidewalks = difference(corridor, [...carriageway, ...paving]);
   const paths = difference(intersection(unionPaths(pathPaths), clipTo), [
     ...carriageway,
@@ -232,6 +400,7 @@ export function buildSurfaces(roads: Road[], clipTo: Polygon[]): RoadSurfaces {
     ],
     carriageway: blockCarriage,
     corridor,
+    tapers: intersection(union(tapers), clipTo),
   };
 }
 

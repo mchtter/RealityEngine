@@ -450,6 +450,13 @@ export interface Cutting {
   lanes: number;
   oneway: boolean;
   edgeLines: boolean;
+  /**
+   * Retaining wall top per path point, left / right: the street level just
+   * beyond the wall plus a parapet. Set by the compiler, which also keeps the
+   * ground beside the wall below it (in every tile the trench reaches).
+   */
+  rimL?: number[];
+  rimR?: number[];
 }
 
 /** Concrete headwall around a tunnel mouth. */
@@ -525,6 +532,12 @@ export interface CityModel {
   terrainCut?: TerrainCut;
   /** Garden walls, fences and hedges. */
   fences?: Fence[];
+  /**
+   * Street land outside the road corridors: gaps narrower than 3 m between two
+   * sidewalks, drawn as sidewalk and levelled to the street surface (see
+   * RoadSurface fill).
+   */
+  streetFill?: Polygon[];
   areas: Area[];
   blocks: CityBlock[];
   buildings: Building[];

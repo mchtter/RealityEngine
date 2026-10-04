@@ -8,7 +8,7 @@ import {
   scatter,
 } from './blocks';
 import { layoutFacades, makeBuilding, placeObservedBuildings } from './buildings';
-import { CutGround, buildCuttings } from './cuttings';
+import { CutGround, buildCuttings, settleTrenchRims } from './cuttings';
 import {
   LocalProjection,
   closestOnSegment,
@@ -22,6 +22,7 @@ import {
   sub,
 } from './geo';
 import { isGraded, transferGrades } from './grade';
+import { GroundModel, SURFACE_LIFT } from './ground-model';
 import { type SourceFeatures, type SourceRoad, mergeFeatures, readFeatures, readOsm } from './osm';
 import { bufferPolyline, difference, intersection, offset, union } from './poly';
 import {
@@ -40,11 +41,19 @@ import {
   buildMarkings,
   buildSurfaces,
   classifyRoads,
+  deckHalf,
   findJunctions,
   isVehicular,
 } from './roads';
-import { GridIndex, PolygonIndex, RoadIndex } from './spatial';
-import { buildTerrain, conformTerrainToRoads, raiseLandAboveSea, terrainHeightAt } from './terrain';
+import { GridIndex, PolygonIndex, PolygonSet, RoadIndex } from './spatial';
+import {
+  RoadSurface,
+  buildTerrain,
+  conformTerrainToFill,
+  conformTerrainToRoads,
+  raiseLandAboveSea,
+  terrainHeightAt,
+} from './terrain';
 import { type Projection, TileProjection } from './tiles';
 import type {
   Area,
@@ -61,13 +70,15 @@ import type {
   TerrainGrid,
   Vec2,
   Vec3,
+  SurfaceKind,
 } from './types';
+import { SUPPORTS, fenceIndex, inFence } from './validate';
 
 /**
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '34';
+export const COMPILER_VERSION = '41';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -264,7 +275,45 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   ];
 
   // City blocks and infill.
-  const { blocks, islands } = buildBlocks(regionPoly, net.corridor, roadIndex, g);
+  const blocked = buildBlocks(regionPoly, net.corridor, roadIndex, g);
+  const { blocks, islands } = blocked;
+  // Street fill: gaps between sidewalks and kerb-width tapers.
+  const slivers = [...blocked.slivers, ...net.tapers];
+  // Gaps between sidewalks become sidewalk, levelled to the street surface.
+  if (slivers.length) {
+    const sidewalk = net.surfaces.find((sf) => sf.kind === 'sidewalk');
+    if (sidewalk) sidewalk.polygons = union(sidewalk.polygons, slivers);
+    net.corridor = union(net.corridor, slivers);
+    conformTerrainToFill(
+      terrain,
+      new RoadSurface(
+        conformed.map((r) => ({
+          points: r.centerline,
+          profile: r.profile ?? [],
+          halfWidth: r.width / 2 + r.sidewalk,
+          carriage: r.width / 2,
+        })),
+        4,
+        new PolygonSet(slivers),
+      ),
+      slivers,
+    );
+  }
+  // The street surface (what the viewer drapes the street on): trench wall
+  // tops and bridge ends meet it.
+  const streetSurface = new RoadSurface(
+    conformed.map((r) => ({
+      points: r.centerline,
+      profile: r.profile ?? [],
+      halfWidth: r.width / 2 + r.sidewalk,
+      carriage: r.width / 2,
+    })),
+    4,
+    slivers.length ? new PolygonSet(slivers) : undefined,
+  );
+  const streetAt = (x: number, y: number) => streetSurface.heightAt(x, y);
+  // Trench wall tops from the street beside them; the ground there kept below.
+  settleTrenchRims(cuttings, terrain, streetAt, SURFACE_LIFT.sidewalk);
   const pathSurface = net.surfaces.find((sf) => sf.kind === 'path')?.polygons ?? [];
   const serviceRoads = roads
     .filter((r) => r.cls === 'service' || r.cls === 'track')
@@ -361,7 +410,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   props = placement.props;
   props.push(...buildingDetails(buildings));
 
-  let bridges = buildBridges(roads, terrain, roadIndex, cutGround);
+  let bridges = buildBridges(roads, terrain, roadIndex, cutGround, streetAt);
   props = clearOfBridges(props, bridges);
   // Paved / gravel yards around buildings (outside the hard ground above); the
   // rest of each block stays green.
@@ -391,10 +440,28 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   }
 
   let outTerrain = terrain;
+  let outFill = slivers;
   let outCut = cut;
+  // Trench rim: street surfaces stop at the outer face of the retaining walls
+  // (trench footprint + 0.4 m, square at the open end where the ramp road
+  // carries on), so a sidewalk never runs into a wall.
+  const wallBands = cuttings.flatMap((c) =>
+    bufferPolyline(
+      c.path.map((q) => [q[0], q[1]] as Vec2),
+      c.width / 2 + 0.4,
+      false,
+    ),
+  );
+  const cutStreet = (kind: SurfaceKind, polys: Polygon[]) =>
+    wallBands.length && ['asphalt', 'sidewalk', 'island', 'paving'].includes(kind)
+      ? difference(polys, wallBands)
+      : polys;
   let outSurfaces = [
-    ...net.surfaces.map((sf) => ({ kind: sf.kind, polygons: difference(sf.polygons, mouths) })),
-    { kind: 'island' as const, polygons: islands },
+    ...net.surfaces.map((sf) => ({
+      kind: sf.kind,
+      polygons: cutStreet(sf.kind, difference(sf.polygons, mouths)),
+    })),
+    { kind: 'island' as const, polygons: cutStreet('island', islands) },
     { kind: 'yard' as const, polygons: yards },
     ...hard,
   ];
@@ -442,6 +509,14 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     // at deck vertices so the neighbour's part starts exactly where this ends.
     bridges = bridges.flatMap((br) => clipBridgeToCore(br, inCore));
     outTerrain = cropTerrain(terrain, core);
+    outFill = intersection(slivers, [
+      regionRect({
+        minX: core.minX - 8,
+        minY: core.minY - 8,
+        maxX: core.maxX + 8,
+        maxY: core.maxY + 8,
+      }),
+    ]);
     const onGrid = (q: Vec3) =>
       q[0] >= core.minX - 0.01 &&
       q[0] <= core.maxX + 0.01 &&
@@ -463,6 +538,28 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     };
   }
 
+  // Everything standing on the ground takes its height from the one ground
+  // model the viewer draws with (sidewalk at kerb height, trench floor, lid …).
+  const groundModel = new GroundModel({
+    streetFill: outFill,
+    terrain: outTerrain,
+    terrainCut: outCut,
+    roads: outRoads,
+    surfaces: outSurfaces,
+    areas: outAreas,
+  });
+  // Generated props keep to their class's supports (a car on a lot's corner
+  // under the sidewalk, a tree on a pond …): those that do not are left out.
+  const fenceSegs = fenceIndex(outFences);
+  props = props.filter((p) => {
+    if (p.buildingId) return true;
+    if (p.provenance !== 'observed' && inFence(p, fenceSegs)) return false;
+    const s = groundModel.surfaceAt(p.position[0], p.position[1]);
+    p.position[2] = s.z;
+    const allowed = SUPPORTS[p.kind];
+    return p.provenance === 'observed' || !allowed || allowed.has(s.support);
+  });
+
   const observedOut = buildings.filter((b) => b.source !== 'synthetic');
   const count = (pred: (p: Prop) => boolean) => props.filter(pred).length;
   return {
@@ -477,6 +574,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     surfaces: outSurfaces,
     markings: outMarkings,
     fences: outFences,
+    ...(outFill.length ? { streetFill: outFill } : {}),
     crossings: outCrossings,
     junctions: outJunctions,
     bridges,
@@ -696,8 +794,13 @@ function buildBridges(
   terrain: CityModel['terrain'],
   roadIndex: RoadIndex,
   ground: CutGround,
+  /** Street surface height (null off the street corridors). */
+  streetAt: (x: number, y: number) => number | null,
 ): Bridge[] {
   const bridges = roads.filter((r) => r.grade === 'bridge');
+  // A deck lands on the street surface (levelled across the carriageway),
+  // not on the terrain under it: no step where the two meet.
+  const landAt = (p: Vec2) => streetAt(p[0], p[1]) ?? terrainHeightAt(terrain, p[0], p[1]);
   // Chain ends where other bridges meet (a Y split) stay up; ends on the ground road ramp down.
   const key = (p: Vec2) => `${Math.round(p[0] * 2)},${Math.round(p[1] * 2)}`;
   const ends = new Map<string, number>();
@@ -736,12 +839,17 @@ function buildBridges(
     const startInner = inner(pts[0]);
     const endInner = inner(pts[pts.length - 1]);
     const endZ = (p: Vec2, isInner: boolean) =>
-      terrainHeightAt(terrain, p[0], p[1]) + (isInner ? clearance : 0);
+      isInner ? terrainHeightAt(terrain, p[0], p[1]) + clearance : landAt(p);
     const za = endZ(pts[0], startInner);
     const zb = endZ(pts[pts.length - 1], endInner);
     const at: number[] = [0];
     for (let k = 1; k < pts.length; k++) at.push(at[k - 1] + dist(pts[k - 1], pts[k]));
-    const grounds = pts.map((p) => terrainHeightAt(terrain, p[0], p[1]));
+    // Ground under each vertex; within the ramps, the street surface the deck lands on.
+    const grounds = pts.map((p, k) =>
+      (!startInner && at[k] < 25) || (!endInner && total - at[k] < 25)
+        ? landAt(p)
+        : terrainHeightAt(terrain, p[0], p[1]),
+    );
     // A short bridge spans straight between its ground ends. A long viaduct
     // follows the ground (averaged over ±60 m) at clearance height: that depends
     // only on nearby terrain, so neighbouring tiles compute the same deck.
@@ -784,10 +892,15 @@ function buildBridges(
       return [end[0] + (dx / l) * by, end[1] + (dy / l) * by, end[2]];
     };
     if (path.length >= 2) {
-      path.unshift(extend(path[0], path[1], startInner ? 1 : 1.5));
-      path.push(extend(path[path.length - 1], path[path.length - 2], endInner ? 1 : 1.5));
+      const head = extend(path[0], path[1], startInner ? 1 : 1.5);
+      const tail = extend(path[path.length - 1], path[path.length - 2], endInner ? 1 : 1.5);
+      // Run on under the road surface at its own height there.
+      if (!startInner) head[2] = landAt([head[0], head[1]]);
+      if (!endInner) tail[2] = landAt([tail[0], tail[1]]);
+      path.unshift(head);
+      path.push(tail);
     }
-    const widthOf = (r: Road) => r.width + 2 * Math.min(r.sidewalk, 1.5);
+    const widthOf = (r: Road) => 2 * deckHalf(r);
     const bridge: Bridge = {
       id: `br${first.id}`,
       roadId: first.id,

@@ -25,5 +25,14 @@ export {
   rect as rectPolygon,
   union as unionPolygons,
 } from './poly';
-export { CutGround } from './cuttings';
+export { CutGround, TWIN_MEDIAN } from './cuttings';
+export { GroundModel, STREET_SURFACES, SURFACE_LIFT, type Support } from './ground-model';
+export {
+  FENCE_WIDTH,
+  RULES,
+  barrierOnRoad,
+  type RuleId,
+  type ValidationReport,
+  validateCity,
+} from './validate';
 export { barrelRise } from './styles';

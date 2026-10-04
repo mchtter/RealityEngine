@@ -154,3 +154,63 @@ export class PolygonIndex<T> {
     return null;
   }
 }
+
+/**
+ * Point-in-polygons for large polygon sets (the merged sidewalks of a tile
+ * have thousands of vertices): every ring edge is filed in the 2 m rows it
+ * spans; a query casts a ray to the nearer side of the set and counts only
+ * the edges of its own row (even-odd over all rings, holes included).
+ */
+export class PolygonSet {
+  private readonly rows = new Map<number, number[]>();
+  private readonly edges: number[] = [];
+  private readonly minX: number;
+  private readonly maxX: number;
+  private static readonly ROW = 2;
+
+  constructor(polys: Polygon[]) {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (const p of polys) {
+      for (const ring of [p.outer, ...p.holes]) {
+        for (let k = 0; k < ring.length; k++) {
+          const a = ring[k];
+          const b = ring[(k + 1) % ring.length];
+          if (a[1] === b[1]) continue;
+          const id = this.edges.length / 4;
+          this.edges.push(a[0], a[1], b[0], b[1]);
+          minX = Math.min(minX, a[0], b[0]);
+          maxX = Math.max(maxX, a[0], b[0]);
+          const r0 = Math.floor(Math.min(a[1], b[1]) / PolygonSet.ROW);
+          const r1 = Math.floor(Math.max(a[1], b[1]) / PolygonSet.ROW);
+          for (let r = r0; r <= r1; r++) {
+            const list = this.rows.get(r);
+            if (list) list.push(id);
+            else this.rows.set(r, [id]);
+          }
+        }
+      }
+    }
+    this.minX = minX;
+    this.maxX = maxX;
+  }
+
+  contains(x: number, y: number): boolean {
+    if (x < this.minX || x > this.maxX) return false;
+    const list = this.rows.get(Math.floor(y / PolygonSet.ROW));
+    if (!list) return false;
+    const right = this.maxX - x < x - this.minX;
+    let inside = false;
+    const e = this.edges;
+    for (const id of list) {
+      const ax = e[id * 4];
+      const ay = e[id * 4 + 1];
+      const bx = e[id * 4 + 2];
+      const by = e[id * 4 + 3];
+      if (ay > y === by > y) continue;
+      const cx = ax + ((y - ay) * (bx - ax)) / (by - ay);
+      if (right ? cx > x : cx < x) inside = !inside;
+    }
+    return inside;
+  }
+}

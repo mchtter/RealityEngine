@@ -53,6 +53,11 @@ const OBSERVED_KINDS: [(t: Record<string, string>) => boolean, PropKind][] = [
 export const carriageReach = (r: Road): number =>
   r.grade === 'ground' && isVehicular(r.cls) ? r.width / 2 + 0.3 : 0;
 
+/** Least distance from a pole to the kerb edge (metres). */
+export const POLE_KERB = 0.4;
+/** Where a pole may not stand: within POLE_KERB of a carriageway (the kerb rule). */
+export const poleReach = (r: Road): number => (carriageReach(r) > 0 ? r.width / 2 + POLE_KERB : 0);
+
 /**
  * Whole street corridor of a ground-level road: carriageway, sidewalks, paths.
  * Under a bridge deck it is the deck plus a tree crown, so no park tree grows
@@ -336,8 +341,18 @@ export function decorateStreets(ctx: PropContext, existing: Prop[]): Prop[] {
         const n = scale(perp(s.dir), side);
         const along = both && side < 0 ? spacing / 2 : 0;
         const base = add(s.point, scale(s.dir, along));
-        const p = add(base, scale(n, road.width / 2 + 0.45));
-        if (nearJunction(ctx, p, 3) || blocked(p, 2)) continue;
+        // At the kerb, or as far out on the sidewalk as it takes to keep
+        // clear of every carriageway (a bend's inside, a road alongside).
+        let p: Vec2 | null = null;
+        for (const o of [0.45, 0.8, 1.2, 1.6]) {
+          if (o > Math.max(0.45, road.sidewalk - 0.3)) break;
+          const q = add(base, scale(n, road.width / 2 + o));
+          if (ctx.roadIndex.covering(q, poleReach) === null) {
+            p = q;
+            break;
+          }
+        }
+        if (!p || nearJunction(ctx, p, 3) || blocked(p, 2)) continue;
         if (observedLamps.some((l) => dist([l.position[0], l.position[1]], p) < 15)) continue;
         out.push({
           id: `l${road.id}_${Math.round(s.at)}_${side}`,
