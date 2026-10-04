@@ -1,7 +1,7 @@
 export * from './types';
-export { COMPILER_VERSION, compileCity } from './compile';
-export { terrainHeightAt } from './terrain';
-export { LocalProjection, orientedBox, ringArea } from './geo';
+export { COMPILER_VERSION, compileCity, deckPriority } from './compile';
+export { RoadSurface, terrainHeightAt } from './terrain';
+export { LocalProjection, orientedBox, pointInRing, ringArea } from './geo';
 export { Rng, hashString } from './random';
 export { triangulate } from './triangulate';
 export {
@@ -18,6 +18,8 @@ export {
   utmZoneOf,
 } from './tiles';
 export {
+  bufferPolyline,
+  offset as offsetPolygons,
   difference as subtractPolygons,
   intersection as clipPolygons,
   rect as rectPolygon,

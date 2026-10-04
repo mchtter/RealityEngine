@@ -1,6 +1,7 @@
 import { add, dist, normalize, perp, polylineLength, scale, sub } from './geo';
 import type { SourcePoint, SourceRoad } from './osm';
 import { bufferPolylinePaths, difference, intersection, unionPaths } from './poly';
+import { RoadIndex } from './spatial';
 import type {
   Crossing,
   Grade,
@@ -177,9 +178,26 @@ export interface RoadSurfaces {
 
 export function buildSurfaces(roads: Road[], clipTo: Polygon[]): RoadSurfaces {
   const ground = roads.filter((r) => r.grade === 'ground');
+  // A road ending at a tunnel mouth stops square at the portal (a round end
+  // reached past it, over the street above an underpass).
+  const key = (p: Vec2) => `${Math.round(p[0] * 2)},${Math.round(p[1] * 2)}`;
+  const mouths = new Set(
+    roads
+      .filter((r) => r.grade === 'tunnel')
+      .flatMap((r) => [key(r.centerline[0]), key(r.centerline[r.centerline.length - 1])]),
+  );
+  const buffer = (r: Road, half: number) => {
+    const c = r.centerline;
+    const ends = [c[0], c[c.length - 1]];
+    if (!mouths.size || !ends.some((p) => mouths.has(key(p)))) return bufferPolylinePaths(c, half);
+    const caps = ends
+      .filter((p) => !mouths.has(key(p)))
+      .flatMap((p) => bufferPolylinePaths([p, [p[0] + 0.01, p[1]]], half));
+    return [...bufferPolylinePaths(c, half, false), ...caps];
+  };
   const asphaltPaths = ground
     .filter((r) => isVehicular(r.cls))
-    .flatMap((r) => bufferPolylinePaths(r.centerline, r.width / 2));
+    .flatMap((r) => buffer(r, r.width / 2));
   const pavingPaths = ground
     .filter((r) => r.cls === 'pedestrian')
     .flatMap((r) => bufferPolylinePaths(r.centerline, r.width / 2));
@@ -188,12 +206,12 @@ export function buildSurfaces(roads: Road[], clipTo: Polygon[]): RoadSurfaces {
     .flatMap((r) => bufferPolylinePaths(r.centerline, r.width / 2));
   const corridorPaths = ground
     .filter((r) => r.formsBlocks)
-    .flatMap((r) => bufferPolylinePaths(r.centerline, r.width / 2 + r.sidewalk));
+    .flatMap((r) => buffer(r, r.width / 2 + r.sidewalk));
 
   const carriageway = intersection(unionPaths(asphaltPaths), clipTo);
   const blockRoads = ground.filter((r) => r.formsBlocks && isVehicular(r.cls));
   const blockCarriage = intersection(
-    unionPaths(blockRoads.flatMap((r) => bufferPolylinePaths(r.centerline, r.width / 2))),
+    unionPaths(blockRoads.flatMap((r) => buffer(r, r.width / 2))),
     clipTo,
   );
   const paving = difference(intersection(unionPaths(pavingPaths), clipTo), carriageway);
@@ -233,11 +251,15 @@ export function offsetPolyline(points: Vec2[], d: number): Vec2[] {
 }
 
 /** Splits a polyline into runs that stay outside every junction circle. */
-function runsOutside(points: Vec2[], junctions: Junction[]): Vec2[][] {
+function runsOutside(
+  points: Vec2[],
+  junctions: Junction[],
+  covered: (p: Vec2) => boolean = () => false,
+): Vec2[][] {
   const runs: Vec2[][] = [];
   let current: Vec2[] = [];
   for (const p of points) {
-    const inside = junctions.some((j) => dist(p, j.center) < j.radius);
+    const inside = junctions.some((j) => dist(p, j.center) < j.radius) || covered(p);
     if (inside) {
       if (current.length >= 2) runs.push(current);
       current = [];
@@ -249,8 +271,19 @@ function runsOutside(points: Vec2[], junctions: Junction[]): Vec2[][] {
   return runs.filter((r) => polylineLength(r) > 4);
 }
 
+/** Which of two roads owns the surface where they merge: the wider, then more lanes. */
+const roadPriority = (a: Road, b: Road) =>
+  b.width - a.width || b.lanes - a.lanes || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
 export function buildMarkings(roads: Road[], junctions: Junction[]): Marking[] {
   const out: Marking[] = [];
+  // Where two roads merge or run into each other at a shallow angle (beyond
+  // the junction circle) their carriageways overlap: the road that owns the
+  // surface keeps its lane lines, the other one's stop there; edge lines stop
+  // inside any other carriageway (the joining road opens into it).
+  const carriageways = new RoadIndex(
+    roads.filter((r) => r.grade === 'ground' && isVehicular(r.cls)),
+  );
   for (const road of roads) {
     if (
       !isVehicular(road.cls) ||
@@ -264,8 +297,13 @@ export function buildMarkings(roads: Road[], junctions: Junction[]): Marking[] {
     const near = junctions.filter((j) => j.roadIds.includes(road.id));
     const line = densify(road.centerline, 2);
     const laneW = road.width / road.lanes;
+    const inside = (edge: boolean) => (p: Vec2) =>
+      carriageways.covering(p, (r) =>
+        r !== road && (edge || roadPriority(r, road) < 0) ? r.width / 2 - 0.2 : 0,
+      ) !== null;
     const add = (kind: Marking['kind'], d: number) => {
-      for (const run of runsOutside(offsetPolyline(line, d), near)) out.push({ kind, points: run });
+      for (const run of runsOutside(offsetPolyline(line, d), near, inside(kind === 'edge')))
+        out.push({ kind, points: run });
     };
     if (road.oneway) {
       for (let k = 1; k < road.lanes; k++) add('lane-dashed', -road.width / 2 + k * laneW);

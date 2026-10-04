@@ -154,9 +154,18 @@ export interface Road {
   /** Part of a roundabout ring (OSM junction=roundabout / circular). */
   roundabout?: boolean;
   provenance: { width: Provenance; lanes: Provenance };
+  /** Centreline heights of a ground road (the street surface, see RoadSurface). */
+  profile?: number[];
 }
 
-export type MarkingKind = 'center-dashed' | 'center-solid' | 'lane-dashed' | 'edge' | 'stop';
+export type MarkingKind =
+  | 'center-dashed'
+  | 'center-solid'
+  | 'lane-dashed'
+  | 'edge'
+  | 'stop'
+  /** Parking stall lines. */
+  | 'stall';
 
 export interface Marking {
   kind: MarkingKind;
@@ -181,7 +190,19 @@ export interface Junction {
   signalised: boolean;
 }
 
-export type SurfaceKind = 'asphalt' | 'paving' | 'sidewalk' | 'path' | 'island' | 'yard';
+export type SurfaceKind =
+  | 'asphalt'
+  | 'paving'
+  | 'sidewalk'
+  | 'path'
+  | 'island'
+  | 'yard'
+  /** Hard ground of dense blocks, school / mosque / works yards: concrete with soil patches. */
+  | 'concrete'
+  /** Surface car park. */
+  | 'parking'
+  /** Playground safety surface. */
+  | 'playground';
 
 export interface Surface {
   kind: SurfaceKind;
@@ -194,6 +215,7 @@ export type AreaKind =
   | 'forest'
   | 'water'
   | 'parking'
+  | 'playground'
   | 'plaza'
   | 'school'
   | 'religious'
@@ -222,9 +244,19 @@ export type Archetype = 'mustakil' | 'eski' | 'klasik' | 'modern' | 'yuksek';
 /** `barrel`: arched (segmental) roof over the top floor, 2010s blocks. */
 export type RoofShape = 'hip' | 'gable' | 'flat' | 'barrel';
 export type BayKind =
+  /** Standard two-casement window. */
   | 'window'
   /** Three-casement living-room window, about twice as wide. */
   | 'wide-window'
+  /** Two separate windows side by side with a pier between (ikili pencere). */
+  | 'pair-window'
+  /** Small single-casement window set high (bathroom, kitchen, stairs). */
+  | 'small-window'
+  /** Door-height window with a rail flush to the wall (Fransız balkon). */
+  | 'french-window'
+  /** Door-height two- / three-casement windows down to the floor. */
+  | 'tall-pair'
+  | 'tall-triple'
   | 'balcony'
   | 'glazed-balcony'
   | 'blank'
@@ -251,7 +283,15 @@ export interface FacadeEdge {
   oriel?: [number, number];
   /** Bay boundary (0…bays) carrying a full-height ornamental motif strip. */
   ornament?: number;
+  /**
+   * Single flats that differ from their column: [floor, bay, kind] (floor ≥ 1).
+   * Residents glaze one balcony, open another, swap a window for a door …
+   */
+  cells?: [number, number, BayKind][];
 }
+
+/** What a building is used for (from the source tags): drives its facade rules. */
+export type BuildingUse = 'residential' | 'house' | 'public' | 'commercial';
 
 export interface BuildingPalette {
   wall: string;
@@ -295,6 +335,7 @@ export interface Building {
   windowWidth: number;
   windowHeight: number;
   shopfront: boolean;
+  use: BuildingUse;
   facades: FacadeEdge[];
   /**
    * Corner balconies on the upper floors: edge indices k whose end corner
@@ -317,7 +358,30 @@ export type PropKind =
   | 'chimney'
   | 'solar-heater'
   | 'satellite-dish'
-  | 'ac-unit';
+  | 'ac-unit'
+  | 'car'
+  /** Attendant booth at a car park entrance, and its barrier arm. */
+  | 'booth'
+  | 'barrier-arm'
+  | 'swing'
+  | 'slide'
+  | 'seesaw'
+  | 'climber'
+  /** Garden gate between two piers, in a gap of a garden wall. */
+  | 'gate';
+
+/** Garden boundary styles (Turkish streets: low wall with railing, plain wall, stone, hedge, mesh). */
+export type FenceStyle = 'wall-rail' | 'wall' | 'stone' | 'hedge' | 'mesh';
+
+/** A garden wall / fence along a lot boundary (open polyline; gaps are separate fences). */
+export interface Fence {
+  points: Vec2[];
+  style: FenceStyle;
+  /** Top height above the ground. */
+  height: number;
+  /** Wall colour (plastered walls). */
+  color: string;
+}
 
 export interface Prop {
   id: string;
@@ -362,7 +426,14 @@ export interface Bridge {
   /** Edge lines on fast roads (motorway / trunk / primary), as on the ground. */
   edgeLines: boolean;
   /** Piers where the deck stands clear of the ground: base on the terrain, top under the deck. */
-  piers: { at: Vec2; dir: Vec2; base: number; top: number }[];
+  piers: {
+    at: Vec2;
+    dir: Vec2;
+    base: number;
+    top: number;
+    /** Lateral offsets of its columns from `at` (one under a narrow deck, two under a wide one). */
+    columns: number[];
+  }[];
 }
 
 /** Open trench of an underpass approach: retaining walls along both sides. */
@@ -374,6 +445,11 @@ export interface Cutting {
   path: Vec3[];
   /** Distance between the two retaining walls. */
   width: number;
+  /** The ramp road: drawn by the trench itself (ground surfaces stop at its walls). */
+  carriageway: number;
+  lanes: number;
+  oneway: boolean;
+  edgeLines: boolean;
 }
 
 /** Concrete headwall around a tunnel mouth. */
@@ -391,6 +467,8 @@ export interface Portal {
   height: number;
   /** Headwall height above road level. */
   wall: number;
+  /** Mouth of a tunnel into a hill (an underpass's mouth faces its trench). */
+  hill?: boolean;
 }
 
 /**
@@ -445,6 +523,8 @@ export interface CityModel {
   portals: Portal[];
   tunnels: Tunnel[];
   terrainCut?: TerrainCut;
+  /** Garden walls, fences and hedges. */
+  fences?: Fence[];
   areas: Area[];
   blocks: CityBlock[];
   buildings: Building[];

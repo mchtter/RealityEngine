@@ -395,11 +395,28 @@ export function scatter(
     };
     return hit(p.outer) && !p.holes.some(hit);
   };
+  // Minimum spacing via a grid of cell = spacing: only the 3 × 3 cells around
+  // a point can hold one closer than 0.6 × spacing (same result as testing
+  // all placed points, which was quadratic: 45 s for a 1.5 km² wood).
+  const cell = spacing;
+  const grid = new Map<string, Vec2[]>();
+  const tooClose = (q: Vec2) => {
+    const ci = Math.floor(q[0] / cell);
+    const cj = Math.floor(q[1] / cell);
+    for (let i = ci - 1; i <= ci + 1; i++)
+      for (let j = cj - 1; j <= cj + 1; j++)
+        for (const o of grid.get(`${i},${j}`) ?? []) if (dist(o, q) < spacing * 0.6) return true;
+    return false;
+  };
   for (let tries = 0; tries < target * 12 && out.length < target; tries++) {
     const q: Vec2 = [rng.range(minX, maxX), rng.range(minY, maxY)];
     if (!inside(q) || keepOut(q)) continue;
-    if (out.some((o) => dist(o, q) < spacing * 0.6)) continue;
+    if (tooClose(q)) continue;
     out.push(q);
+    const key = `${Math.floor(q[0] / cell)},${Math.floor(q[1] / cell)}`;
+    const list = grid.get(key);
+    if (list) list.push(q);
+    else grid.set(key, [q]);
   }
   return out;
 }

@@ -54,9 +54,10 @@ function approachFrom(
   length: number,
   byEnd: Map<string, Road[]>,
   exclude: Road,
-): { points: Vec2[]; width: number } | null {
+): { points: Vec2[]; width: number; road: Road | null } | null {
   const points: Vec2[] = [portal];
   let width = 0;
+  let first: Road | null = null;
   let at = portal;
   let dir = away;
   let walked = 0;
@@ -75,6 +76,7 @@ function approachFrom(
     }
     if (!best) break;
     used.add(best.road);
+    first ??= best.road;
     width = Math.max(width, best.road.width);
     for (let k = 1; k < best.pts.length && walked < length; k++) {
       const seg = dist(best.pts[k - 1], best.pts[k]);
@@ -93,7 +95,7 @@ function approachFrom(
     at = best.pts[best.pts.length - 1];
     dir = normalize(sub(at, best.pts[best.pts.length - 2]));
   }
-  return points.length >= 2 && walked > 10 ? { points, width } : null;
+  return points.length >= 2 && walked > 10 ? { points, width, road: first } : null;
 }
 
 function dotDir(a: Vec2, b: Vec2): number {
@@ -192,6 +194,10 @@ export function buildCuttings(
             roadId: tunnel.id,
             path: ramp.points.map((p, i) => [p[0], p[1], floorOf(p, ra[i])]),
             width: half * 2,
+            carriageway: ramp.width,
+            lanes: ramp.road?.lanes ?? tunnel.lanes,
+            oneway: ramp.road?.oneway ?? tunnel.oneway,
+            edgeLines: ['motorway', 'trunk', 'primary'].includes(ramp.road?.cls ?? tunnel.cls),
           });
         }
       }
@@ -215,7 +221,10 @@ export function buildCuttings(
         if (shallow > 120) break;
       }
       const lidPts = slicePolyline(inward, ia, Math.min(total, shallow + 2));
-      if (lidPts.length >= 2 && shallow > 0) {
+      // Only a tunnel into a hill gets a lid: an underpass's tube runs under
+      // the street, which is its cover (raising the ground there lifted the
+      // street's own surface into humps around the mouth).
+      if (hill && lidPts.length >= 2 && shallow > 0) {
         const la = arcLengths(lidPts);
         setAlong(lidGrid, lidPts, la, half + reach, (s) => floorIn(s) + TUNNEL_HEIGHT + 0.4, 1);
         lids.push(...bufferPolyline(lidPts, half, false));
@@ -228,6 +237,7 @@ export function buildCuttings(
         width: half * 2 + 1.6,
         opening: tubeHalf * 2,
         height: TUNNEL_HEIGHT,
+        hill,
         wall: hill
           ? TUNNEL_HEIGHT + 2
           : Math.max(TUNNEL_HEIGHT + 0.6, origAt(end.p) - mouthZ[k] + 0.9),

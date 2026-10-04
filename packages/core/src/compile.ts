@@ -1,3 +1,4 @@
+import { gardenWalls, groundSurfaces, parkingLayout, playgroundLayout } from './amenities';
 import {
   buildBlocks,
   infillAlongRoads,
@@ -10,8 +11,11 @@ import { layoutFacades, makeBuilding, placeObservedBuildings } from './buildings
 import { CutGround, buildCuttings } from './cuttings';
 import {
   LocalProjection,
+  closestOnSegment,
   dist,
+  lerp2,
   normalize,
+  pointInRing,
   polylineLength,
   ringCentroid,
   samplePolyline,
@@ -23,6 +27,7 @@ import { bufferPolyline, difference, intersection, offset, union } from './poly'
 import {
   buildingDetails,
   carriageReach,
+  clearOfBridges,
   corridorReach,
   decorateStreets,
   observedProps,
@@ -38,8 +43,8 @@ import {
   findJunctions,
   isVehicular,
 } from './roads';
-import { PolygonIndex, RoadIndex } from './spatial';
-import { buildTerrain, conformTerrainToRoads, terrainHeightAt } from './terrain';
+import { GridIndex, PolygonIndex, RoadIndex } from './spatial';
+import { buildTerrain, conformTerrainToRoads, raiseLandAboveSea, terrainHeightAt } from './terrain';
 import { type Projection, TileProjection } from './tiles';
 import type {
   Area,
@@ -62,7 +67,7 @@ import type {
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '17';
+export const COMPILER_VERSION = '34';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -71,6 +76,7 @@ const NO_BUILD: AreaKind[] = [
   'forest',
   'water',
   'parking',
+  'playground',
   'school',
   'religious',
   'plaza',
@@ -166,12 +172,30 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     },
     cell,
   );
-  conformTerrainToRoads(
-    terrain,
-    roads
-      .filter((r) => r.grade === 'ground' && (isVehicular(r.cls) || r.cls === 'pedestrian'))
-      .map((r) => ({ points: r.centerline, halfWidth: r.width / 2 + r.sidewalk })),
+  // Street surface: terrain levelled to it; each conformed road keeps its
+  // centreline profile (the viewer drapes the road surfaces on it).
+  const conformed = roads.filter(
+    (r) => r.grade === 'ground' && (isVehicular(r.cls) || r.cls === 'pedestrian'),
   );
+  const profiles = conformTerrainToRoads(
+    terrain,
+    conformed.map((r) => ({
+      points: r.centerline,
+      halfWidth: r.width / 2 + r.sidewalk,
+      carriage: r.width / 2,
+    })),
+  );
+  conformed.forEach((r, k) => (r.profile = profiles[k].map((z) => Math.round(z * 100) / 100)));
+  // Land the elevation model puts under the sea (reclaimed shore) stays land.
+  raiseLandAboveSea(terrain, {
+    segments: roads.flatMap((r) =>
+      r.centerline.slice(1).map((b, k) => [r.centerline[k], b] as [Vec2, Vec2]),
+    ),
+    polygons: [
+      ...features.buildings.flatMap((b) => b.polygons),
+      ...features.areas.filter((a) => a.kind !== 'water').flatMap((a) => a.polygons),
+    ],
+  });
   // Underpass ramps and tunnel mouths: where they cut the levelled terrain.
   const { cuttings, portals, tunnels, cut } = buildCuttings(roads, terrain);
   const cutGround = new CutGround(terrain, cut);
@@ -186,16 +210,21 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   const tubeLength = new Map(
     tunnels.map((tn) => [tn.roadId, polylineLength(tn.path.map((q): Vec2 => [q[0], q[1]]))]),
   );
-  const mouths: Polygon[] = portals.map((p) => {
-    const n: Vec2 = [-p.facing[1], p.facing[0]];
-    const w = p.width / 2 + 3;
-    const len = Math.min(7, 0.3 * (tubeLength.get(p.roadId) ?? 0));
-    const q = (along: number, across: number): Vec2 => [
-      p.at[0] - p.facing[0] * along + n[0] * across,
-      p.at[1] - p.facing[1] * along + n[1] * across,
-    ];
-    return { outer: [q(0, -w), q(0, w), q(len, w), q(len, -w)], holes: [] };
-  });
+  // Underpass mouths need no cut: the trench draws its own road, and a short
+  // underpass's tube lies right under the crossing street (cutting there
+  // opened holes in that street's surface).
+  const mouths: Polygon[] = portals
+    .filter((p) => p.hill)
+    .map((p) => {
+      const n: Vec2 = [-p.facing[1], p.facing[0]];
+      const w = p.width / 2 + 3;
+      const len = Math.min(7, 0.3 * (tubeLength.get(p.roadId) ?? 0));
+      const q = (along: number, across: number): Vec2 => [
+        p.at[0] - p.facing[0] * along + n[0] * across,
+        p.at[1] - p.facing[1] * along + n[1] * across,
+      ];
+      return { outer: [q(0, -w), q(0, w), q(len, w), q(len, -w)], holes: [] };
+    });
   const markings = clipMarkings(buildMarkings(roads, junctions), inRegion);
   const crossings = buildCrossings(roads, junctions, features.points).filter((c) =>
     inRegion(c.center),
@@ -287,6 +316,12 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   for (const b of buildings) buildingIndex.add(b, b.footprint);
   layoutFacades(buildings, buildingIndex);
 
+  // Hard ground (car parks, playgrounds, plazas, yards of institutions, dense blocks).
+  const hard = groundSurfaces(areas, blocks, buildings, net.corridor);
+  const noTrees = hard
+    .filter((sf) => sf.kind === 'parking' || sf.kind === 'playground' || sf.kind === 'paving')
+    .flatMap((sf) => sf.polygons);
+
   // Props.
   const pctx = { terrain, roads, roadIndex, buildings: buildingIndex, junctions, crossings };
   let props: Prop[] = observedProps(features.points, pctx).filter((p) =>
@@ -305,9 +340,14 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
         noBuild,
         terrain,
         g,
+        noTrees,
       ),
     );
   }
+  // Car parks, playgrounds and garden walls (gates are props), placed with the rest.
+  const parking = parkingLayout(areas, buildings, roadIndex, terrain);
+  const walls = gardenWalls(blocks, buildings, terrain, roadIndex);
+  props.push(...parking.props, ...playgroundLayout(areas, terrain), ...walls.gates);
   if (suggest) props.push(...suggestBusStops(pctx, props, inRegion));
   // Nothing generated may stand on a carriageway (e.g. a lamp of one street
   // landing on a crossing street); observed props there were moved to the kerb.
@@ -321,9 +361,11 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   props = placement.props;
   props.push(...buildingDetails(buildings));
 
-  let bridges = buildBridges(roads, terrain);
-  // Paved / gravel yards around buildings; the rest of each block stays green.
-  const yards = difference(
+  let bridges = buildBridges(roads, terrain, roadIndex, cutGround);
+  props = clearOfBridges(props, bridges);
+  // Paved / gravel yards around buildings (outside the hard ground above); the
+  // rest of each block stays green.
+  const yards0 = difference(
     intersection(
       blocks.map((b) => b.polygon),
       offset(
@@ -336,6 +378,10 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     areas
       .filter((a) => a.kind === 'park' || a.kind === 'grass' || a.kind === 'forest')
       .map((a) => a.polygon),
+  );
+  const yards = difference(
+    yards0,
+    hard.flatMap((sf) => sf.polygons),
   );
 
   // Lamps and the like along an underpass ramp stand on the trench floor.
@@ -350,8 +396,11 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     ...net.surfaces.map((sf) => ({ kind: sf.kind, polygons: difference(sf.polygons, mouths) })),
     { kind: 'island' as const, polygons: islands },
     { kind: 'yard' as const, polygons: yards },
+    ...hard,
   ];
-  let outMarkings = markings;
+  const allMarkings = [...markings, ...parking.markings];
+  let outMarkings = allMarkings;
+  let outFences = walls.fences;
   let outCrossings = crossings;
   let outJunctions = junctions;
   let outAreas = areas;
@@ -372,7 +421,12 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       kind: sf.kind,
       polygons: intersection(sf.polygons, [corePoly]),
     }));
-    outMarkings = clipMarkings(markings, inCore);
+    outMarkings = clipMarkings(allMarkings, inCore);
+    outFences = walls.fences.filter((f) => {
+      const a = f.points[0];
+      const b = f.points[f.points.length - 1];
+      return inCore([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+    });
     outCrossings = crossings.filter((c) => inCore(c.center));
     outJunctions = junctions.filter((j) => inCore(j.center));
     outAreas = areas.flatMap((a) =>
@@ -393,9 +447,17 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       q[0] <= core.maxX + 0.01 &&
       q[1] >= core.minY - 0.01 &&
       q[1] <= core.maxY + 0.01;
+    // Footprints a little past the core: the viewer keeps its tile-edge
+    // skirts off a trench or lid of the neighbouring tile next to the edge.
+    const reach = regionRect({
+      minX: core.minX - 8,
+      minY: core.minY - 8,
+      maxX: core.maxX + 8,
+      maxY: core.maxY + 8,
+    });
     outCut = {
-      trenches: intersection(cut.trenches, [corePoly]),
-      lids: intersection(cut.lids, [corePoly]),
+      trenches: intersection(cut.trenches, [reach]),
+      lids: intersection(cut.lids, [reach]),
       floor: cut.floor.filter(onGrid),
       lid: cut.lid.filter(onGrid),
     };
@@ -414,6 +476,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     roads: outRoads,
     surfaces: outSurfaces,
     markings: outMarkings,
+    fences: outFences,
     crossings: outCrossings,
     junctions: outJunctions,
     bridges,
@@ -503,8 +566,12 @@ function greenTrees(
   noBuild: Polygon[],
   terrain: CityModel['terrain'],
   globalOffset: Vec2,
+  /** Car parks, playgrounds, plazas: no tree scattered over them. */
+  hard: Polygon[] = [],
 ): Prop[] {
   const out: Prop[] = [];
+  const onHard = (q: Vec2) =>
+    hard.some((h) => pointInRing(q, h.outer) && !h.holes.some((r) => pointInRing(q, r)));
   // Park / grass polygons often run under streets in the data: no tree in the
   // street corridor (carriageway, sidewalks, footpaths).
   const land = (q: Vec2) =>
@@ -527,7 +594,7 @@ function greenTrees(
     if (a.kind !== 'park' && a.kind !== 'forest' && a.kind !== 'grass') continue;
     const spacing = a.kind === 'forest' ? 7 : a.kind === 'park' ? 10 : 18;
     place(
-      scatter(a.polygon, spacing, a.id, (q) => buildings.at(q) !== null || !land(q)),
+      scatter(a.polygon, spacing, a.id, (q) => buildings.at(q) !== null || !land(q) || onHard(q)),
       `g${a.id}`,
       [0.8, 1.3],
     );
@@ -539,7 +606,7 @@ function greenTrees(
     const c = ringCentroid(g.outer);
     const key = `${Math.round(c[0] + globalOffset[0])}_${Math.round(c[1] + globalOffset[1])}`;
     place(
-      scatter(g, 14, `garden-${key}`, (q) => buildings.at(q) !== null || !land(q)),
+      scatter(g, 14, `garden-${key}`, (q) => buildings.at(q) !== null || !land(q) || onHard(q)),
       `yard${key}`,
       [0.7, 1.1],
     );
@@ -624,7 +691,12 @@ function bridgeChains(bridges: Road[]): Road[][] {
   return chains;
 }
 
-function buildBridges(roads: Road[], terrain: CityModel['terrain']): Bridge[] {
+function buildBridges(
+  roads: Road[],
+  terrain: CityModel['terrain'],
+  roadIndex: RoadIndex,
+  ground: CutGround,
+): Bridge[] {
   const bridges = roads.filter((r) => r.grade === 'bridge');
   // Chain ends where other bridges meet (a Y split) stay up; ends on the ground road ramp down.
   const key = (p: Vec2) => `${Math.round(p[0] * 2)},${Math.round(p[1] * 2)}`;
@@ -633,19 +705,34 @@ function buildBridges(roads: Road[], terrain: CityModel['terrain']): Bridge[] {
     for (const p of [r.centerline[0], r.centerline[r.centerline.length - 1]])
       ends.set(key(p), (ends.get(key(p)) ?? 0) + 1);
   }
-  return bridgeChains(bridges).map((chain) => {
+  // A slip road may join a viaduct at one of its inner vertices: that end is
+  // up on the deck too, not on the ground.
+  const onOtherDeck = (p: Vec2, self: Road[]) =>
+    bridges.some(
+      (r) =>
+        !self.includes(r) &&
+        r.centerline.some((q, k) => k > 0 && closestOnSegment(p, r.centerline[k - 1], q).d < 1),
+    );
+  const decks = bridgeChains(bridges).map((chain) => {
     const first = chain[0];
     const pts: Vec2[] = [];
     for (const r of chain) {
       for (const p of r.centerline) {
         const last = pts[pts.length - 1];
-        if (!last || dist(last, p) > 0.05) pts.push(p);
+        if (!last || dist(last, p) <= 0.05) {
+          if (!last) pts.push(p);
+          continue;
+        }
+        // Vertices at most 8 m apart: deck heights (ramps, joins) are set per vertex.
+        const n = Math.ceil(dist(last, p) / 8);
+        for (let i = 1; i < n; i++) pts.push(lerp2(last, p, i / n));
+        pts.push(p);
       }
     }
     const layer = first.layer;
     const total = polylineLength(pts);
     const clearance = 5.5 * Math.max(1, layer);
-    const inner = (p: Vec2) => (ends.get(key(p)) ?? 0) > 1;
+    const inner = (p: Vec2) => (ends.get(key(p)) ?? 0) > 1 || onOtherDeck(p, chain);
     const startInner = inner(pts[0]);
     const endInner = inner(pts[pts.length - 1]);
     const endZ = (p: Vec2, isInner: boolean) =>
@@ -686,28 +773,22 @@ function buildBridges(roads: Road[], terrain: CityModel['terrain']): Bridge[] {
       }
       return [p[0], p[1], base];
     });
-    // Piers every PIER_SPACING m where the deck stands clear of the ground.
-    const piers: Bridge['piers'] = [];
-    for (const s of samplePolyline(pts, PIER_SPACING, PIER_SPACING / 2)) {
-      const deck = deckHeightAt(path, s.at);
-      const base = terrainHeightAt(terrain, s.point[0], s.point[1]);
-      if (deck - DECK_DEPTH - base > 2.5) {
-        piers.push({ at: s.point, dir: s.dir, base: base - 0.5, top: deck - DECK_DEPTH });
-      }
-    }
     // Where the deck meets the ground road it runs on under the road surface,
-    // so no seam opens between the two.
-    const extend = (end: Vec3, toward: Vec3): Vec3 => {
+    // so no seam opens between the two. Where it meets another deck it runs
+    // 1 m into it: decks meeting end to end at an angle (a Y split) overlap
+    // instead of leaving a wedge, and the overlap is drawn as one surface.
+    const extend = (end: Vec3, toward: Vec3, by: number): Vec3 => {
       const dx = end[0] - toward[0];
       const dy = end[1] - toward[1];
       const l = Math.hypot(dx, dy) || 1;
-      return [end[0] + (dx / l) * 1.5, end[1] + (dy / l) * 1.5, end[2]];
+      return [end[0] + (dx / l) * by, end[1] + (dy / l) * by, end[2]];
     };
-    if (!startInner && path.length >= 2) path.unshift(extend(path[0], path[1]));
-    if (!endInner && path.length >= 2)
-      path.push(extend(path[path.length - 1], path[path.length - 2]));
+    if (path.length >= 2) {
+      path.unshift(extend(path[0], path[1], startInner ? 1 : 1.5));
+      path.push(extend(path[path.length - 1], path[path.length - 2], endInner ? 1 : 1.5));
+    }
     const widthOf = (r: Road) => r.width + 2 * Math.min(r.sidewalk, 1.5);
-    return {
+    const bridge: Bridge = {
       id: `br${first.id}`,
       roadId: first.id,
       path,
@@ -716,9 +797,251 @@ function buildBridges(roads: Road[], terrain: CityModel['terrain']): Bridge[] {
       lanes: Math.max(...chain.map((r) => r.lanes)),
       oneway: chain.every((r) => r.oneway),
       edgeLines: chain.some((r) => ['motorway', 'trunk', 'primary'].includes(r.cls)),
-      piers,
+      piers: [],
     };
+    return { bridge, pts };
   });
+  settleJoinedDecks(decks);
+  spreadSplitDecks(decks);
+  // Deck segments in a 20 m grid (a column checks only the decks around it).
+  const deckSegs = new GridIndex<{ bridge: Bridge; a: Vec3; b: Vec3 }>(20);
+  for (const { bridge } of decks) {
+    const r = bridge.width / 2 + 1;
+    for (let k = 1; k < bridge.path.length; k++) {
+      const a = bridge.path[k - 1];
+      const b = bridge.path[k];
+      deckSegs.insert(
+        { bridge, a, b },
+        Math.min(a[0], b[0]) - r,
+        Math.min(a[1], b[1]) - r,
+        Math.max(a[0], b[0]) + r,
+        Math.max(a[1], b[1]) + r,
+      );
+    }
+  }
+  const ctx = { terrain, roadIndex, ground, deckSegs };
+  for (const { bridge, pts } of decks) bridge.piers = placePiers(bridge, pts, ctx);
+  return decks.map((d) => d.bridge);
+}
+
+/** Order in which decks own a shared surface: widest (main carriageway) first. */
+export function deckPriority(a: Bridge, b: Bridge): number {
+  return b.width - a.width || b.lanes - a.lanes || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+/**
+ * Decks that join (Y split, slip road onto a viaduct, two ways merging) share
+ * one surface, so they must have one height there: decks are settled widest
+ * first, and where a deck overlaps an already settled one at about the same
+ * level it takes that deck's height, eased back to its own over up to 120 m
+ * either side. Decks crossing over or under each other are left alone.
+ */
+function settleJoinedDecks(decks: { bridge: Bridge }[]): void {
+  const order = [...decks].sort((a, b) => deckPriority(a.bridge, b.bridge));
+  const settled: Bridge[] = [];
+  const ease = (x: number) => {
+    const c = Math.min(1, Math.max(0, x));
+    return 1 - c * c * (3 - 2 * c);
+  };
+  const boxOf = (b: Bridge) => {
+    let bb = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const q of b.path)
+      bb = [
+        Math.min(bb[0], q[0]),
+        Math.min(bb[1], q[1]),
+        Math.max(bb[2], q[0]),
+        Math.max(bb[3], q[1]),
+      ];
+    const r = b.width / 2;
+    return [bb[0] - r, bb[1] - r, bb[2] + r, bb[3] + r];
+  };
+  const boxes = new Map(decks.map((d) => [d.bridge, boxOf(d.bridge)]));
+  for (const { bridge } of order) {
+    const path = bridge.path;
+    const own = boxes.get(bridge)!;
+    const at = [0];
+    for (let k = 1; k < path.length; k++)
+      at.push(at[k - 1] + Math.hypot(path[k][0] - path[k - 1][0], path[k][1] - path[k - 1][1]));
+    const span = Math.min(120, at[at.length - 1] * 0.6);
+    for (const other of settled) {
+      const ob = boxes.get(other)!;
+      if (ob[0] > own[2] || ob[2] < own[0] || ob[1] > own[3] || ob[3] < own[1]) continue;
+      // Height of `other` under each vertex where the two decks overlap.
+      const target = path.map((q) => {
+        let best = { d: Infinity, z: 0 };
+        for (let k = 1; k < other.path.length; k++) {
+          const a = other.path[k - 1];
+          const b = other.path[k];
+          const c = closestOnSegment([q[0], q[1]], [a[0], a[1]], [b[0], b[1]]);
+          if (c.d < best.d) best = { d: c.d, z: a[2] + (b[2] - a[2]) * c.t };
+        }
+        const overlap = best.d < (other.width + bridge.width) / 2 - 0.5;
+        return overlap && Math.abs(best.z - q[2]) < 3.5 ? best.z : null;
+      });
+      const joined = target.flatMap((z, k) => (z === null ? [] : [k]));
+      if (!joined.length) continue;
+      const delta = path.map((q, k) => {
+        if (target[k] !== null) return target[k]! - q[2];
+        // Nearest joined vertex along the deck.
+        let near = joined[0];
+        for (const m of joined) if (Math.abs(at[m] - at[k]) < Math.abs(at[near] - at[k])) near = m;
+        return span > 0
+          ? (target[near]! - path[near][2]) * ease(Math.abs(at[near] - at[k]) / span)
+          : 0;
+      });
+      path.forEach((q, k) => (q[2] += delta[k]));
+    }
+    settled.push(bridge);
+  }
+}
+
+/**
+ * At a split (a wide deck ending where narrower ones begin, all centrelines
+ * meeting in one point) each narrower deck starts against the wide deck's
+ * edge on its own side and eases back onto its centreline over up to 60 m:
+ * the wide deck narrows into its branches instead of ending with open
+ * corners beside them.
+ */
+function spreadSplitDecks(decks: { bridge: Bridge }[]): void {
+  const ease = (x: number) => {
+    const c = Math.min(1, Math.max(0, x));
+    return 1 - c * c * (3 - 2 * c);
+  };
+  const ends = decks.flatMap(({ bridge }) => {
+    const p = bridge.path;
+    return [0, p.length - 1].map((idx) => {
+      const q = p[idx];
+      const r = p[idx === 0 ? 1 : p.length - 2];
+      const l = Math.hypot(q[0] - r[0], q[1] - r[1]) || 1;
+      // Unit vector pointing out of the deck at this end.
+      return { bridge, idx, at: [q[0], q[1]] as Vec2, out: [(q[0] - r[0]) / l, (q[1] - r[1]) / l] };
+    });
+  });
+  type Match = { child: (typeof ends)[number]; parent: (typeof ends)[number]; lateral: number };
+  const groups = new Map<(typeof ends)[number], Match[]>();
+  for (const child of ends) {
+    const parent = ends
+      .filter(
+        (e) =>
+          e.bridge !== child.bridge &&
+          e.bridge.width > child.bridge.width + 0.5 &&
+          dist(e.at, child.at) < 3,
+      )
+      .sort((a, b) => b.bridge.width - a.bridge.width)[0];
+    if (!parent || child.bridge.path.length < 2) continue;
+    // Where the branch heads, relative to the wide deck's axis: its point
+    // about 60 m along (branches often run side by side at first).
+    const path = child.bridge.path;
+    let walked = 0;
+    let ahead = path[child.idx];
+    for (let i = 1; i < path.length; i++) {
+      const k = child.idx === 0 ? i : path.length - 1 - i;
+      const prev = child.idx === 0 ? k - 1 : k + 1;
+      walked += Math.hypot(path[k][0] - path[prev][0], path[k][1] - path[prev][1]);
+      ahead = path[k];
+      if (walked >= 60) break;
+    }
+    const axis: Vec2 = [-parent.out[0], -parent.out[1]];
+    const rel: Vec2 = [ahead[0] - parent.at[0], ahead[1] - parent.at[1]];
+    const list = groups.get(parent) ?? [];
+    list.push({ child, parent, lateral: axis[0] * rel[1] - axis[1] * rel[0] });
+    groups.set(parent, list);
+  }
+  for (const list of groups.values()) {
+    // Branches take the sides by their order across the wide deck: the
+    // leftmost against its left edge, the rightmost against its right edge.
+    list.sort((a, b) => a.lateral - b.lateral);
+    list.forEach((m, rank) => {
+      const side =
+        list.length === 1
+          ? Math.abs(m.lateral) < 0.05
+            ? 0
+            : Math.sign(m.lateral)
+          : rank === 0
+            ? -1
+            : rank === list.length - 1
+              ? 1
+              : 0;
+      if (!side) return;
+      const { child, parent } = m;
+      const path = child.bridge.path;
+      const shift = (side * (parent.bridge.width - child.bridge.width)) / 2;
+      const at = [0];
+      for (let k = 1; k < path.length; k++)
+        at.push(at[k - 1] + Math.hypot(path[k][0] - path[k - 1][0], path[k][1] - path[k - 1][1]));
+      const total = at[at.length - 1];
+      const span = Math.min(60, total * 0.5);
+      // Offsets along the wide deck's own left normal, so the branch's edge meets its edge.
+      const axis: Vec2 = [-parent.out[0], -parent.out[1]];
+      const n: Vec2 = [-axis[1], axis[0]];
+      for (let k = 0; k < path.length; k++) {
+        const s = child.idx === 0 ? at[k] : total - at[k];
+        const w = ease(s / span);
+        if (w <= 0) continue;
+        path[k][0] += n[0] * shift * w;
+        path[k][1] += n[1] * shift * w;
+      }
+    });
+  }
+}
+
+/**
+ * Piers about every PIER_SPACING m where the deck stands clear of the ground.
+ * A column never stands on a carriageway, on a lower deck or in an underpass
+ * trench: the pier moves along the deck (up to ±12 m) to the nearest clear
+ * spot, or is left out (the span is longer there, as over a wide road).
+ */
+function placePiers(
+  bridge: Bridge,
+  pts: Vec2[],
+  ctx: {
+    terrain: TerrainGrid;
+    roadIndex: RoadIndex;
+    ground: CutGround;
+    deckSegs: GridIndex<{ bridge: Bridge; a: Vec3; b: Vec3 }>;
+  },
+): Bridge['piers'] {
+  const girder = Math.max(1.5, (bridge.width / 2) * 0.62);
+  const columns = bridge.width > 13 ? [-girder * 0.6, girder * 0.6] : [0];
+  // Column half size 0.6 m, plus a clearance to the kerb.
+  const COLUMN = 0.9;
+  const onRoad = (r: Road) => (carriageReach(r) > 0 ? carriageReach(r) + COLUMN : 0);
+  const clear = (q: Vec2, top: number) => {
+    if (ctx.roadIndex.covering(q, onRoad)) return false;
+    if (ctx.ground.inTrench(q[0], q[1])) return false;
+    for (const s of ctx.deckSegs.query(q[0], q[1], q[0], q[1])) {
+      if (s.bridge === bridge) continue;
+      const c = closestOnSegment(q, [s.a[0], s.a[1]], [s.b[0], s.b[1]]);
+      // A lower deck the column would pass through.
+      if (c.d < s.bridge.width / 2 + COLUMN && s.a[2] + (s.b[2] - s.a[2]) * c.t < top - 1)
+        return false;
+    }
+    return true;
+  };
+  const total = polylineLength(pts);
+  const piers: Bridge['piers'] = [];
+  let last = -Infinity;
+  for (let s0 = PIER_SPACING / 2; s0 < total; s0 += PIER_SPACING) {
+    for (const shift of [0, 2, -2, 4, -4, 6, -6, 8, -8, 10, -10, 12, -12]) {
+      const s = s0 + shift;
+      if (s <= 0 || s >= total || s - last < PIER_SPACING / 2) continue;
+      const smp = samplePolyline(pts, Infinity, s)[0];
+      if (!smp) break;
+      const deck = deckAt(bridge.path, smp.point);
+      const base = terrainHeightAt(ctx.terrain, smp.point[0], smp.point[1]);
+      const top = deck - DECK_DEPTH;
+      if (top - base <= 2.5) break;
+      const n: Vec2 = [-smp.dir[1], smp.dir[0]];
+      const ok = columns.every((o) =>
+        clear([smp.point[0] + n[0] * o, smp.point[1] + n[1] * o], top),
+      );
+      if (!ok) continue;
+      piers.push({ at: smp.point, dir: smp.dir, base: base - 0.5, top, columns });
+      last = s;
+      break;
+    }
+  }
+  return piers;
 }
 
 /** Runs of a path whose segments lie over the tile core (midpoint test), split at vertices. */
@@ -770,17 +1093,16 @@ function clipBridgeToCore(br: Bridge, inCore: (p: Vec2) => boolean): Bridge[] {
 }
 
 /** Deck height at arc length `s` along a bridge path. */
-function deckHeightAt(path: Vec3[], s: number): number {
-  let walked = 0;
+/** Deck height over the closest point of its path. */
+function deckAt(path: Vec3[], q: Vec2): number {
+  let best = { d: Infinity, z: path[0][2] };
   for (let k = 1; k < path.length; k++) {
-    const seg = Math.hypot(path[k][0] - path[k - 1][0], path[k][1] - path[k - 1][1]);
-    if (walked + seg >= s) {
-      const t = seg > 0 ? (s - walked) / seg : 0;
-      return path[k - 1][2] + (path[k][2] - path[k - 1][2]) * t;
-    }
-    walked += seg;
+    const a = path[k - 1];
+    const b = path[k];
+    const c = closestOnSegment(q, [a[0], a[1]], [b[0], b[1]]);
+    if (c.d < best.d) best = { d: c.d, z: a[2] + (b[2] - a[2]) * c.t };
   }
-  return path[path.length - 1][2];
+  return best.z;
 }
 
 /** Coverage cell size (metres) of authoritative sources. */

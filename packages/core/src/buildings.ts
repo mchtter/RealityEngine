@@ -28,6 +28,7 @@ import { terrainHeightAt } from './terrain';
 import type {
   BayKind,
   Building,
+  BuildingUse,
   FacadeEdge,
   Fix,
   Polygon,
@@ -63,6 +64,8 @@ const ROAD_FIX_MIN_AREA = 2;
 const BUILDING_FIX_MIN_AREA = 1;
 /** Carriageway is shrunk by this much before testing overlaps (road widths are estimates). */
 const ROAD_TOLERANCE = 0.6;
+/** A building that reaches into a street is cut back this far behind the sidewalk's outer edge. */
+const ROAD_SETBACK = 2;
 /** Share of a building's area covered by a higher-priority source that makes it a duplicate. */
 const SUPERSEDE_SHARE = 0.3;
 
@@ -196,6 +199,7 @@ export function makeBuilding(
     windowWidth: style.windowWidth,
     windowHeight: style.windowHeight,
     shopfront,
+    use: buildingUse(tags, archetype, shopTag),
     facades: [
       { edge: front.edge, length: fe.len, bays: [], groundBays: [], bands: [], front: true },
     ],
@@ -231,8 +235,13 @@ export function placeObservedBuildings(
     let b = bufferCache.get(r.id);
     if (!b) {
       b = {
-        full: bufferPolyline(r.centerline, r.width / 2),
-        hard: bufferPolyline(r.centerline, Math.max(0.1, r.width / 2 - ROAD_TOLERANCE)),
+        // Cut line: the street corridor (carriageway and sidewalks) plus the setback.
+        full: bufferPolyline(r.centerline, r.width / 2 + r.sidewalk + ROAD_SETBACK),
+        // Trigger: reaching into the corridor (less the width-estimate tolerance).
+        hard: bufferPolyline(
+          r.centerline,
+          Math.max(0.1, r.width / 2 + r.sidewalk - ROAD_TOLERANCE),
+        ),
       };
       bufferCache.set(r.id, b);
     }
@@ -326,7 +335,7 @@ export function placeObservedBuildings(
         removed,
         height: 0,
         baseZ: 0,
-        note: 'Bina taşıt yoluna taşıyor; taşan kısım kırpıldı',
+        note: 'Bina yola / kaldırıma taşıyor; kaldırımdan 2 m geride kesildi',
       });
     }
 
@@ -391,19 +400,73 @@ type BalconyPattern = 'ends' | 'alternate' | 'center' | 'inner-pair' | 'all';
 
 /**
  * How often a building family shows a facade feature (reference renders,
- * soul_of_anatolia): three-casement living-room windows, a closed cumba,
- * an ornamental motif strip, L-shaped corner balconies.
+ * soul_of_anatolia): a closed cumba, an ornamental motif strip, L-shaped
+ * corner balconies.
  */
 const FEATURE_CHANCE: Record<
-  'wide' | 'oriel' | 'ornament' | 'corner',
+  'oriel' | 'ornament' | 'corner',
   Record<Building['archetype'], number>
 > = {
-  wide: { mustakil: 0.5, eski: 0.45, klasik: 0.6, modern: 0.5, yuksek: 0.3 },
   oriel: { mustakil: 0, eski: 0.45, klasik: 0.25, modern: 0.1, yuksek: 0 },
   ornament: { mustakil: 0, eski: 0, klasik: 0.3, modern: 0.3, yuksek: 0.25 },
   corner: { mustakil: 0, eski: 0.1, klasik: 0.3, modern: 0.45, yuksek: 0.45 },
 };
 type BandPattern = 'none' | 'balconies' | 'edges' | 'center' | 'alternate-pairs';
+
+/** Building use from OSM-style tags (`dt:use` overrides). */
+function buildingUse(tags: Record<string, string>, archetype: string, shop: boolean): BuildingUse {
+  const forced = tags['dt:use'];
+  if (
+    forced === 'residential' ||
+    forced === 'house' ||
+    forced === 'public' ||
+    forced === 'commercial'
+  )
+    return forced;
+  const b = tags.building ?? '';
+  const PUBLIC_BUILDING = [
+    'school',
+    'university',
+    'college',
+    'kindergarten',
+    'hospital',
+    'public',
+    'government',
+    'civic',
+    'office',
+    'fire_station',
+    'train_station',
+    'transportation',
+    'mosque',
+    'church',
+  ];
+  const PUBLIC_AMENITY = [
+    'school',
+    'university',
+    'college',
+    'kindergarten',
+    'hospital',
+    'clinic',
+    'townhall',
+    'police',
+    'fire_station',
+    'courthouse',
+    'library',
+    'post_office',
+    'community_centre',
+  ];
+  if (
+    PUBLIC_BUILDING.includes(b) ||
+    PUBLIC_AMENITY.includes(tags.amenity ?? '') ||
+    tags.office === 'government' ||
+    Boolean(tags.government)
+  )
+    return 'public';
+  if (['commercial', 'retail', 'industrial', 'warehouse', 'supermarket'].includes(b))
+    return 'commercial';
+  if (archetype === 'mustakil') return 'house';
+  return shop && b !== 'apartments' && b !== 'residential' ? 'commercial' : 'residential';
+}
 
 function balconyBays(n: number, pattern: BalconyPattern): Set<number> {
   const s = new Set<number>();
@@ -485,7 +548,13 @@ export function layoutFacades(buildings: Building[], index: PolygonIndex<Buildin
   for (const b of buildings) {
     const rng = new Rng(b.seed);
     const spec = ARCHETYPES[b.archetype];
-    const bayTarget = b.windowWidth + rng.range(1.3, 1.9);
+    const pub = b.use === 'public';
+    const house = b.use === 'house' || b.archetype === 'mustakil';
+    // Openings per wall: a flat's frontage has three or four, not a window
+    // every 2.5 m; public buildings keep a regular, denser rhythm.
+    const bayTarget =
+      b.windowWidth +
+      (pub ? rng.range(1.6, 2.2) : house ? rng.range(2.2, 3.2) : rng.range(2.0, 2.8));
     const frontEdge = b.facades[0]?.edge ?? 0;
     const ring = b.footprint.outer;
     const frontOut = edgeOutward(ring, frontEdge).out;
@@ -516,9 +585,45 @@ export function layoutFacades(buildings: Building[], index: PolygonIndex<Buildin
                 ['none', 0.3],
               ] as const)
             : 'none';
-    const hasBalconies = b.levels >= 2 && (b.archetype !== 'mustakil' || rng.chance(0.3));
-    const glazed = rng.chance(spec.glazedBalcony * 1.6);
-    const hasWide = rng.chance(FEATURE_CHANCE.wide[b.archetype]);
+    // Public buildings (schools, offices, hospitals) have no balconies.
+    const hasBalconies = !pub && b.levels >= 2 && (!house || rng.chance(0.3));
+    const glazed = !pub && rng.chance(spec.glazedBalcony * 1.6);
+    const modernish = b.archetype === 'modern' || b.archetype === 'yuksek';
+    /** Column kind of a window bay, by use and wall. */
+    const windowKind = (main: boolean): BayKind => {
+      if (pub)
+        return rng.weighted([
+          ['pair-window', 0.6],
+          ['window', 0.3],
+          ['wide-window', 0.1],
+        ] as const);
+      if (house)
+        return rng.weighted([
+          ['wide-window', 0.34],
+          ['pair-window', 0.2],
+          ['window', 0.2],
+          ['tall-pair', 0.1],
+          ['small-window', main ? 0.06 : 0.16],
+          ['blank', 0.04],
+        ] as const);
+      return main
+        ? rng.weighted([
+            ['window', 0.28],
+            ['pair-window', 0.2],
+            ['wide-window', 0.18],
+            ['french-window', 0.12],
+            ['tall-pair', modernish ? 0.08 : 0.04],
+            ['tall-triple', modernish ? 0.06 : 0.02],
+            ['small-window', 0.05],
+            ['blank', 0.04],
+          ] as const)
+        : rng.weighted([
+            ['window', 0.35],
+            ['small-window', 0.25],
+            ['pair-window', 0.1],
+            ['blank', 0.3],
+          ] as const);
+    };
     const wantOriel = b.levels >= 3 && rng.chance(FEATURE_CHANCE.oriel[b.archetype]);
     const wantOrnament = b.levels >= 3 && rng.chance(FEATURE_CHANCE.ornament[b.archetype]);
     const wantCorner = b.levels >= 3 && rng.chance(FEATURE_CHANCE.corner[b.archetype]);
@@ -565,24 +670,26 @@ export function layoutFacades(buildings: Building[], index: PolygonIndex<Buildin
       const door = isFront ? (n >= 3 ? Math.floor(n / 2) : 0) : -1;
       for (let i = 0; i < n; i++) {
         if (balconies.has(i)) bays.push(glazed && rng.chance(0.7) ? 'glazed-balcony' : 'balcony');
-        else if (side && (b.archetype === 'eski' || b.archetype === 'klasik') && rng.chance(0.25))
-          bays.push('blank');
-        else bays.push('window');
+        else bays.push(windowKind(isFront || isBack));
 
+        // Ground floor: entrance, shops, otherwise the column's window (no
+        // balcony or French window at street level).
+        const up = bays[i];
         if (i === door) groundBays.push('door');
         else if (isFront && b.shopfront) groundBays.push('shop');
         else if (side && b.shopfront && rng.chance(0.4)) groundBays.push('shop');
-        else groundBays.push(bays[i] === 'blank' ? 'blank' : 'window');
+        else
+          groundBays.push(
+            up === 'blank' || up === 'small-window'
+              ? up
+              : up === 'wide-window' || up === 'tall-triple'
+                ? 'wide-window'
+                : up === 'pair-window'
+                  ? 'pair-window'
+                  : 'window',
+          );
 
         bands.push(bandFor(i, n, bandPattern, balconies));
-      }
-      // Living-room windows: whole columns, so they line up floor by floor.
-      if (hasWide) {
-        for (let i = 0; i < n; i++) {
-          if (bays[i] !== 'window' || !rng.chance(0.4)) continue;
-          bays[i] = 'wide-window';
-          if (groundBays[i] === 'window') groundBays[i] = 'wide-window';
-        }
       }
       let oriel: [number, number] | undefined;
       if (wantOriel && (isFront || isBack) && n >= 3) {
@@ -592,6 +699,23 @@ export function layoutFacades(buildings: Building[], index: PolygonIndex<Buildin
           if (bays[i] !== 'wide-window') bays[i] = 'window';
       }
       const ornament = wantOrnament && isFront && n >= 4 && !oriel ? Math.round(n / 2) : undefined;
+      // Flats differ from their column: each household glazes (or reopens) its
+      // own balcony, a few swap a window for a French window or a door-height one.
+      const cells: [number, number, BayKind][] = [];
+      if (!pub) {
+        for (let lv = 1; lv < b.levels; lv++) {
+          for (let i = 0; i < n; i++) {
+            if (oriel && i >= oriel[0] && i <= oriel[1]) continue;
+            const k = bays[i];
+            if (k === 'balcony' && rng.chance(0.28)) cells.push([lv, i, 'glazed-balcony']);
+            else if (k === 'glazed-balcony' && rng.chance(0.25)) cells.push([lv, i, 'balcony']);
+            else if ((k === 'window' || k === 'pair-window') && rng.chance(0.07))
+              cells.push([lv, i, rng.chance(0.5) ? 'french-window' : 'tall-pair']);
+            else if (k === 'wide-window' && rng.chance(0.08)) cells.push([lv, i, 'tall-triple']);
+            else if (k === 'french-window' && rng.chance(0.15)) cells.push([lv, i, 'window']);
+          }
+        }
+      }
       facades.push({
         edge: k,
         length: e.len,
@@ -601,6 +725,7 @@ export function layoutFacades(buildings: Building[], index: PolygonIndex<Buildin
         front: isFront,
         ...(oriel ? { oriel } : {}),
         ...(ornament !== undefined ? { ornament } : {}),
+        ...(cells.length ? { cells } : {}),
       });
     }
     b.facades = facades;

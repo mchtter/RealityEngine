@@ -65,7 +65,8 @@ const NON_ROAD_HIGHWAYS = new Set([
 export function areaKindOf(tags: Record<string, string>): AreaKind | null {
   const { landuse, leisure, natural, amenity } = tags;
   if (natural === 'water' || landuse === 'reservoir' || landuse === 'basin') return 'water';
-  if (leisure === 'park' || leisure === 'garden' || leisure === 'playground') return 'park';
+  if (leisure === 'playground') return 'playground';
+  if (leisure === 'park' || leisure === 'garden') return 'park';
   if (natural === 'wood' || landuse === 'forest') return 'forest';
   if (
     natural === 'grassland' ||
@@ -79,7 +80,12 @@ export function areaKindOf(tags: Record<string, string>): AreaKind | null {
   ) {
     return 'grass';
   }
-  if (amenity === 'parking') return 'parking';
+  // Surface car parks only (a multi-storey or underground one is a building / nothing to see).
+  if (
+    amenity === 'parking' &&
+    !['multi-storey', 'underground', 'rooftop'].includes(tags.parking ?? '')
+  )
+    return 'parking';
   if (amenity === 'school' || amenity === 'university' || amenity === 'hospital') return 'school';
   if (amenity === 'place_of_worship') return 'religious';
   if (amenity === 'marketplace' || tags.place === 'square') return 'plaza';

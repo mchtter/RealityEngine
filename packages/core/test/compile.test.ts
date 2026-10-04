@@ -554,6 +554,188 @@ describe('compileCity', () => {
     expect(under).toHaveLength(0);
   });
 
+  it('keeps piers off the road underneath, props out of the deck, and meets a slip road at deck height', () => {
+    const road = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'road' as const,
+      geometry: { type: 'LineString' as const, coordinates: pts.map(([x, y]) => ll(x, y)) },
+      tags,
+    });
+    const viaduct = { highway: 'trunk', bridge: 'viaduct', layer: '1', lanes: '4' };
+    // 10 m terrain grid with a 2.5 m knoll where the slip road meets the
+    // viaduct: the viaduct follows the averaged ground, the slip road's end
+    // alone would sit 2 m higher.
+    const [west, south] = ll(-400, -400);
+    const [east, north] = ll(400, 400);
+    const heights = new Array(81 * 81).fill(50);
+    for (let j2 = 0; j2 < 81; j2++)
+      for (let i2 = 0; i2 < 81; i2++) {
+        const d = Math.hypot(-400 + i2 * 10 - 60, -400 + j2 * 10);
+        if (d < 20) heights[j2 * 81 + i2] = 50 + 2.5 * (1 - d / 20);
+      }
+    const terrain = { source: 'test', west, east, north, south, cols: 81, rows: 81, heights };
+    const m = compileCity(
+      {
+        ...gridSource(),
+        osm: [],
+        terrain,
+        features: [
+          road(
+            'osm:in',
+            [
+              [-195, 0],
+              [-150, 0],
+            ],
+            { highway: 'trunk', lanes: '4' },
+          ),
+          road(
+            'osm:v1',
+            [
+              [-150, 0],
+              [0, 0],
+            ],
+            viaduct,
+          ),
+          road(
+            'osm:v2',
+            [
+              [0, 0],
+              [150, 0],
+            ],
+            viaduct,
+          ),
+          road(
+            'osm:out',
+            [
+              [150, 0],
+              [195, 0],
+            ],
+            { highway: 'trunk', lanes: '4' },
+          ),
+          // A street under the viaduct, right where a pier would stand every 26 m.
+          road(
+            'osm:under',
+            [
+              [-7, -150],
+              [-7, 150],
+            ],
+            { highway: 'primary' },
+          ),
+          // A slip road climbing onto the viaduct, joining it mid-span.
+          road(
+            'osm:sg',
+            [
+              [20, -150],
+              [40, -90],
+            ],
+            { highway: 'trunk_link' },
+          ),
+          road(
+            'osm:slip',
+            [
+              [40, -90],
+              [60, 0],
+            ],
+            { highway: 'trunk_link', bridge: 'yes', layer: '1' },
+          ),
+        ],
+      },
+      { infill: false, decorate: true },
+    );
+    const under = m.roads.find((r) => r.id.includes('osm:under'))!;
+    for (const br of m.bridges)
+      for (const pier of br.piers)
+        for (const o of pier.columns) {
+          const x = pier.at[0] - pier.dir[1] * o;
+          expect(Math.abs(x + 7)).toBeGreaterThan(under.width / 2 + 0.5);
+        }
+    const main = m.bridges.reduce((a, b) => (a.width >= b.width ? a : b));
+    const deckZ = (br: typeof main, q: [number, number]) => {
+      let best = { d: Infinity, z: 0 };
+      for (let k = 1; k < br.path.length; k++) {
+        const [a, b] = [br.path[k - 1], br.path[k]];
+        const dx = b[0] - a[0];
+        const dy = b[1] - a[1];
+        const t = Math.max(
+          0,
+          Math.min(1, ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / (dx * dx + dy * dy || 1)),
+        );
+        const d = Math.hypot(q[0] - a[0] - dx * t, q[1] - a[1] - dy * t);
+        if (d < best.d) best = { d, z: a[2] + (b[2] - a[2]) * t };
+      }
+      return best;
+    };
+    // Nothing generated grows into the deck or stands at a column.
+    for (const p of m.props) {
+      if (p.provenance === 'observed' || p.buildingId) continue;
+      if (p.kind !== 'tree' && p.kind !== 'street-lamp') continue;
+      const d = deckZ(main, [p.position[0], p.position[1]]);
+      if (d.d < main.width / 2 + 2) expect(p.position[2] + 6).toBeLessThan(d.z - 2.2);
+    }
+    // The slip road's upper end sits on the viaduct at the viaduct's height.
+    const slip = m.bridges.find(
+      (b) => b !== main && b.path.some((q) => Math.hypot(q[0] - 60, q[1]) < 1),
+    )!;
+    const end = slip.path.reduce((a, q) =>
+      Math.hypot(q[0] - 60, q[1]) < Math.hypot(a[0] - 60, a[1]) ? q : a,
+    );
+    expect(Math.abs(end[2] - deckZ(main, [60, 0]).z)).toBeLessThan(0.3);
+    expect(end[2] - terrainHeightAt(m.terrain, 60, 0)).toBeGreaterThan(2.5);
+  });
+
+  it('stops the lane lines of a merging road inside the carriageway it joins', () => {
+    const road = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'road' as const,
+      geometry: { type: 'LineString' as const, coordinates: pts.map(([x, y]) => ll(x, y)) },
+      tags,
+    });
+    const m = compileCity(
+      {
+        ...gridSource(),
+        osm: [],
+        features: [
+          road(
+            'osm:main',
+            [
+              [-250, 0],
+              [0, 0],
+              [250, 0],
+            ],
+            { highway: 'trunk', lanes: '4' },
+          ),
+          // Joins at a shallow angle: it runs inside the trunk for some 40 m.
+          road(
+            'osm:link',
+            [
+              [-200, -30],
+              [0, 0],
+            ],
+            {
+              highway: 'trunk_link',
+              oneway: 'yes',
+              lanes: '2',
+            },
+          ),
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    const main = m.roads.find((r) => r.id.includes('osm:main'))!;
+    // The link's lines run at its slope (≈ 0.15); the trunk's are level.
+    const linkLines = m.markings.filter((mk) => {
+      const [a, b] = [mk.points[0], mk.points[mk.points.length - 1]];
+      return Math.abs((b[1] - a[1]) / (b[0] - a[0] || 1)) > 0.05;
+    });
+    expect(linkLines.length).toBeGreaterThan(0);
+    for (const mk of linkLines)
+      for (const [, y] of mk.points) expect(Math.abs(y)).toBeGreaterThan(main.width / 2 - 0.5);
+  });
+
   it('marks every synthetic building and inferred level as such', () => {
     const m = compileCity(gridSource());
     for (const b of m.buildings) {
@@ -684,6 +866,157 @@ describe.skipIf(!existsSync(FIXTURE))('Zonguldak fixture', () => {
     expect(overlapping).toEqual([]);
     expect(m.stats.propsShrunk + m.stats.propsDropped).toBeGreaterThan(0);
   }, 120_000);
+
+  it('lays out a surface car park: stall lines, cars inside, a booth at the entrance', () => {
+    const lot: [number, number][] = [
+      [-40, 12],
+      [40, 12],
+      [40, 52],
+      [-40, 52],
+      [-40, 12],
+    ];
+    const m = compileCity(
+      {
+        ...gridSource(),
+        osm: [],
+        features: [
+          {
+            ref: 'osm:st',
+            source: 'osm',
+            priority: 0,
+            kind: 'road' as const,
+            geometry: {
+              type: 'LineString' as const,
+              coordinates: [ll(-120, 0), ll(120, 0)],
+            },
+            tags: { highway: 'residential' },
+          },
+          {
+            ref: 'osm:lot',
+            source: 'osm',
+            priority: 0,
+            kind: 'area' as const,
+            geometry: { type: 'Polygon' as const, coordinates: [lot.map(([x, y]) => ll(x, y))] },
+            tags: { amenity: 'parking' },
+          },
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    const ring = lot.slice(0, 4);
+    const cars = m.props.filter((p) => p.kind === 'car');
+    expect(cars.length).toBeGreaterThan(20);
+    for (const c of cars) expect(pointInRing([c.position[0], c.position[1]], ring)).toBe(true);
+    expect(m.markings.filter((mk) => mk.kind === 'stall').length).toBeGreaterThan(30);
+    const booth = m.props.find((p) => p.kind === 'booth');
+    expect(booth).toBeDefined();
+    // At the side towards the street.
+    expect(booth!.position[1]).toBeLessThan(25);
+    expect(m.surfaces.find((sf) => sf.kind === 'parking')?.polygons.length).toBeGreaterThan(0);
+  });
+
+  it('narrows a wide deck into its branches, one against each edge', () => {
+    const road = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'road' as const,
+      geometry: { type: 'LineString' as const, coordinates: pts.map(([x, y]) => ll(x, y)) },
+      tags,
+    });
+    const deck = { bridge: 'yes', layer: '1' };
+    const m = compileCity(
+      {
+        ...gridSource(),
+        osm: [],
+        features: [
+          road(
+            'osm:in',
+            [
+              [-300, 0],
+              [-200, 0],
+            ],
+            { highway: 'trunk', lanes: '3' },
+          ),
+          road(
+            'osm:w',
+            [
+              [-200, 0],
+              [0, 0],
+            ],
+            { highway: 'trunk', lanes: '3', ...deck },
+          ),
+          // Both branches leave on the same side at first, then part.
+          road(
+            'osm:a',
+            [
+              [0, 0],
+              [100, 6],
+              [200, 60],
+            ],
+            { highway: 'trunk', lanes: '2', ...deck },
+          ),
+          road(
+            'osm:b',
+            [
+              [0, 0],
+              [100, 3],
+              [200, -60],
+            ],
+            { highway: 'trunk', lanes: '2', ...deck },
+          ),
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    const wide = m.bridges.reduce((a, b) => (a.width >= b.width ? a : b));
+    const branches = m.bridges.filter(
+      (b) => b !== wide && b.path.some((q) => Math.hypot(q[0], q[1]) < 2),
+    );
+    expect(branches).toHaveLength(2);
+    // Lateral position of each branch where it leaves the wide deck.
+    const ys = branches
+      .map((b) =>
+        b.path.reduce((a, q) => (Math.hypot(q[0], q[1]) < Math.hypot(a[0], a[1]) ? q : a)),
+      )
+      .map((q) => q[1])
+      .sort((a, b) => a - b);
+    const shift = (wide.width - branches[0].width) / 2;
+    expect(ys[0]).toBeLessThan(-shift * 0.8);
+    expect(ys[1]).toBeGreaterThan(shift * 0.8);
+  });
+
+  it('builds car parks, garden walls, hard ground and public facades from the data', () => {
+    const m = compileCity(JSON.parse(readFileSync(FIXTURE, 'utf8')) as CitySource);
+    // Public buildings (schools, offices …) have no balconies.
+    const pub = m.buildings.filter((b) => b.use === 'public');
+    expect(pub.length).toBeGreaterThan(0);
+    for (const b of pub)
+      for (const f of b.facades)
+        expect(f.bays.filter((k) => k === 'balcony' || k === 'glazed-balcony')).toEqual([]);
+    // Garden walls exist and none runs through a building.
+    const fences = m.fences ?? [];
+    expect(fences.length).toBeGreaterThan(50);
+    const boxes = m.buildings.map((b) => {
+      const xs = b.footprint.outer.map((q) => q[0]);
+      const ys = b.footprint.outer.map((q) => q[1]);
+      return { b, box: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] };
+    });
+    const inside = (q: [number, number]) =>
+      boxes.some(
+        ({ b, box }) =>
+          q[0] >= box[0] &&
+          q[0] <= box[2] &&
+          q[1] >= box[1] &&
+          q[1] <= box[3] &&
+          pointInRing(q, b.footprint.outer),
+      );
+    for (const f of fences.slice(0, 2000))
+      for (const q of f.points) expect(inside(q as [number, number])).toBe(false);
+    // Dense blocks get hard ground.
+    const concrete = m.surfaces.find((sf) => sf.kind === 'concrete');
+    expect(totalArea(concrete?.polygons ?? [])).toBeGreaterThan(1000);
+  }, 60_000);
 
   it('places no street furniture on a carriageway and no park tree in a street', () => {
     const m = compileCity(JSON.parse(readFileSync(FIXTURE, 'utf8')) as CitySource);

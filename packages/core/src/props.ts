@@ -1,5 +1,6 @@
 import {
   add,
+  closestOnSegment,
   dist,
   lerp2,
   normalize,
@@ -17,6 +18,7 @@ import { GridIndex, type PolygonIndex, type RoadIndex } from './spatial';
 import { barrelRise } from './styles';
 import { terrainHeightAt } from './terrain';
 import type {
+  Bridge,
   Building,
   Crossing,
   Junction,
@@ -82,7 +84,86 @@ export const PROP_RADIUS: Record<PropKind, number> = {
   'solar-heater': 0,
   'satellite-dish': 0,
   'ac-unit': 0,
+  // Cars, booths and gates are laid out by their own rules (stalls, entrance,
+  // wall gaps) and skip the general placement pass.
+  car: 0,
+  booth: 0,
+  'barrier-arm': 0,
+  swing: 1.8,
+  slide: 1.8,
+  seesaw: 1.6,
+  climber: 1.6,
+  gate: 0,
 };
+
+/** Height (m) of a ground prop at scale 1 — the renderer's models, as PROP_RADIUS. */
+export const PROP_HEIGHT: Partial<Record<PropKind, number>> = {
+  tree: 7.2,
+  'street-lamp': 8.1,
+  'traffic-signal': 3.7,
+  'bus-stop': 2.8,
+  bench: 0.8,
+  'waste-basket': 0.9,
+  'power-pole': 9,
+};
+/** Reach (m) of a prop at scale 1 for bridge clearance: a lamp's arm, not just its pole. */
+const STRUCTURE_RADIUS: Partial<Record<PropKind, number>> = {
+  'street-lamp': 1.9,
+  'power-pole': 0.9,
+};
+
+/**
+ * Generated props clear of bridges: none may reach into a deck (from below,
+ * up to its girder) or stand at a pier. Observed props stay where the data
+ * puts them.
+ */
+export function clearOfBridges(props: Prop[], bridges: Bridge[]): Prop[] {
+  if (!bridges.length) return props;
+  // Deck segments and pier columns in a 20 m grid: a forest under a long
+  // viaduct is tens of thousands of trees against thousands of segments.
+  type Seg = { a: Vec3Like; b: Vec3Like; half: number };
+  type Vec3Like = [number, number, number];
+  const segs = new GridIndex<Seg>(20);
+  const columns = new GridIndex<Vec2>(20);
+  for (const br of bridges) {
+    for (let k = 1; k < br.path.length; k++) {
+      const a = br.path[k - 1] as Vec3Like;
+      const b = br.path[k] as Vec3Like;
+      const r = br.width / 2 + 3;
+      segs.insert(
+        { a, b, half: br.width / 2 },
+        Math.min(a[0], b[0]) - r,
+        Math.min(a[1], b[1]) - r,
+        Math.max(a[0], b[0]) + r,
+        Math.max(a[1], b[1]) + r,
+      );
+    }
+    for (const pier of br.piers) {
+      const n: Vec2 = [-pier.dir[1], pier.dir[0]];
+      for (const o of pier.columns) {
+        const c: Vec2 = [pier.at[0] + n[0] * o, pier.at[1] + n[1] * o];
+        columns.insert(c, c[0] - 4, c[1] - 4, c[0] + 4, c[1] + 4);
+      }
+    }
+  }
+  return props.filter((p) => {
+    if (p.provenance === 'observed' || p.buildingId) return true;
+    const height = PROP_HEIGHT[p.kind];
+    if (height === undefined) return true;
+    const r = (STRUCTURE_RADIUS[p.kind] ?? PROP_RADIUS[p.kind]) * p.scale;
+    const q: Vec2 = [p.position[0], p.position[1]];
+    const top = p.position[2] + height * p.scale;
+    for (const c of columns.query(q[0], q[1], q[0], q[1])) if (dist(q, c) < r + 1) return false;
+    for (const s of segs.query(q[0], q[1], q[0], q[1])) {
+      const c = closestOnSegment(q, [s.a[0], s.a[1]], [s.b[0], s.b[1]]);
+      if (c.d >= s.half + r) continue;
+      // Under the deck (girder and slab about 2.2 m deep) and reaching it.
+      const deck = s.a[2] + (s.b[2] - s.a[2]) * c.t;
+      if (p.position[2] < deck && top > deck - 2.2) return false;
+    }
+    return true;
+  });
+}
 
 /** Trees are shrunk down to this scale to fit next to a wall before being dropped. */
 const MIN_TREE_SCALE = 0.55;
@@ -172,6 +253,28 @@ function toKerb(ctx: PropContext, p: Vec2): { p: Vec2; heading: number } {
   return { p: q, heading: headingOf(scale(side, -1)) };
 }
 
+/**
+ * Nearest point to `p` off every carriageway (rings of 1 m out to 15 m), for a
+ * kerb point that landed on another street (signals at a junction).
+ */
+function offCarriageway(ctx: PropContext, p: Vec2): Vec2 | null {
+  const clear = (q: Vec2) => ctx.roadIndex.covering(q, carriageReach) === null;
+  if (clear(p)) return p;
+  for (let r = 1; r <= 15; r++) {
+    let best: Vec2 | null = null;
+    for (let k = 0; k < 24; k++) {
+      const a = (k / 24) * Math.PI * 2;
+      const q: Vec2 = [p[0] + Math.cos(a) * r, p[1] + Math.sin(a) * r];
+      if (clear(q)) {
+        best = q;
+        break;
+      }
+    }
+    if (best) return best;
+  }
+  return null;
+}
+
 export function observedProps(points: SourcePoint[], ctx: PropContext): Prop[] {
   const out: Prop[] = [];
   for (const pt of points) {
@@ -188,7 +291,7 @@ export function observedProps(points: SourcePoint[], ctx: PropContext): Prop[] {
       ctx.roadIndex.covering(pt.p, carriageReach) !== null
     ) {
       const k = toKerb(ctx, pt.p);
-      p = k.p;
+      p = offCarriageway(ctx, k.p) ?? k.p;
       heading = k.heading;
     }
     out.push({
@@ -380,29 +483,58 @@ export function buildingDetails(buildings: Building[]): Prop[] {
         buildingId: b.id,
       });
 
+    // Roof surface at (u, v): ridge along the long axis for pitched roofs.
+    const rise =
+      b.roof.shape === 'flat'
+        ? 0
+        : b.roof.shape === 'barrel'
+          ? barrelRise(box.halfWidth)
+          : Math.tan((b.roof.pitchDeg * Math.PI) / 180) * box.halfWidth;
+    const surface = (v: number) =>
+      b.roof.shape === 'barrel'
+        ? b.topZ + rise * Math.sqrt(Math.max(0, 1 - v * v))
+        : b.topZ + rise * (1 - Math.abs(v));
     if (b.archetype !== 'modern' && b.archetype !== 'yuksek') {
-      // One stove flue per flat stack (reference: soul_of_anatolia): apartments
-      // carry a row of tall plastered chimneys along the ridge, often in pairs.
+      // A stove flue or two near the ridge (old apartments up to three).
       const chimneys =
         b.archetype === 'mustakil'
-          ? rng.int(1, 3)
-          : Math.min(9, Math.max(3, Math.round(box.halfLength / 2.6) + rng.int(0, 2)));
-      const paired = b.archetype !== 'mustakil' && rng.chance(0.5);
+          ? rng.chance(0.75)
+            ? 1
+            : 2
+          : b.archetype === 'eski'
+            ? rng.int(1, 3)
+            : rng.int(0, 2);
       for (let k = 0; k < chimneys; k++) {
-        const u = -0.72 + (1.44 * (k + 0.5)) / chimneys + rng.range(-0.04, 0.04);
-        const v = paired ? (k % 2 ? 0.12 : -0.12) : rng.range(-0.12, 0.12);
-        push('chimney', onRoof(u, v), roofTop - 0.6, headingOf(box.axis), rng.range(0.9, 1.15));
+        const u = -0.5 + (1 * (k + 0.5)) / chimneys + rng.range(-0.08, 0.08);
+        const v = rng.range(-0.15, 0.15);
+        // Base sunk 0.3 m into the roof on its downhill side.
+        push(
+          'chimney',
+          onRoof(u, v),
+          surface(Math.abs(v) + 0.08) - 0.3,
+          headingOf(box.axis),
+          rng.range(0.9, 1.1),
+        );
       }
     }
-    if (rng.chance(b.archetype === 'yuksek' ? 0.2 : 0.45)) {
-      const heaters = rng.int(1, Math.min(4, Math.max(1, b.levels - 1)));
+    // Solar water heaters ("güneş enerjisi"): common on every kind of roof, several on
+    // flat apartment roofs; on a pitched roof on its south-facing slope.
+    if (rng.chance(b.archetype === 'yuksek' ? 0.35 : 0.65)) {
+      const flat = b.roof.shape === 'flat';
+      const heaters = flat
+        ? rng.int(1, Math.min(6, Math.max(1, b.levels)))
+        : rng.int(1, Math.min(3, Math.max(1, b.levels - 1)));
+      // South side of the ridge: the side whose normal points to −y (model north is +y).
+      const south = nrm[1] <= 0 ? 1 : -1;
       for (let k = 0; k < heaters; k++) {
-        const u = -0.6 + (1.2 * (k + 0.5)) / heaters;
+        const u = -0.6 + (1.2 * (k + 0.5)) / heaters + rng.range(-0.05, 0.05);
+        const v = flat ? rng.range(-0.5, 0.5) : south * rng.range(0.25, 0.55);
         push(
           'solar-heater',
-          onRoof(u, rng.range(-0.4, 0.1)),
-          b.roof.shape === 'flat' ? b.topZ : roofTop - 0.6,
-          headingOf(nrm),
+          onRoof(u, v),
+          flat ? b.topZ : surface(v) - 0.05,
+          // Panels face south.
+          headingOf(scale(nrm, south)),
         );
       }
     }
