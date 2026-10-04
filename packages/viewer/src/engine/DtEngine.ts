@@ -1,10 +1,4 @@
-import {
-  type CityModel,
-  type LonLat,
-  utmForward,
-  utmInverse,
-  utmZoneOf,
-} from '@opentwin/city-core';
+import { type LonLat, utmForward, utmInverse, utmZoneOf } from '@opentwin/city-core';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { SkyMesh } from 'three/addons/objects/SkyMesh.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
@@ -13,9 +7,8 @@ import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import { float, mix, mrt, normalView, output, pass, renderOutput, uniform } from 'three/tsl';
 import * as THREE from 'three/webgpu';
 import { CameraRig, type DtCameraMode } from './camera-modes';
-import { CityTile } from './city-tile';
+import { CityTile, type DtInspect } from './city-tile';
 import { toThree } from './geom';
-import { seaPlane } from './ground';
 import {
   type DtMaterials,
   SCENARIO_TEXTURE_HEIGHT,
@@ -38,8 +31,15 @@ export interface DtEngineStats {
   cpuMsPerFrame: number;
 }
 
+/** Inspect result with geographic position (for the UI). */
+export interface DtInspection extends DtInspect {
+  lonLat: LonLat | null;
+}
+
 export interface DtEngineEvents {
   onSelect?: (building: BuildingInfo | null) => void;
+  /** Inspect mode: what a click hit (null: nothing / cleared). */
+  onInspect?: (hit: DtInspection | null) => void;
   onStats?: (stats: DtEngineStats) => void;
 }
 
@@ -200,18 +200,15 @@ export class DtEngine {
     this.sun.shadow.normalBias = 0.8;
     this.scene.add(this.sun, this.sun.target, this.hemi);
 
-    // One sea plane at sea level for all tiles.
-    const sea = seaPlane(
-      {
-        bounds: { minX: 0, minY: 0, maxX: 0, maxY: 0 },
-        terrain: { seaLevel: 0 } as CityModel['terrain'],
-      },
-      this.mats,
-    );
-    sea.geometry.dispose();
-    sea.geometry = new THREE.PlaneGeometry(60000, 60000);
-    this.scene.add(sea);
-    this.sea = sea;
+    // Backdrop beyond the loaded tiles: ground (fogged at that distance), just
+    // under the lowest loaded terrain. A sea plane here showed the inland city
+    // floating over a blue void; coastal tiles draw their own sea.
+    const backdrop = new THREE.Mesh(new THREE.PlaneGeometry(60000, 60000), this.mats.terrain);
+    backdrop.rotation.x = -Math.PI / 2;
+    backdrop.receiveShadow = false;
+    backdrop.name = 'backdrop';
+    this.scene.add(backdrop);
+    this.sea = backdrop;
 
     this.controls = new MapControls(this.camera, renderer.domElement);
     this.controls.enableDamping = true;
@@ -322,9 +319,11 @@ export class DtEngine {
     );
     if (this.scenarioColor) this.scenarioCounts.set(key, this.paintScenario(tile));
     if (this.mode !== 'showcase') tile.setMode(this.mode);
+    if (this.showFixes) tile.setShowFixes(true);
     tile.updateDetail(this.rig.lodEye(this.lodEye));
     this.tiles.set(key, tile);
     this.scene.add(tile.group);
+    this.placeBackdrop();
     if (!this.placed) {
       this.placed = true;
       const [ox, oy] = this.offsetOf(payload.summary);
@@ -364,6 +363,17 @@ export class DtEngine {
       for (const v of [...this.fly.from, ...this.fly.to]) v.sub(shift);
     }
     this.controls.update();
+  }
+
+  /** Backdrop 3 m under the lowest loaded ground. */
+  private placeBackdrop(): void {
+    if (!this.sea) return;
+    let low = Infinity;
+    for (const t of this.tiles.values()) {
+      const h = t.summary.terrain.heights;
+      for (let i = 0; i < h.length; i += 7) low = Math.min(low, h[i]);
+    }
+    if (Number.isFinite(low)) this.sea.position.y = low - 3;
   }
 
   removeTile(key: string): void {
@@ -608,6 +618,14 @@ export class DtEngine {
     return { matched, total };
   }
 
+  private showFixes = false;
+
+  /** Red overlay of what was cut off buildings (road / neighbour overlaps). */
+  setShowFixes(on: boolean): void {
+    this.showFixes = on;
+    for (const tile of this.tiles.values()) tile.setShowFixes(on);
+  }
+
   setMode(mode: DtViewMode): void {
     if (mode === this.mode) return;
     this.mode = mode;
@@ -741,7 +759,90 @@ export class DtEngine {
     return out;
   }
 
+  private inspectMode = false;
+  private highlight: THREE.Object3D | null = null;
+
+  /** Inspect mode: a click picks any object (not just buildings) and outlines it. */
+  setInspectMode(on: boolean): void {
+    this.inspectMode = on;
+    if (!on) this.clearHighlight();
+  }
+
+  private clearHighlight(): void {
+    if (!this.highlight) return;
+    this.highlight.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
+      if (m.material) (m.material as THREE.Material).dispose();
+    });
+    this.highlight.removeFromParent();
+    this.highlight = null;
+  }
+
+  /** Picks whatever is under a canvas point (CSS pixels) and outlines it. */
+  inspectAt(clientX: number, clientY: number): DtInspection | null {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(ndc, this.camera);
+    let best: ReturnType<CityTile['inspect']> = null;
+    for (const tile of this.tiles.values()) {
+      const hit = tile.inspect(ray);
+      if (hit && (!best || hit.d < best.d)) best = hit;
+    }
+    this.clearHighlight();
+    if (!best) return null;
+    const group = new THREE.Group();
+    group.name = 'inspect-highlight';
+    const g = best.highlight;
+    if (g.userData.lines) {
+      const mat = new THREE.LineBasicMaterial({ color: 0xff7a00, depthTest: false });
+      group.add(new THREE.LineSegments(g, mat));
+    } else {
+      // Filled (see-through, drawn over everything) and a solid pass where visible.
+      const over = new THREE.MeshBasicMaterial({
+        color: 0xff7a00,
+        transparent: true,
+        opacity: 0.28,
+        depthTest: false,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const front = new THREE.MeshBasicMaterial({
+        color: 0xff7a00,
+        transparent: true,
+        opacity: 0.55,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      });
+      const a = new THREE.Mesh(g, over);
+      const b = new THREE.Mesh(g, front);
+      a.renderOrder = 998;
+      b.renderOrder = 999;
+      const edges = new THREE.LineSegments(
+        new THREE.EdgesGeometry(g, 20),
+        new THREE.LineBasicMaterial({ color: 0xffd400, depthTest: false }),
+      );
+      edges.renderOrder = 1000;
+      group.add(a, b, edges);
+    }
+    this.scene.add(group);
+    this.highlight = group;
+    const [x, y] = best.info.point;
+    const lonLat = this.world
+      ? utmInverse(this.world.originE + x, this.world.originN + y, this.world.zone)
+      : null;
+    return { ...best.info, lonLat };
+  }
+
   dispose(): void {
+    this.clearHighlight();
     this.disposed = true;
     this.renderer.setAnimationLoop(null);
     this.resize.disconnect();
@@ -847,6 +948,10 @@ export class DtEngine {
     const start = this.pointerDown;
     this.pointerDown = null;
     if (!start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 4) return;
+    if (this.inspectMode) {
+      this.events.onInspect?.(this.inspectAt(e.clientX, e.clientY));
+      return;
+    }
     const rect = this.renderer.domElement.getBoundingClientRect();
     const ndc = new THREE.Vector2(
       ((e.clientX - rect.left) / rect.width) * 2 - 1,

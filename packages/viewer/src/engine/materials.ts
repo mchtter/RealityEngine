@@ -1,5 +1,6 @@
 import {
   abs,
+  add,
   attribute,
   cameraPosition,
   clamp,
@@ -11,6 +12,7 @@ import {
   float,
   floor,
   fract,
+  fwidth,
   hash,
   instanceIndex,
   int,
@@ -19,6 +21,7 @@ import {
   mat4,
   materialColor,
   max,
+  min,
   mix,
   mx_noise_float,
   normalLocal,
@@ -27,6 +30,7 @@ import {
   normalWorld,
   oneMinus,
   positionLocal,
+  select,
   positionView,
   positionWorld,
   pow,
@@ -138,6 +142,8 @@ export interface DtMaterials {
   glass: THREE.MeshStandardNodeMaterial;
   /** Three-casement window glass (wide living-room windows). */
   glassWide: THREE.MeshStandardNodeMaterial;
+  /** Single-casement window (small bathroom / stair windows, halves of a window pair). */
+  glassSingle: THREE.MeshStandardNodeMaterial;
   shopGlass: THREE.MeshStandardNodeMaterial;
   frame: THREE.MeshStandardNodeMaterial;
   roofTile: THREE.MeshStandardNodeMaterial;
@@ -151,6 +157,8 @@ export interface DtMaterials {
   paving: THREE.MeshStandardNodeMaterial;
   path: THREE.MeshStandardNodeMaterial;
   curb: THREE.MeshStandardNodeMaterial;
+  /** Board-formed concrete of retaining walls and tunnel portals. */
+  retaining: THREE.MeshStandardNodeMaterial;
   island: THREE.MeshStandardNodeMaterial;
   /** All road / yard surfaces and kerbs of a ground chunk in one mesh (`surf` attribute picks the pattern). */
   ground: THREE.MeshStandardNodeMaterial;
@@ -159,6 +167,18 @@ export interface DtMaterials {
   terrain: THREE.MeshStandardNodeMaterial;
   water: THREE.MeshStandardNodeMaterial;
   prop: THREE.MeshStandardNodeMaterial;
+  /**
+   * Roof and wall clutter (AC units, dishes, chimneys, solar heaters): the
+   * details (fan grille, louvres, dish rings, soot, tubes) are painted from
+   * the model's own coordinates and kind code (`lp` attribute: xyz, w = kind).
+   */
+  roofClutter: THREE.MeshStandardNodeMaterial;
+  /**
+   * Garden walls and fences: vertex colour, pattern from the `fk` attribute
+   * (FENCE_FINISH) and uv = (metres along, metres up). Railings and mesh are
+   * cut out (alpha test); double-sided.
+   */
+  fence: THREE.MeshStandardNodeMaterial;
   lampGlow: THREE.MeshStandardNodeMaterial;
   lampPool: THREE.MeshBasicNodeMaterial;
   /** The dark inside of a tunnel mouth. */
@@ -373,8 +393,8 @@ export function createMaterials(): DtMaterials {
   const lit = step(0.62, hash(instanceIndex.add(7))).mul(night);
   // Window = one quad: frame, centre mullion, inner reveal shadow, curtains
   // and night lighting are all drawn here (2 triangles per window).
-  /** Window glass with `panes` casements (2: standard, 3: wide living-room window). */
-  const windowGlass = (panes: 2 | 3) => {
+  /** Window glass with `panes` casements (1: small, 2: standard, 3: wide living-room window). */
+  const windowGlass = (panes: 1 | 2 | 3) => {
     const glass = new THREE.MeshStandardNodeMaterial({ roughness: 0.06, metalness: 0.1 });
     const wu = uv().x;
     const wv = uv().y;
@@ -387,9 +407,11 @@ export function createMaterials(): DtMaterials {
       .mul(step(fy, wv))
       .mul(step(wv, 1 - fy));
     const mullionX =
-      panes === 2
-        ? step(abs(wu.sub(0.5)), 0.022)
-        : max(step(abs(wu.sub(1 / 3)), 0.014), step(abs(wu.sub(2 / 3)), 0.014));
+      panes === 1
+        ? float(0)
+        : panes === 2
+          ? step(abs(wu.sub(0.5)), 0.022)
+          : max(step(abs(wu.sub(1 / 3)), 0.014), step(abs(wu.sub(2 / 3)), 0.014));
     const mullion = max(mullionX, hasTransom.mul(step(abs(wv.sub(0.74)), 0.025)));
     const frameMask = max(oneMinus(opening), mullion);
     const reveal = smoothstep(fx, fx + 0.07, wu)
@@ -424,6 +446,7 @@ export function createMaterials(): DtMaterials {
   };
   const glass = windowGlass(2);
   const glassWide = windowGlass(3);
+  const glassSingle = windowGlass(1);
   const shopGlass = new THREE.MeshStandardNodeMaterial({ roughness: 0.05, metalness: 0.1 });
   {
     const shelves = step(0.8, fract(uv().y.mul(5))).mul(0.25);
@@ -528,14 +551,36 @@ export function createMaterials(): DtMaterials {
     .add(vec3(0.05).mul(smoothstep(0.35, 0.8, mx_noise_float(wp.mul(0.08)))));
   decal(asphalt, -1);
 
-  const sidewalk = new THREE.MeshStandardNodeMaterial({ roughness: 0.85, metalness: 0 });
+  // Sidewalks: interlocking concrete pavers (kilit taşı), 20 × 10 cm in a
+  // running bond with sanded joints; stone-to-stone tone variation, some
+  // streets laid grey with red stones mixed in, dirt and wear. Joints fade out
+  // with distance (fwidth) instead of shimmering.
+  const sidewalk = new THREE.MeshStandardNodeMaterial({ roughness: 0.88, metalness: 0 });
   {
-    const g = wp.xz.div(0.4);
-    const edge = max(step(0.94, fract(g.x)), step(0.94, fract(g.y)));
-    const tone = hash(floor(g.x).add(floor(g.y).mul(131)))
-      .mul(0.12)
-      .add(0.94);
-    sidewalk.colorNode = mix(vec3(0.6, 0.58, 0.54).mul(tone), vec3(0.4, 0.39, 0.36), edge);
+    const v = wp.z.div(0.1);
+    const row = floor(v);
+    const u = wp.x.div(0.2).add(row.mul(0.5));
+    const fu = fract(u);
+    const fv = fract(v);
+    const wu = fwidth(u).max(1e-4);
+    const wv = fwidth(v).max(1e-4);
+    const jointU = oneMinus(smoothstep(0.03, add(0.03, wu), min(fu, oneMinus(fu))));
+    const jointV = oneMinus(smoothstep(0.06, add(0.06, wv), min(fv, oneMinus(fv))));
+    // Joints thinner than a pixel average into the stone colour.
+    const fade = oneMinus(smoothstep(0.25, 0.6, max(wu, wv)));
+    const joint = max(jointU, jointV).mul(fade);
+    const id = floor(u).add(row.mul(131));
+    const tone = hash(id).mul(0.16).add(0.86);
+    const grey = vec3(0.5, 0.49, 0.465).mul(tone);
+    const red = vec3(0.52, 0.41, 0.37).mul(tone);
+    // A street's paving scheme: grey, or grey with red stones mixed in.
+    const scheme = step(0.55, mx_noise_float(wp.mul(0.01)).mul(0.5).add(0.5));
+    const isRed = step(0.9, hash(id.add(7.3))).mul(scheme);
+    const stone = mix(grey, red, isRed);
+    const dirt = mx_noise_float(wp.mul(0.45)).mul(0.5).add(0.5);
+    const worn = mix(float(0.84), float(1.04), dirt);
+    sidewalk.colorNode = mix(stone.mul(worn), vec3(0.33, 0.31, 0.28), joint.mul(0.85));
+    sidewalk.roughnessNode = mix(float(0.86), float(0.95), joint);
   }
   decal(sidewalk, -2);
 
@@ -555,6 +600,47 @@ export function createMaterials(): DtMaterials {
   path.colorNode = vec3(0.55, 0.52, 0.47).mul(float(0.9).add(mx_noise_float(wp.mul(3)).mul(0.1)));
   decal(path, -2);
 
+  // Retaining walls: cast in 2.4 × 1.2 m formwork panels (joints, a grid of
+  // tie holes), faint board marks, rain streaks from the coping down, a damp
+  // darker band at the foot; tops stay plain. Coordinates along the wall come
+  // from the world position across the face normal, so any wall direction works.
+  const retaining = new THREE.MeshStandardNodeMaterial({ roughness: 0.88, metalness: 0 });
+  {
+    const nw = normalWorld;
+    const side = oneMinus(abs(nw.y));
+    const along = positionWorld.x.mul(nw.z).sub(positionWorld.z.mul(nw.x));
+    const up = positionWorld.y;
+    const pu = fract(along.div(2.4));
+    const pv = fract(up.div(1.2));
+    const joint = max(step(0.985, pu), step(0.975, pv));
+    const boards = step(0.93, fract(up.div(0.15))).mul(0.35);
+    const tu = fract(along.div(0.6).add(0.5));
+    const tv = fract(up.div(0.6).add(0.5));
+    const tie = oneMinus(smoothstep(0.02, 0.035, vec3(tu.sub(0.5), tv.sub(0.5), 0).length()));
+    const cell = hash(floor(along.div(2.4)).add(floor(up.div(1.2)).mul(37)));
+    const tone = float(0.92).add(cell.mul(0.1));
+    const n1 = mx_noise_float(positionWorld.mul(0.9)).mul(0.5).add(0.5);
+    const streakCol = hash(floor(along.div(0.35)));
+    const streak = step(0.72, streakCol).mul(
+      mx_noise_float(vec3(along.mul(3), up.mul(0.25), 0))
+        .mul(0.5)
+        .add(0.5),
+    );
+    let c = vec3(0.66, 0.65, 0.62)
+      .mul(tone)
+      .mul(mix(float(0.9), float(1.04), n1));
+    c = mix(c, c.mul(0.78), streak.mul(0.45));
+    c = mix(c, c.mul(0.82), boards);
+    c = mix(c, vec3(0.3, 0.3, 0.29), joint.mul(0.7));
+    c = mix(c, vec3(0.22, 0.22, 0.21), tie.mul(0.8));
+    retaining.colorNode = mix(
+      vec3(0.6, 0.59, 0.56).mul(mix(float(0.92), float(1.02), n1)),
+      c,
+      side,
+    );
+    retaining.roughnessNode = mix(float(0.85), float(0.92), joint);
+  }
+
   const curb = new THREE.MeshStandardNodeMaterial({ roughness: 0.8, metalness: 0 });
   curb.colorNode = vec3(0.68, 0.67, 0.64);
 
@@ -573,13 +659,61 @@ export function createMaterials(): DtMaterials {
   }
   decal(yard, -1);
 
+  // Hard ground of dense blocks and institutional yards: cast concrete in
+  // 3 m bays with joints, stains, cracks and patches of bare soil.
+  const concrete = new THREE.MeshStandardNodeMaterial({ roughness: 0.9, metalness: 0 });
+  {
+    const g = wp.xz.div(3);
+    const joint = max(step(0.985, fract(g.x)), step(0.985, fract(g.y)));
+    const bay = hash(floor(g.x).add(floor(g.y).mul(97)))
+      .mul(0.14)
+      .add(0.86);
+    const stain = mx_noise_float(wp.mul(0.35)).mul(0.5).add(0.5);
+    // Small patches of bare soil (a few metres across, here and there).
+    const soil = smoothstep(0.72, 0.78, mx_noise_float(wp.mul(0.16).add(13)).mul(0.5).add(0.5));
+    const slab = vec3(0.6, 0.59, 0.56)
+      .mul(bay)
+      .mul(mix(float(0.8), float(1.05), stain));
+    const earth = vec3(0.45, 0.37, 0.28).mul(float(0.85).add(mx_noise_float(wp.mul(4)).mul(0.15)));
+    concrete.colorNode = mix(mix(slab, slab.mul(0.62), joint), earth, soil.mul(0.75));
+  }
+  decal(concrete, -1);
+
+  // Surface car park: worn asphalt, a little lighter than the streets.
+  const parkingLot = new THREE.MeshStandardNodeMaterial({ roughness: 0.9, metalness: 0 });
+  parkingLot.colorNode = vec3(0.25, 0.26, 0.28).mul(
+    float(0.88).add(mx_noise_float(wp.mul(0.8)).mul(0.14)),
+  );
+  decal(parkingLot, -1);
+
+  // Playground safety surface: poured rubber in two colours.
+  const playground = new THREE.MeshStandardNodeMaterial({ roughness: 0.95, metalness: 0 });
+  {
+    const blob = step(0.55, mx_noise_float(wp.mul(0.18)).mul(0.5).add(0.5));
+    const grain = float(0.9).add(mx_noise_float(wp.mul(9)).mul(0.1));
+    playground.colorNode = mix(vec3(0.55, 0.22, 0.17), vec3(0.2, 0.42, 0.3), blob).mul(grain);
+  }
+  decal(playground, -1);
+
   // One draw per ground chunk: surface kind comes from the `surf` vertex attribute
-  // (0 asphalt, 1 paving, 2 sidewalk, 3 path, 4 island, 5 yard, 6 kerb).
+  // (0 asphalt, 1 paving, 2 sidewalk, 3 path, 4 island, 5 yard, 6 kerb,
+  // 7 concrete, 8 car park, 9 playground).
   const ground = new THREE.MeshStandardNodeMaterial({ roughness: 0.9, metalness: 0 });
   {
     const surf = attribute<'float'>('surf', 'float');
     const isKind = (k: number) => step(k - 0.5, surf).mul(step(surf, k + 0.5));
-    const kinds = [asphalt, paving, sidewalk, path, island, yard, curb];
+    const kinds = [
+      asphalt,
+      paving,
+      sidewalk,
+      path,
+      island,
+      yard,
+      curb,
+      concrete,
+      parkingLot,
+      playground,
+    ];
     const c = kinds
       .map((m, k) => vec3(m.colorNode as never).mul(isKind(k)))
       .reduce((a, b) => a.add(b));
@@ -621,7 +755,8 @@ export function createMaterials(): DtMaterials {
     );
     const slope = oneMinus(normalWorld.y);
     g = mix(g, vec3(0.45, 0.43, 0.4), smoothstep(0.35, 0.6, slope));
-    const shore = smoothstep(2.2, 0.6, wp.y);
+    // Sand only on the waterline (low-lying city ground near the sea is not a beach).
+    const shore = smoothstep(1.0, 0.3, wp.y);
     g = mix(g, vec3(0.62, 0.57, 0.45), shore);
     terrain.colorNode = g.mul(n3.mul(0.1).add(n4.mul(0.06)).add(1));
     // Grass clumps and tussocks catch the low sun.
@@ -654,6 +789,145 @@ export function createMaterials(): DtMaterials {
     metalness: 0.05,
     vertexColors: true,
   });
+
+  const roofClutter = new THREE.MeshStandardNodeMaterial({
+    roughness: 0.62,
+    metalness: 0.05,
+    vertexColors: true,
+  });
+  {
+    const lp4 = attribute<'vec4'>('lp', 'vec4');
+    const lp = lp4.xyz;
+    const ck = lp4.w;
+    const base = vertexColor().rgb;
+    const seed = hash(instanceIndex.add(5));
+    // Grime that differs per unit: value noise in model space, offset per instance.
+    const grime = mx_noise_float(lp.mul(7).add(seed.mul(40)))
+      .mul(0.5)
+      .add(0.5);
+    const line = (v: ReturnType<typeof float>, period: number, width: number) =>
+      step(1 - width, fract(v.div(period)));
+
+    // 1 · AC unit (0.8 × 0.56 × 0.28 m, front face at z = 0.28).
+    const front = step(0.275, lp.z);
+    const fan = lp.xy.sub(vec3(-0.12, 0, 0).xy);
+    const r = fan.length();
+    const inFan = oneMinus(smoothstep(0.19, 0.2, r));
+    const wires = line(r, 0.028, 0.22).mul(inFan);
+    const spokes = max(
+      oneMinus(smoothstep(0.006, 0.012, abs(fan.x))),
+      oneMinus(smoothstep(0.006, 0.012, abs(fan.y))),
+    ).mul(inFan);
+    const hub = oneMinus(smoothstep(0.03, 0.036, r));
+    const louvreZone = step(0.12, lp.x)
+      .mul(step(lp.x, 0.36))
+      .mul(step(abs(lp.y), 0.22));
+    const louvres = line(lp.y, 0.034, 0.32).mul(louvreZone);
+    const seam = oneMinus(smoothstep(0.003, 0.007, abs(lp.x.sub(0.09))));
+    const bevel = smoothstep(0, 0.018, min(float(0.4).sub(abs(lp.x)), float(0.28).sub(abs(lp.y))));
+    let ac = mix(base, vec3(0.13, 0.14, 0.15), inFan.mul(0.92));
+    ac = mix(ac, vec3(0.55, 0.56, 0.56), max(wires, spokes).mul(0.85));
+    ac = mix(ac, vec3(0.42, 0.43, 0.44), hub);
+    ac = mix(ac, base.mul(0.55), max(louvres, seam).mul(front));
+    ac = mix(base.mul(0.82), ac, front);
+    // Side vents (horizontal slots) and the seams along the edges.
+    const sideVent = line(lp.y, 0.04, 0.3)
+      .mul(step(0.395, abs(lp.x)))
+      .mul(oneMinus(front));
+    ac = mix(ac, base.mul(0.6), sideVent);
+    ac = ac.mul(mix(float(0.72), float(1), bevel.mul(front).add(oneMinus(front))));
+    // Rust-brown drip below the unit and dust settled on the lower part.
+    ac = mix(ac, ac.mul(vec3(0.78, 0.7, 0.6)), smoothstep(-0.05, -0.28, lp.y).mul(grime).mul(0.6));
+
+    // 2 · Satellite dish (dish centre at (0, 0.75, 0.05)): rings, a darker rim, weathered spots.
+    const dr = lp.sub(vec3(0, 0.75, 0.05)).length();
+    const dishRing = line(dr, 0.07, 0.12).mul(step(dr, 0.4));
+    const rim = smoothstep(0.36, 0.4, dr);
+    let dish = mix(base, base.mul(0.78), dishRing.mul(0.6));
+    dish = mix(dish, base.mul(0.62), rim);
+    dish = dish.mul(mix(float(0.86), float(1.04), grime));
+
+    // 3 · Chimney (0.78 m box up to 2.3 m): weathered plaster, rain streaks
+    // from under the cap, a darker damp band at the foot, soot near the top.
+    const plaster = mx_noise_float(lp.mul(3.1).add(seed.mul(17)))
+      .mul(0.5)
+      .add(0.5);
+    const along = lp.x.add(lp.z);
+    let chimney = base.mul(mix(float(0.88), float(1.04), plaster));
+    const streak = line(along.add(hash(floor(along.mul(9))).mul(0.3)), 0.11, 0.18)
+      .mul(smoothstep(1.0, 2.25, lp.y))
+      .mul(step(lp.y, 2.29));
+    chimney = mix(chimney, chimney.mul(0.7), streak.mul(0.45));
+    chimney = mix(chimney, chimney.mul(0.78), oneMinus(smoothstep(0.2, 0.7, lp.y)).mul(0.6));
+    chimney = mix(chimney, vec3(0.13, 0.12, 0.11), smoothstep(1.8, 2.32, lp.y).mul(0.5));
+
+    // 4 · Solar water heater: vacuum tubes on the dark panel, straps on the tank.
+    const panel = step(luminance(base), 0.2);
+    const tubes = line(lp.x, 0.085, 0.45);
+    let solar = mix(base, mix(base.mul(0.55), vec3(0.34, 0.4, 0.5), tubes), panel);
+    const strap = oneMinus(smoothstep(0.015, 0.025, abs(abs(lp.x).sub(0.52))))
+      .mul(step(1.0, lp.y))
+      .mul(oneMinus(panel));
+    solar = mix(solar, vec3(0.45, 0.46, 0.47), strap);
+    solar = mix(solar, solar.mul(vec3(0.85, 0.78, 0.66)), grime.mul(0.35).mul(oneMinus(panel)));
+
+    roofClutter.colorNode = select(
+      ck.lessThan(1.5),
+      ac,
+      select(ck.lessThan(2.5), dish, select(ck.lessThan(3.5), chimney, solar)),
+    );
+  }
+
+  const fence = new THREE.MeshStandardNodeMaterial({
+    roughness: 0.85,
+    metalness: 0,
+    vertexColors: true,
+    side: THREE.DoubleSide,
+    alphaTest: 0.5,
+  });
+  {
+    const fk = attribute<'float'>('fk', 'float');
+    const is = (k: number) => step(k - 0.5, fk).mul(step(fk, k + 0.5));
+    const a = uv().x;
+    const h = uv().y;
+    const base = vertexColor().rgb;
+    const n = mx_noise_float(positionWorld.mul(1.7)).mul(0.5).add(0.5);
+    // 0 plaster: stains and a damp band at the foot.
+    const plaster = base
+      .mul(mix(float(0.86), float(1.04), n))
+      .mul(mix(float(0.8), float(1), smoothstep(0, 0.35, h)));
+    // 1 stone: random courses of rough blocks with dark joints.
+    const course = floor(h.div(0.28));
+    const sx = a.div(0.45).add(hash(course).mul(0.7));
+    const stoneJoint = max(step(0.9, fract(h.div(0.28))), step(0.92, fract(sx)));
+    const stone = mix(
+      vec3(0.62, 0.57, 0.5).mul(float(0.8).add(hash(floor(sx).add(course.mul(41))).mul(0.3))),
+      vec3(0.32, 0.3, 0.27),
+      stoneJoint,
+    );
+    // 2 hedge: clumps of dark and light leaves.
+    const leaf = mx_noise_float(positionWorld.mul(4.5)).mul(0.5).add(0.5);
+    const hedge = mix(vec3(0.12, 0.2, 0.08), vec3(0.26, 0.36, 0.13), leaf).mul(
+      float(0.8).add(mx_noise_float(positionWorld.mul(0.6)).mul(0.25)),
+    );
+    // 3 railing: vertical bars every 12 cm between rails (cut out between).
+    const bar = step(0.72, fract(a.div(0.12)));
+    const rails = max(step(fract(h), 0.06), step(0.94, fract(h)));
+    // 4 mesh: diamond wire mesh (cut out between the wires).
+    const d1 = fract(a.add(h).div(0.07));
+    const d2 = fract(a.sub(h).div(0.07));
+    const wire = max(step(0.86, d1), step(0.86, d2));
+    const metal = base;
+    fence.colorNode = plaster
+      .mul(is(0).add(is(6)))
+      .add(stone.mul(is(1)))
+      .add(hedge.mul(is(2)))
+      .add(metal.mul(is(3).add(is(4)).add(is(5))));
+    fence.roughnessNode = mix(float(0.85), float(0.45), is(3).add(is(4)).add(is(5)));
+    fence.opacityNode = float(1)
+      .sub(is(3).mul(oneMinus(max(bar, rails))))
+      .sub(is(4).mul(oneMinus(wire)));
+  }
 
   const lampGlow = new THREE.MeshStandardNodeMaterial({ roughness: 0.3, metalness: 0 });
   lampGlow.colorNode = vec3(0.85, 0.85, 0.8);
@@ -728,6 +1002,7 @@ export function createMaterials(): DtMaterials {
     trim,
     glass,
     glassWide,
+    glassSingle,
     shopGlass,
     frame,
     roofTile,
@@ -741,6 +1016,7 @@ export function createMaterials(): DtMaterials {
     paving,
     path,
     curb,
+    retaining,
     island,
     yard,
     ground,
@@ -748,6 +1024,8 @@ export function createMaterials(): DtMaterials {
     terrain,
     water,
     prop,
+    roofClutter,
+    fence,
     lampGlow,
     holoSynthetic,
     holoSuggested,
@@ -769,6 +1047,7 @@ export function createMaterials(): DtMaterials {
     trim,
     glass,
     glassWide,
+    glassSingle,
     shopGlass,
     frame,
     roofTile,
@@ -782,6 +1061,7 @@ export function createMaterials(): DtMaterials {
     paving,
     path,
     curb,
+    retaining,
     island,
     yard,
     ground,
@@ -789,6 +1069,8 @@ export function createMaterials(): DtMaterials {
     terrain,
     water,
     prop,
+    roofClutter,
+    fence,
     lampGlow,
     lampPool,
     tunnelDark,

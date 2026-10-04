@@ -1,10 +1,14 @@
 import {
   type Building,
   type CityModel,
+  type Polygon,
   Rng,
-  orientedBox,
-  triangulate,
   barrelRise,
+  clipPolygons,
+  offsetPolygons,
+  orientedBox,
+  subtractPolygons,
+  triangulate,
 } from '@opentwin/city-core';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as THREE from 'three/webgpu';
@@ -300,6 +304,35 @@ export function buildBuildingLayer(
   cellOf: (b: Building) => string = () => '',
 ): BuildingLayer {
   const modules = createModules();
+  // Footprints of every building of the tile, with bounding boxes: a roof may
+  // not reach into a neighbour (attached buildings).
+  const footprints = model.buildings.map((o) => {
+    let bb = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const q of o.footprint.outer)
+      bb = [
+        Math.min(bb[0], q[0]),
+        Math.min(bb[1], q[1]),
+        Math.max(bb[2], q[0]),
+        Math.max(bb[3], q[1]),
+      ];
+    return { id: o.id, footprint: o.footprint, bb };
+  });
+  const roofArea = (b: Building): Polygon[] => {
+    const own = footprints.find((f) => f.id === b.id)?.bb;
+    const grown = offsetPolygons([b.footprint], Math.max(0, b.roof.overhang), 'miter');
+    if (!own) return grown;
+    const near = footprints
+      .filter(
+        (f) =>
+          f.id !== b.id &&
+          f.bb[0] <= own[2] + 2 &&
+          f.bb[2] >= own[0] - 2 &&
+          f.bb[1] <= own[3] + 2 &&
+          f.bb[3] >= own[1] - 2,
+      )
+      .map((f) => f.footprint);
+    return near.length ? subtractPolygons(grown, offsetPolygons(near, 0.02, 'miter')) : grown;
+  };
   const walls = new MeshBuilder();
   // Far-window data for the wall shader: bay = (centre u, window width | 0, window height),
   // floorInfo = (top of ground floor, floor height, top of the last window row).
@@ -316,6 +349,7 @@ export function buildBuildingLayer(
     sill: new Instances(),
     glass: new Instances(),
     glassWide: new Instances(),
+    glassSingle: new Instances(),
     shopGlass: new Instances(),
     shopFrame: new Instances(),
     door: new Instances(),
@@ -398,9 +432,28 @@ export function buildBuildingLayer(
     const corniceColor = rng.chance(0.6) ? col('#5a4034') : bandColor;
     /** Opening width of a window bay (wide: three-casement living-room window). */
     const windowWidthOf = (kind: string | undefined, bayW: number) =>
-      kind === 'wide-window'
+      kind === 'wide-window' || kind === 'tall-triple'
         ? Math.min(bayW - 0.35, Math.max(b.windowWidth * 1.8, 2.2))
-        : Math.min(b.windowWidth, bayW - 0.6);
+        : kind === 'pair-window'
+          ? Math.min(bayW - 0.4, b.windowWidth * 1.2 + 0.4)
+          : kind === 'small-window'
+            ? Math.min(0.6, bayW - 0.6)
+            : kind === 'french-window'
+              ? Math.min(1.1, bayW - 0.6)
+              : kind === 'tall-pair'
+                ? Math.min(1.5, bayW - 0.5)
+                : Math.min(b.windowWidth, bayW - 0.6);
+    const OPENING = new Set([
+      'window',
+      'wide-window',
+      'pair-window',
+      'small-window',
+      'french-window',
+      'tall-pair',
+      'tall-triple',
+      'balcony',
+      'glazed-balcony',
+    ]);
 
     const wallQuad = (
       e: Edge,
@@ -549,11 +602,7 @@ export function buildBuildingLayer(
         const c = band ? bandColor : wallColor;
         const finish = FINISH[b.finishes[band] ?? 'plaster'] ?? 0;
         const upper = f?.bays[i];
-        const hasWindow =
-          upper === 'window' ||
-          upper === 'wide-window' ||
-          upper === 'balcony' ||
-          upper === 'glazed-balcony';
+        const hasWindow = upper !== undefined && OPENING.has(upper);
         const ww = windowWidthOf(upper, bayW);
         const bayAttr = hasWindow && ww > 0.5 ? [(u0 + u1) / 2, ww, b.windowHeight] : noWindow;
         walls.setAttribute('bay', noWindow);
@@ -684,12 +733,13 @@ export function buildBuildingLayer(
         strip(e, z0 - 0.1, 0.12, orielDepth + 0.08, trimColor);
       }
 
-      // Openings.
+      // Openings (a flat may differ from its column: f.cells).
+      const cellKind = new Map((f.cells ?? []).map(([lv, i, k]) => [`${lv}:${i}`, k]));
       for (let lv = 0; lv < b.levels; lv++) {
         const floorBase = lv === 0 ? b.floorZ : groundTop + (lv - 1) * b.floorHeight;
         for (let i = 0; i < bays; i++) {
           const u = (i + 0.5) * bayW;
-          const kind = lv === 0 ? f.groundBays[i] : f.bays[i];
+          const kind = lv === 0 ? f.groundBays[i] : (cellKind.get(`${lv}:${i}`) ?? f.bays[i]);
           const ww = windowWidthOf(kind, bayW);
           if (ww < 0.5) continue;
           const inOriel = oriel !== undefined && lv >= 1 && i >= oriel[0] && i <= oriel[1];
@@ -715,6 +765,63 @@ export function buildBuildingLayer(
                 inst.surround.add([p[0], p[1], z], e.out, ww + 0.3, wh + 0.3, 1, accent);
               break;
             }
+            case 'pair-window': {
+              // Two single-casement windows with a narrow pier between (ikili pencere).
+              const wh = b.windowHeight;
+              const z =
+                lv === 0
+                  ? floorBase + Math.max(0.9, (b.groundFloorHeight - wh) / 2 + 0.25) + wh / 2
+                  : floorBase + 0.9 + wh / 2;
+              const half = (ww - 0.16) / 2;
+              for (const s of [-1, 1]) {
+                const p = along(e, u + s * (half / 2 + 0.08), inOriel ? orielDepth : 0);
+                inst.glassSingle.add([p[0], p[1], z], e.out, half, wh, 1, frameColor);
+                inst.sill.add([p[0], p[1], z], e.out, half, wh, 1, trimColor);
+              }
+              if (surrounds) {
+                const p = along(e, u, inOriel ? orielDepth : 0);
+                inst.surround.add([p[0], p[1], z], e.out, ww + 0.3, wh + 0.3, 1, accent);
+              }
+              break;
+            }
+            case 'small-window': {
+              const p = along(e, u, inOriel ? orielDepth : 0);
+              const z = floorBase + (lv === 0 ? b.groundFloorHeight : b.floorHeight) - 0.75;
+              inst.glassSingle.add([p[0], p[1], z], e.out, ww, 0.6, 1, frameColor);
+              inst.sill.add([p[0], p[1], z], e.out, ww, 0.6, 1, trimColor);
+              break;
+            }
+            case 'french-window':
+            case 'tall-pair':
+            case 'tall-triple': {
+              // Door-height windows down to the floor; a French window has a
+              // rail flush with the wall.
+              const p = along(e, u, inOriel ? orielDepth : 0);
+              const h = Math.min(2.3, (lv === 0 ? b.groundFloorHeight : b.floorHeight) - 0.45);
+              (kind === 'tall-triple' ? inst.glassWide : inst.glass).add(
+                [p[0], p[1], floorBase + 0.08 + h / 2],
+                e.out,
+                ww,
+                h,
+                1,
+                frameColor,
+              );
+              if (kind === 'french-window' || lv > 0) {
+                const rw = ww + 0.16;
+                inst.railMetal.add([p[0], p[1], floorBase], e.out, rw, 1, 0.1);
+                inst.railTop.add([p[0], p[1], floorBase], e.out, rw, 1, 0.1, col('#2a2c2e'));
+              }
+              if (surrounds)
+                inst.surround.add(
+                  [p[0], p[1], floorBase + 0.08 + h / 2],
+                  e.out,
+                  ww + 0.3,
+                  h + 0.3,
+                  1,
+                  accent,
+                );
+              break;
+            }
             case 'balcony':
             case 'glazed-balcony': {
               const bw = Math.min(bayW - 0.2, Math.max(2.4, bayW * 0.9));
@@ -724,8 +831,8 @@ export function buildBuildingLayer(
               // Balcony door + window behind the rail.
               const dw = Math.min(bw - 0.4, 1.9);
               inst.glass.add([p[0], p[1], floorBase + 1.2], e.out, dw, 2.2, 1, frameColor);
-              // Residents glaze some balconies floor by floor.
-              const glazedHere = kind === 'glazed-balcony' || rng.chance(0.22);
+              // Glazed flat by flat (the compiler's per-flat cells), not by column.
+              const glazedHere = kind === 'glazed-balcony';
               if (glazedHere || b.rail === 'solid')
                 inst.railSolid.add([p[0], p[1], floorBase], e.out, bw, 1, 1, railColor);
               else if (b.rail === 'glass') {
@@ -845,6 +952,7 @@ export function buildBuildingLayer(
 
     buildRoof(
       b,
+      roofArea(b),
       ring,
       wallTop,
       roofColor,
@@ -893,6 +1001,13 @@ export function buildBuildingLayer(
     const objects = [
       inst.glass.build(modules.glass, mats.glass, 'windows', false, 'frameColor'),
       inst.glassWide.build(modules.glass, mats.glassWide, 'windows-wide', false, 'frameColor'),
+      inst.glassSingle.build(
+        modules.glass,
+        mats.glassSingle,
+        'windows-single',
+        false,
+        'frameColor',
+      ),
       inst.sill.build(modules.sill, mats.frame, 'sills'),
       inst.shopGlass.build(modules.glass, mats.shopGlass, 'shop-glass'),
       inst.shopFrame.build(modules.shopFrame, mats.frame, 'shop-frames'),
@@ -935,6 +1050,8 @@ export function buildBuildingLayer(
 
 function buildRoof(
   b: Building,
+  /** Where the roof may reach: footprint plus eaves, less the neighbouring buildings. */
+  allowed: Polygon[],
   ring: V2[],
   wallTop: number,
   roofColor: THREE.Color,
@@ -1084,24 +1201,43 @@ function buildRoof(
   ];
   const cosP = Math.cos((b.roof.pitchDeg * Math.PI) / 180);
 
+  // Roof faces are planes over the footprint's oriented box, clipped to the
+  // allowed area (an irregular or attached footprint is not its box).
   const face = (pts: V3[], uvOf: (p: V3) => [number, number]) => {
-    // Orient upward.
     const [a, c, d] = pts;
-    const nx = (c[1] - a[1]) * (d[2] - a[2]) - (c[2] - a[2]) * (d[1] - a[1]);
-    const ny = (c[2] - a[2]) * (d[0] - a[0]) - (c[0] - a[0]) * (d[2] - a[2]);
-    const nz = (c[0] - a[0]) * (d[1] - a[1]) - (c[1] - a[1]) * (d[0] - a[0]);
-    const flip = nz < 0;
-    const ordered = flip ? [...pts].reverse() : pts;
+    let nx = (c[1] - a[1]) * (d[2] - a[2]) - (c[2] - a[2]) * (d[1] - a[1]);
+    let ny = (c[2] - a[2]) * (d[0] - a[0]) - (c[0] - a[0]) * (d[2] - a[2]);
+    let nz = (c[0] - a[0]) * (d[1] - a[1]) - (c[1] - a[1]) * (d[0] - a[0]);
+    if (nz < 0) [nx, ny, nz] = [-nx, -ny, -nz];
+    if (nz < 1e-9) return;
     const len = Math.hypot(nx, ny, nz) || 1;
-    const n: [number, number, number] = flip
-      ? [-nx / len, -ny / len, -nz / len]
-      : [nx / len, ny / len, nz / len];
-    const three = toThree(n[0], n[1], n[2]);
-    const ids = ordered.map((p) => {
-      const [u, v] = uvOf(p);
-      return tiles.vertex(toThree(p[0], p[1], p[2]), three, roofColor, u, v);
-    });
-    for (let k = 1; k + 1 < ids.length; k++) tiles.triangle(ids[0], ids[k], ids[k + 1], owner);
+    const three = toThree(nx / len, ny / len, nz / len);
+    const zAt = (x: number, y: number) => a[2] - (nx * (x - a[0]) + ny * (y - a[1])) / nz;
+    const pieces = clipPolygons(
+      [{ outer: pts.map((p) => [p[0], p[1]] as V2), holes: [] }],
+      allowed,
+    );
+    for (const piece of pieces) {
+      const tri = triangulate(piece);
+      const ids: number[] = [];
+      for (let k = 0; k < tri.vertices.length; k += 2) {
+        const p: V3 = [tri.vertices[k], tri.vertices[k + 1], 0];
+        p[2] = zAt(p[0], p[1]);
+        const [u, v] = uvOf(p);
+        ids.push(tiles.vertex(toThree(p[0], p[1], p[2]), three, roofColor, u, v));
+      }
+      for (let k = 0; k < tri.indices.length; k += 3) {
+        const [i0, i1, i2] = [tri.indices[k], tri.indices[k + 1], tri.indices[k + 2]];
+        const ax = tri.vertices[i0 * 2];
+        const ay = tri.vertices[i0 * 2 + 1];
+        const cr =
+          (tri.vertices[i1 * 2] - ax) * (tri.vertices[i2 * 2 + 1] - ay) -
+          (tri.vertices[i1 * 2 + 1] - ay) * (tri.vertices[i2 * 2] - ax);
+        if (Math.abs(cr) < 1e-9) continue;
+        if (cr > 0) tiles.triangle(ids[i0], ids[i1], ids[i2], owner);
+        else tiles.triangle(ids[i0], ids[i2], ids[i1], owner);
+      }
+    }
   };
   const rel = (p: V3) => [
     (p[0] - ob.center[0]) * axis[0] + (p[1] - ob.center[1]) * axis[1],
@@ -1140,85 +1276,109 @@ function buildRoof(
         return [u, Math.abs(v - v0) < 1e-6 ? a0 : a0 + seg];
       });
     }
-    // End walls under the arch: a fan from the middle of the wall top over the
-    // wall corners and the arch (same winding as the gable ends below).
-    for (const s of [-1, 1]) {
-      const n = toThree(axis[0] * s, axis[1] * s, 0);
-      const vtx = (p: V3, v: number) =>
-        walls.vertex(toThree(p[0], p[1], p[2]), n, wallColor, v, p[2], 0);
-      const centre = vtx(c(s * ob.halfLength, 0, b.topZ), 0);
-      const rim: number[] = [vtx(c(s * ob.halfLength, -ob.halfWidth, b.topZ), -ob.halfWidth)];
-      for (let j = 0; j <= N; j++) {
-        const v = -ob.halfWidth + (2 * ob.halfWidth * j) / N;
-        rim.push(vtx(c(s * ob.halfLength, v, archZ(v)), v));
-      }
-      rim.push(vtx(c(s * ob.halfLength, ob.halfWidth, b.topZ), ob.halfWidth));
-      for (let j = 0; j + 1 < rim.length; j++) {
-        if (s > 0) walls.triangle(centre, rim[j + 1], rim[j], owner);
-        else walls.triangle(centre, rim[j], rim[j + 1], owner);
-      }
-    }
   } else if (b.roof.shape === 'gable') {
     const r0 = c(-L, 0, ridgeZ);
     const r1 = c(L, 0, ridgeZ);
     face([c(-L, -W, eaveZ), c(L, -W, eaveZ), r1, r0], uvSide);
     face([c(L, W, eaveZ), c(-L, W, eaveZ), r0, r1], uvSide);
-    // Gable end walls.
-    for (const s of [-1, 1]) {
-      const g0 = c(s * ob.halfLength, -ob.halfWidth, b.topZ);
-      const g1 = c(s * ob.halfLength, ob.halfWidth, b.topZ);
-      const top = c(s * ob.halfLength, 0, ridgeZ);
-      const n = toThree(axis[0] * s, axis[1] * s, 0);
-      const ids = (s > 0 ? [g0, g1, top] : [g1, g0, top]).map((p) =>
-        walls.vertex(toThree(p[0], p[1], p[2]), n, wallColor, 0, p[2], 0),
-      );
-      walls.triangle(ids[0], ids[1], ids[2], owner);
-    }
   } else {
-    const ridgeHalf = Math.max(0, ob.halfLength - ob.halfWidth);
-    const r0 = c(-ridgeHalf, 0, ridgeZ);
-    const r1 = c(ridgeHalf, 0, ridgeZ);
+    const hip = Math.max(0, ob.halfLength - ob.halfWidth);
+    const r0 = c(-hip, 0, ridgeZ);
+    const r1 = c(hip, 0, ridgeZ);
     face([c(-L, -W, eaveZ), c(L, -W, eaveZ), r1, r0], uvSide);
     face([c(L, W, eaveZ), c(-L, W, eaveZ), r0, r1], uvSide);
     face([c(L, -W, eaveZ), c(L, W, eaveZ), r1], uvEnd);
     face([c(-L, W, eaveZ), c(-L, -W, eaveZ), r0], uvEnd);
   }
 
-  // Fascia board and soffit along the eaves.
-  const corners: V2[] = [at(-L, -W), at(L, -W), at(L, W), at(-L, W)];
-  for (let k = 0; k < 4; k++) {
-    const e = edgeOf(corners, k);
-    trims.quad(
-      [
-        [e.a[0], e.a[1], eaveZ - 0.2],
-        [e.b[0], e.b[1], eaveZ - 0.2],
-        [e.b[0], e.b[1], eaveZ + 0.02],
-        [e.a[0], e.a[1], eaveZ + 0.02],
-      ],
-      [e.out[0], e.out[1], 0],
-      trimColor,
-      [
-        [0, 0],
-        [1, 0],
-        [1, 1],
-        [0, 1],
-      ],
-    );
+  // Height of the (unclipped) roof surface over a point.
+  const ridgeHalf = Math.max(0, ob.halfLength - ob.halfWidth);
+  const roofZ = (p: V2): number => {
+    const u = (p[0] - ob.center[0]) * axis[0] + (p[1] - ob.center[1]) * axis[1];
+    const v = Math.abs((p[0] - ob.center[0]) * nrm[0] + (p[1] - ob.center[1]) * nrm[1]);
+    if (b.roof.shape === 'barrel')
+      return b.topZ + barrelRise(ob.halfWidth) * Math.max(0, 1 - (v / W) ** 2);
+    const side = ridgeZ - v * tan;
+    if (b.roof.shape === 'gable') return side;
+    return Math.min(side, ridgeZ - Math.max(0, Math.abs(u) - ridgeHalf) * tan);
+  };
+  // Walls up to the roof wherever it rises above the wall top: gable ends,
+  // party walls where the roof stops at a neighbour, corners of an irregular
+  // footprint under its box roof. Sampled every metre along each edge.
+  for (let k = 0; k < ring.length; k++) {
+    const e = edgeOf(ring, k);
+    const n = Math.max(1, Math.ceil(e.len / 1));
+    const n3 = toThree(e.out[0], e.out[1], 0);
+    for (let i = 0; i < n; i++) {
+      const t0 = i / n;
+      const t1 = (i + 1) / n;
+      const p0: V2 = [e.a[0] + (e.b[0] - e.a[0]) * t0, e.a[1] + (e.b[1] - e.a[1]) * t0];
+      const p1: V2 = [e.a[0] + (e.b[0] - e.a[0]) * t1, e.a[1] + (e.b[1] - e.a[1]) * t1];
+      const z0 = roofZ(p0);
+      const z1 = roofZ(p1);
+      if (z0 < b.topZ + 0.03 && z1 < b.topZ + 0.03) continue;
+      const ids = [
+        walls.vertex(toThree(p0[0], p0[1], b.topZ - 0.05), n3, wallColor, t0 * e.len, b.topZ, 0),
+        walls.vertex(toThree(p1[0], p1[1], b.topZ - 0.05), n3, wallColor, t1 * e.len, b.topZ, 0),
+        walls.vertex(toThree(p1[0], p1[1], Math.max(b.topZ, z1)), n3, wallColor, t1 * e.len, z1, 0),
+        walls.vertex(toThree(p0[0], p0[1], Math.max(b.topZ, z0)), n3, wallColor, t0 * e.len, z0, 0),
+      ];
+      walls.triangle(ids[0], ids[1], ids[2], owner);
+      walls.triangle(ids[0], ids[2], ids[3], owner);
+    }
   }
-  trims.quad(
-    [
-      [corners[3][0], corners[3][1], eaveZ - 0.2],
-      [corners[2][0], corners[2][1], eaveZ - 0.2],
-      [corners[1][0], corners[1][1], eaveZ - 0.2],
-      [corners[0][0], corners[0][1], eaveZ - 0.2],
-    ],
-    [0, 0, -1],
-    trimColor,
-    [
-      [0, 0],
-      [1, 0],
-      [1, 1],
-      [0, 1],
-    ],
-  );
+  // Fascia board and soffit along the eaves (edges of the roof below the wall top).
+  for (const poly of allowed) {
+    for (const r of [poly.outer]) {
+      for (let k = 0; k < r.length; k++) {
+        const e = edgeOf(r as V2[], k);
+        const za = roofZ(e.a);
+        const zb = roofZ(e.b);
+        if (za > b.topZ + 0.05 || zb > b.topZ + 0.05 || e.len < 0.05) continue;
+        trims.quad(
+          [
+            [e.a[0], e.a[1], za - 0.2],
+            [e.b[0], e.b[1], zb - 0.2],
+            [e.b[0], e.b[1], zb + 0.02],
+            [e.a[0], e.a[1], za + 0.02],
+          ],
+          [e.out[0], e.out[1], 0],
+          trimColor,
+          [
+            [0, 0],
+            [1, 0],
+            [1, 1],
+            [0, 1],
+          ],
+        );
+      }
+    }
+  }
+  const eaves = subtractPolygons(allowed, [b.footprint]);
+  const down = toThree(0, 0, -1);
+  for (const poly of eaves) {
+    const tri = triangulate(poly);
+    const ids: number[] = [];
+    for (let k = 0; k < tri.vertices.length; k += 2)
+      ids.push(
+        trims.vertex(
+          toThree(tri.vertices[k], tri.vertices[k + 1], eaveZ - 0.2),
+          down,
+          trimColor,
+          0,
+          0,
+        ),
+      );
+    for (let k = 0; k < tri.indices.length; k += 3) {
+      const [i0, i1, i2] = [tri.indices[k], tri.indices[k + 1], tri.indices[k + 2]];
+      const ax = tri.vertices[i0 * 2];
+      const ay = tri.vertices[i0 * 2 + 1];
+      const cr =
+        (tri.vertices[i1 * 2] - ax) * (tri.vertices[i2 * 2 + 1] - ay) -
+        (tri.vertices[i1 * 2 + 1] - ay) * (tri.vertices[i2 * 2] - ax);
+      // Facing down: clockwise from above.
+      if (cr > 0) trims.triangle(ids[i0], ids[i2], ids[i1]);
+      else trims.triangle(ids[i0], ids[i1], ids[i2]);
+    }
+  }
 }

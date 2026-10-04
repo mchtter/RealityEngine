@@ -1,6 +1,7 @@
 import { type Building, type CityModel, terrainHeightAt } from '@opentwin/city-core';
 import * as THREE from 'three/webgpu';
 import { type BuildingLayer, buildBuildingLayer } from './buildings';
+import { buildFences } from './fences';
 import { toThree } from './geom';
 import { buildGround } from './ground';
 import type { DtMaterials } from './materials';
@@ -40,7 +41,12 @@ export function buildTilePayload(model: CityModel): {
 } {
   const mats = MATERIAL_KEYS;
   const root = new THREE.Group();
-  root.add(buildGround(model, mats, { sea: false }));
+  // Sea only where the tile reaches down to it (the scene backdrop is ground).
+  const t = model.terrain;
+  const coastal = t.heights.some((h) => h <= t.seaLevel + 0.5);
+  root.add(buildGround(model, mats, { sea: coastal }));
+  const fences = buildFences(model, mats);
+  if (fences) root.add(fences);
 
   const street = model.props.filter((p) => !p.buildingId);
   const showcase = buildPropGroup(street, mats, 'showcase', 'props-showcase');

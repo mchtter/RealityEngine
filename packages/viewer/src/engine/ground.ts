@@ -1,17 +1,24 @@
 import {
+  type Bridge,
   type CityModel,
   CutGround,
   type Polygon,
+  RoadSurface,
   type SurfaceKind,
   type TerrainGrid,
+  bufferPolyline,
   clipPolygons,
+  deckPriority,
+  offsetPolygons,
+  pointInRing,
   rectPolygon,
   subtractPolygons,
   terrainHeightAt,
+  triangulate,
   unionPolygons,
 } from '@opentwin/city-core';
 import * as THREE from 'three/webgpu';
-import { MeshBuilder, drapeOnTerrain, drapeRingWall, toThree } from './geom';
+import { MeshBuilder, drapeOnTerrain, drapePolygon, drapeRingWall, toThree } from './geom';
 import type { DtMaterials } from './materials';
 
 /** Ground cell size (m) — the frustum culling unit of terrain and road surfaces. */
@@ -25,6 +32,9 @@ const SURF: Record<SurfaceKind, number> = {
   path: 3,
   island: 4,
   yard: 5,
+  concrete: 7,
+  parking: 8,
+  playground: 9,
 };
 const SURF_KERB = 6;
 
@@ -36,6 +46,9 @@ const SURF_KERB = 6;
  */
 const LIFT: Record<SurfaceKind, number> = {
   yard: 0.05,
+  concrete: 0.06,
+  parking: 0.08,
+  playground: 0.09,
   asphalt: 0.1,
   path: 0.13,
   paving: 0.16,
@@ -183,13 +196,24 @@ function terrainMesh(
     const top = ring.map(([i, j]) => j * cols + i);
     const bottom = ring.map(([i, j]) => {
       const k = positions.length / 3;
-      const over = noSkirt?.(t.minX + gi(i) * t.cellSize, t.minY + gj(j) * t.cellSize);
-      positions.push(...at(i, j, over ? 0 : skirt));
+      positions.push(...at(i, j, skirt));
       normals.push(...normalAt(i, j));
       return k;
     });
+    const xy = ([i, j]: [number, number]): [number, number] => [
+      t.minX + gi(i) * t.cellSize,
+      t.minY + gj(j) * t.cellSize,
+    ];
     for (let k = 0; k < ring.length; k++) {
       const n = (k + 1) % ring.length;
+      // A skirt piece is left out whole where it would hang into a cut (a
+      // piece dropped at one end only stood as a big slanted triangle).
+      if (noSkirt) {
+        const a = xy(ring[k]);
+        const b = xy(ring[n]);
+        const mid: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        if (noSkirt(...a) || noSkirt(...b) || noSkirt(...mid)) continue;
+      }
       // Outward-facing quad (top edge k → n, dropped below).
       indices.push(top[k], bottom[k], bottom[n], top[k], bottom[n], top[n]);
     }
@@ -208,13 +232,55 @@ function terrainMesh(
   return mesh;
 }
 
-/** Sea: a large plane at sea level, reaching past the terrain edge. */
+/**
+ * The terrain as drawn under the street surface: every grid node next to a
+ * street (any sample of the surface within one cell) sits 0.3 m below the
+ * lowest surface point around it. The grid's triangles interpolate between
+ * nodes; one spanning a road and a higher median would otherwise rise through
+ * the asphalt between them.
+ */
+function underStreet(t: TerrainGrid, surface: RoadSurface): TerrainGrid {
+  // Surface sampled once on a half-cell grid (NaN off the streets), then the
+  // minimum over the 5 × 5 samples around each node.
+  const sc = (t.cols - 1) * 2 + 1;
+  const sr = (t.rows - 1) * 2 + 1;
+  const half = t.cellSize / 2;
+  const samples = new Float32Array(sc * sr);
+  let any = false;
+  for (let j = 0; j < sr; j++) {
+    for (let i = 0; i < sc; i++) {
+      const z = surface.heightAt(t.minX + i * half, t.minY + j * half);
+      samples[j * sc + i] = z ?? Number.NaN;
+      if (z !== null) any = true;
+    }
+  }
+  if (!any) return t;
+  const heights = t.heights.slice();
+  for (let j = 0; j < t.rows; j++) {
+    for (let i = 0; i < t.cols; i++) {
+      let low = Infinity;
+      for (let b = Math.max(0, 2 * j - 2); b <= Math.min(sr - 1, 2 * j + 2); b++) {
+        for (let a = Math.max(0, 2 * i - 2); a <= Math.min(sc - 1, 2 * i + 2); a++) {
+          const z = samples[b * sc + a];
+          if (z < low) low = z;
+        }
+      }
+      if (low === Infinity) continue;
+      const idx = j * t.cols + i;
+      heights[idx] = Math.min(heights[idx], low - 0.3);
+    }
+  }
+  return { ...t, heights };
+}
+
+/** Sea: a plane at sea level over the tile. */
 export function seaPlane(
   model: Pick<CityModel, 'bounds' | 'terrain'>,
   mats: DtMaterials,
 ): THREE.Mesh {
   const b = model.bounds;
-  const sea = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000), mats.water);
+  // The tile's own extent (the terrain covers it where it is above the sea).
+  const sea = new THREE.Mesh(new THREE.PlaneGeometry(b.maxX - b.minX, b.maxY - b.minY), mats.water);
   sea.rotation.x = -Math.PI / 2;
   sea.position.set((b.minX + b.maxX) / 2, model.terrain.seaLevel, -(b.minY + b.maxY) / 2);
   sea.receiveShadow = true;
@@ -341,7 +407,29 @@ export function buildGround(
     tubes.some((tb) =>
       tb.path.some((a, k) => k > 0 && distToSegment([x, y], tb.path[k - 1], a) < tb.half),
     );
-  const far = terrainMesh(t, mats.terrain, FAR_STEP, 6, undefined, undefined, overTube);
+  // Tile-edge skirts hang 6 m down to hide cracks between tiles; never where a
+  // tube, trench or tube-mouth lid crosses the edge (the skirt stood across the
+  // ramp there as a 6 m curtain).
+  const cutGround = new CutGround(t, model.terrainCut);
+  const noSkirt = (x: number, y: number) => {
+    if (overTube(x, y)) return true;
+    const r = t.cellSize;
+    for (const [dx, dy] of [
+      [0, 0],
+      [r, 0],
+      [-r, 0],
+      [0, r],
+      [0, -r],
+      [r, r],
+      [-r, r],
+      [r, -r],
+      [-r, -r],
+    ]) {
+      if (cutGround.inTrench(x + dx, y + dy) || cutGround.inLid(x + dx, y + dy)) return true;
+    }
+    return false;
+  };
+  const far = terrainMesh(t, mats.terrain, FAR_STEP, 6, undefined, undefined, noSkirt);
   far.userData.role = 'ground:far';
   group.add(far);
   if (opts.sea !== false) group.add(seaPlane(model, mats));
@@ -349,12 +437,30 @@ export function buildGround(
   // Underpasses and tunnel mouths: the terrain is left out inside their
   // footprints; the cells around them are drawn carved along the wall line,
   // the lid over a tube mouth from its own grid.
-  const ground = new CutGround(t, model.terrainCut);
+  const ground = cutGround;
+  // Street surface (RoadSurface: road profiles, level across each carriageway,
+  // sloping across medians). Road surfaces, kerbs and markings are draped on
+  // it along their own polygon edges, not on the 4 m terrain grid whose
+  // triangles across a carriageway edge drew the edge as a wave; the terrain
+  // drawn under the street corridors sits 0.3 m lower, out of sight.
+  const surface = new RoadSurface(
+    model.roads
+      .filter((r) => r.grade === 'ground' && r.profile)
+      .map((r) => ({
+        points: r.centerline,
+        profile: r.profile!,
+        halfWidth: r.width / 2 + r.sidewalk,
+        carriage: r.width / 2,
+      })),
+  );
+  const streetAt = (x: number, y: number) => surface.heightAt(x, y) ?? terrainHeightAt(t, x, y);
+  const shown = underStreet(t, surface);
   const trenches = model.terrainCut?.trenches ?? [];
   const lids = model.terrainCut?.lids ?? [];
   const holes = [...trenches, ...lids];
   const carved = cellsUnder(t, holes);
-  const groundAt = (x: number, y: number) => ground.heightAt(x, y);
+  const groundAt = (x: number, y: number) =>
+    ground.inTrench(x, y) || ground.inLid(x, y) ? ground.heightAt(x, y) : streetAt(x, y);
   const onHoleEdge = (a: [number, number], b: [number, number]) =>
     holes.some((h) =>
       [h.outer, ...h.holes].some((ring) =>
@@ -378,7 +484,7 @@ export function buildGround(
       const chunk = new THREE.Group();
       chunk.name = `ground-${i0}-${j0}`;
 
-      const terrain = terrainMesh(t, mats.terrain, 1, 6, [i0, j0, i1, j1], carved, overTube);
+      const terrain = terrainMesh(shown, mats.terrain, 1, 6, [i0, j0, i1, j1], carved, noSkirt);
       terrain.userData.role = 'ground:near';
       chunk.add(terrain);
       const cellsHere: Polygon[] = [];
@@ -393,7 +499,7 @@ export function buildGround(
       if (cellsHere.length) {
         const patch = new MeshBuilder();
         const area = unionPolygons(cellsHere);
-        for (const poly of subtractPolygons(area, holes)) drapeShaded(patch, poly, t);
+        for (const poly of subtractPolygons(area, holes)) drapeShaded(patch, poly, shown);
         for (const poly of clipPolygons(area, lids)) drapeShaded(patch, poly, ground.lid);
         if (patch.indices.length) {
           const mesh = new THREE.Mesh(patch.build(), mats.terrain);
@@ -414,32 +520,36 @@ export function buildGround(
       // All surfaces and kerbs of the chunk in one mesh: one draw call (`ground` material).
       const overlay = new MeshBuilder();
       overlay.defineAttribute('surf', 1);
-      // Inside a trench surfaces lie on its floor, over a tube mouth on the lid.
+      // Not in a trench (it draws its own road), over a tube mouth on the lid.
       const nearCut = carved.size > 0 && clipPolygons(holes, cell).length > 0;
       const onGrids = (polys: Polygon[]): [Polygon[], TerrainGrid][] =>
         nearCut
           ? [
               [subtractPolygons(polys, holes), t],
-              [clipPolygons(polys, trenches), ground.floor],
               [clipPolygons(polys, lids), ground.lid],
             ]
           : [[polys, t]];
+      /** Street corridor surfaces drape on the street surface (off the lids). */
+      const STREET = new Set<SurfaceKind>(['asphalt', 'sidewalk', 'island', 'paving']);
       for (const surface of model.surfaces) {
         const clipped = surface.polygons.length ? clipPolygons(surface.polygons, cell) : [];
         if (!clipped.length) continue;
         for (const [polys, grid] of onGrids(clipped)) {
           for (const poly of polys) {
             overlay.setAttribute('surf', [SURF[surface.kind]]);
-            drapeOnTerrain(overlay, poly, grid, LIFT[surface.kind]);
+            const onStreet = STREET.has(surface.kind) && grid === t;
+            if (onStreet) drapePolygon(overlay, poly, streetAt, LIFT[surface.kind], 6);
+            else drapeOnTerrain(overlay, poly, grid, LIFT[surface.kind]);
             if (surface.kind === 'sidewalk' || surface.kind === 'island') {
               overlay.setAttribute('surf', [SURF_KERB]);
               for (const ring of [poly.outer, ...poly.holes]) {
                 drapeRingWall(
                   overlay,
                   ring as [number, number][],
-                  grid,
+                  onStreet ? streetAt : grid,
                   LIFT[surface.kind],
-                  LIFT.asphalt - 0.05,
+                  // Down past the lowered terrain at the corridor's edge.
+                  -1.0,
                   true,
                   6,
                   nearCut ? (a, b) => onCut(a, b) || onHoleEdge(a, b) : onCut,
@@ -477,11 +587,23 @@ export function buildGround(
       const marks = new MeshBuilder();
       for (const { m, mid } of markRuns) {
         if (!inChunk(mid)) continue;
-        const pts = m.points as [number, number][];
-        if (m.kind === 'center-dashed' || m.kind === 'lane-dashed') {
-          for (const d of dashes(pts, 3, 5)) ribbon(marks, groundAt, d, 0.13, MARKING_LIFT);
-        } else {
-          ribbon(marks, groundAt, pts, m.kind === 'edge' ? 0.15 : 0.13, MARKING_LIFT);
+        // Markings stop at a trench (it paints its own lanes).
+        const all = m.points as [number, number][];
+        const parts: [number, number][][] = [];
+        let part: [number, number][] = [];
+        for (const q of all) {
+          if (ground.inTrench(q[0], q[1])) {
+            if (part.length >= 2) parts.push(part);
+            part = [];
+          } else part.push(q);
+        }
+        if (part.length >= 2) parts.push(part);
+        for (const pts of parts) {
+          if (m.kind === 'center-dashed' || m.kind === 'lane-dashed') {
+            for (const d of dashes(pts, 3, 5)) ribbon(marks, groundAt, d, 0.13, MARKING_LIFT);
+          } else {
+            ribbon(marks, groundAt, pts, m.kind === 'edge' ? 0.15 : 0.13, MARKING_LIFT);
+          }
         }
       }
       for (const c of model.crossings) {
@@ -637,11 +759,166 @@ export function buildGround(
       mb.quad(quad, [(n[k][0] / len) * side, (n[k][1] / len) * side, 0], color, Q);
     }
   };
+  /** Point-in-polygons test (bounding boxes first) for what another deck owns. */
+  type Owned = { inside: (x: number, y: number) => boolean };
+  const NONE: Owned = { inside: () => false };
+  const owned = (polys: Polygon[]): Owned => {
+    if (!polys.length) return NONE;
+    const boxes = polys.map((p) => {
+      let b = [Infinity, Infinity, -Infinity, -Infinity];
+      for (const q of p.outer)
+        b = [
+          Math.min(b[0], q[0]),
+          Math.min(b[1], q[1]),
+          Math.max(b[2], q[0]),
+          Math.max(b[3], q[1]),
+        ];
+      return { p, b };
+    });
+    return {
+      inside: (x, y) =>
+        boxes.some(
+          ({ p, b }) =>
+            x >= b[0] &&
+            y >= b[1] &&
+            x <= b[2] &&
+            y <= b[3] &&
+            pointInRing([x, y], p.outer) &&
+            !p.holes.some((h) => pointInRing([x, y], h)),
+        ),
+    };
+  };
+  /** Path with extra vertices every `step` m (heights interpolated). */
+  const densifyPath = (path: V[], step: number): V[] => {
+    const out: V[] = [path[0]];
+    for (let k = 1; k < path.length; k++) {
+      const a = path[k - 1];
+      const b = path[k];
+      const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / step));
+      for (let i = 1; i <= n; i++) {
+        const f = i / n;
+        out.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f]);
+      }
+    }
+    return out;
+  };
+  /** Midpoint of a two-point piece of path, offset laterally by o. */
+  const offsetAt = (seg: V[], o: number): [number, number] => {
+    const [a, b] = [seg[0], seg[seg.length - 1]];
+    const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    return [
+      (a[0] + b[0]) / 2 + (-(b[1] - a[1]) / l) * o,
+      (a[1] + b[1]) / 2 + ((b[0] - a[0]) / l) * o,
+    ];
+  };
+  /** Pieces of a (dense) path whose line at lateral offset o lies outside `skip`. */
+  const runsOutside = (path: V[], o: number, skip: Owned): V[][] => {
+    if (skip === NONE) return [path];
+    const runs: V[][] = [];
+    let run: V[] = [];
+    for (let k = 1; k < path.length; k++) {
+      if (skip.inside(...offsetAt([path[k - 1], path[k]], o))) {
+        if (run.length >= 2) runs.push(run);
+        run = [];
+        continue;
+      }
+      if (!run.length) run.push(path[k - 1]);
+      run.push(path[k]);
+    }
+    if (run.length >= 2) runs.push(run);
+    return runs;
+  };
+  /**
+   * `along` with the parts inside `clip` left out (polygon difference per
+   * quad; heights follow the path).
+   */
+  const alongClipped = (
+    mb: MeshBuilder,
+    path: V[],
+    o0: number,
+    o1: number,
+    z: number,
+    clip: Polygon[],
+  ) => {
+    if (!clip.length) {
+      along(mb, path, o0, o1, z);
+      return;
+    }
+    const test = owned(clip);
+    const n = miters(path);
+    const up = toThree(0, 0, 1);
+    for (let k = 1; k < path.length; k++) {
+      const a = path[k - 1];
+      const b = path[k];
+      const corner = (i: number, o: number): [number, number] => [
+        path[i][0] + n[i][0] * o,
+        path[i][1] + n[i][1] * o,
+      ];
+      const quad = [corner(k - 1, o0), corner(k, o0), corner(k, o1), corner(k - 1, o1)];
+      const touched =
+        quad.some((q) => test.inside(q[0], q[1])) || test.inside(...offsetAt([a, b], 0));
+      if (!touched) {
+        along(mb, [a, b], o0, o1, z);
+        continue;
+      }
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const l2 = dx * dx + dy * dy || 1;
+      const zAt = (x: number, y: number) => {
+        const t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / l2));
+        return a[2] + (b[2] - a[2]) * t + z;
+      };
+      for (const piece of subtractPolygons([{ outer: quad, holes: [] }], clip)) {
+        const tri = triangulate(piece);
+        const ids: number[] = [];
+        for (let v = 0; v < tri.vertices.length; v += 2) {
+          const x = tri.vertices[v];
+          const y = tri.vertices[v + 1];
+          ids.push(mb.vertex(toThree(x, y, zAt(x, y)), up, undefined, x, y));
+        }
+        for (let t = 0; t < tri.indices.length; t += 3) {
+          const [i, j, m] = [tri.indices[t], tri.indices[t + 1], tri.indices[t + 2]];
+          const p = (q: number) => [tri.vertices[q * 2], tri.vertices[q * 2 + 1]];
+          const [pa, pb, pc] = [p(i), p(j), p(m)];
+          const area = (pb[0] - pa[0]) * (pc[1] - pa[1]) - (pc[0] - pa[0]) * (pb[1] - pa[1]);
+          if (Math.abs(area) < 1e-9) continue;
+          // Upward facing: counter-clockwise from above.
+          if (area > 0) mb.triangle(ids[i], ids[j], ids[m]);
+          else mb.triangle(ids[i], ids[m], ids[j]);
+        }
+      }
+    }
+  };
+  /** Horizontal distance from a point to a bridge's centreline. */
+  const distanceTo = (br: Bridge, q: [number, number]): number => {
+    let best = Infinity;
+    for (let k = 1; k < br.path.length; k++) {
+      const a = br.path[k - 1];
+      const b = br.path[k];
+      best = Math.min(best, distToSegment(q, [a[0], a[1]], [b[0], b[1]]));
+    }
+    return best;
+  };
+  /** Deck height of a bridge over the closest point of its path. */
+  const deckAt = (br: Bridge, q: [number, number]): number => {
+    let best = { d: Infinity, z: br.path[0][2] };
+    for (let k = 1; k < br.path.length; k++) {
+      const a = br.path[k - 1];
+      const b = br.path[k];
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const l2 = dx * dx + dy * dy || 1;
+      const t = Math.max(0, Math.min(1, ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / l2));
+      const d = Math.hypot(q[0] - a[0] - dx * t, q[1] - a[1] - dy * t);
+      if (d < best.d) best = { d, z: a[2] + (b[2] - a[2]) * t };
+    }
+    return best.z;
+  };
   /** Dashed or solid line on the deck at lateral offset o. */
-  const line = (path: V[], o: number, dash: number | null) => {
+  const line = (path: V[], o: number, dash: number | null, skip: Owned = NONE) => {
     const w = 0.075;
     if (dash === null) {
-      along(deckMarks, path, o - w, o + w, 0.03);
+      for (const run of runsOutside(path, o, skip)) along(deckMarks, run, o - w, o + w, 0.03);
       return;
     }
     // Dashes: 3 m paint every `dash` metres along the deck.
@@ -663,7 +940,7 @@ export function buildGround(
           p0[1] + (p1[1] - p0[1]) * t1,
           p0[2] + (p1[2] - p0[2]) * t1,
         ];
-        along(deckMarks, [a, b], o - w, o + w, 0.03);
+        if (!skip.inside(...offsetAt([a, b], o))) along(deckMarks, [a, b], o - w, o + w, 0.03);
       }
       walked += seg;
     }
@@ -676,50 +953,170 @@ export function buildGround(
     lanesIn: number,
     oneway: boolean,
     edge: boolean,
+    /** Lane lines stop on a deck that owns the surface; edge lines wherever another deck joins. */
+    skip: { lanes: Owned; edges: Owned } = { lanes: NONE, edges: NONE },
   ) => {
     const lanes = Math.max(1, lanesIn);
     const laneW = (2 * carriage) / lanes;
+    if (edge) {
+      line(path, carriage - 0.35, null, skip.edges);
+      line(path, -carriage + 0.35, null, skip.edges);
+    }
     if (lanes < 2 && !oneway) return;
+    const lane = (o: number, dash: number | null) => line(path, o, dash, skip.lanes);
     if (oneway) {
-      for (let k = 1; k < lanes; k++) line(path, -carriage + k * laneW, 9);
+      for (let k = 1; k < lanes; k++) lane(-carriage + k * laneW, 9);
     } else {
       const perSide = Math.floor(lanes / 2);
       if (lanes >= 4) {
-        line(path, 0.12, null);
-        line(path, -0.12, null);
-      } else line(path, 0, 9);
+        lane(0.12, null);
+        lane(-0.12, null);
+      } else lane(0, 9);
       for (let k = 1; k < perSide; k++) {
-        line(path, k * laneW, 9);
-        line(path, -k * laneW, 9);
+        lane(k * laneW, 9);
+        lane(-k * laneW, 9);
       }
-    }
-    if (edge) {
-      line(path, carriage - 0.35, null);
-      line(path, -carriage + 0.35, null);
     }
   };
 
-  for (const br of model.bridges) {
+  // Decks that join at the same height (Y splits, slip roads, a ramp merging
+  // into a viaduct) share one surface: where they overlap the higher-priority
+  // (wider) deck draws the running surface, and barriers, walkways, slab
+  // edges and edge lines stop where they would stand inside the other deck,
+  // so the joining road opens into it instead of crossing it.
+  const bridges = [...model.bridges].sort(deckPriority);
+  const prints = bridges.map((br) =>
+    bufferPolyline(
+      br.path.map((q) => [q[0], q[1]] as [number, number]),
+      br.width / 2,
+      false,
+    ),
+  );
+  const joins = bridges.map(() => ({ over: [] as Polygon[], all: [] as Polygon[] }));
+  for (let a = 0; a < bridges.length; a++) {
+    for (let b = a + 1; b < bridges.length; b++) {
+      const shared = clipPolygons(prints[a], prints[b]);
+      if (!shared.length) continue;
+      const c = shared[0].outer.reduce(
+        (m, q) => [m[0] + q[0] / shared[0].outer.length, m[1] + q[1] / shared[0].outer.length],
+        [0, 0],
+      ) as [number, number];
+      if (Math.abs(deckAt(bridges[a], c) - deckAt(bridges[b], c)) > 2) continue;
+      // The owner's surface stops 5 cm inside its edge; the other one fills up to there.
+      joins[b].over.push(...offsetPolygons(prints[a], -0.05));
+      joins[a].all.push(...prints[b]);
+      joins[b].all.push(...prints[a]);
+    }
+  }
+  // Picking: every structure's triangles carry the index of its feature id
+  // ("<kind>|<source road id>|<detail>"), see CityTile.inspect.
+  const features: string[] = [];
+  const structureBuilders: MeshBuilder[] = [];
+  const own = (id: string) => {
+    features.push(id);
+    for (const mb of structureBuilders) mb.setOwner(features.length - 1);
+  };
+  structureBuilders.push(structure, deckTops, walkways, deckMarks);
+  bridges.forEach((br, idx) => {
+    own(`bridge|${br.roadId}|${br.width.toFixed(1)} m · ${br.lanes ?? 2} şerit`);
     const path = br.path as V[];
+    const dense = densifyPath(path, 1);
     const half = br.width / 2;
     const carriage = (br.carriageway ?? br.width) / 2;
-    // Running surface and walkways.
-    along(deckTops, path, -carriage, carriage, 0);
+    const over = owned(joins[idx].over);
+    // Barriers yield only well inside another deck: twin decks side by side
+    // that merely touch keep their median barriers.
+    const merged = owned(offsetPolygons(joins[idx].all, -0.6));
+    // A barrier end that lies on another deck's barrier line carries on there.
+    const continues = (q: [number, number]) =>
+      bridges.some(
+        (other, o) => o !== idx && Math.abs(distanceTo(other, q) - (other.width / 2 - 0.2)) < 0.6,
+      );
+    // Running surface to 5 cm short of the slab edge (under the barrier: a surface
+    // reaching the barrier's outer face z-fought with it along the deck).
+    alongClipped(deckTops, dense, -half + 0.05, half - 0.05, 0, joins[idx].over);
     if (half - carriage > 0.3) {
-      along(walkways, path, carriage, half - 0.4, 0.18);
-      along(walkways, path, -(half - 0.4), -carriage, 0.18);
+      for (const [o0, o1] of [
+        [carriage, half - 0.4],
+        [-(half - 0.4), -carriage],
+      ]) {
+        for (const run of runsOutside(dense, (o0 + o1) / 2, merged)) {
+          along(walkways, run, o0, o1, 0.18);
+          // Kerb face towards the carriageway, and a closed end where the walkway stops.
+          const kerb = Math.abs(o0) < Math.abs(o1) ? o0 : o1;
+          face(walkways, run, kerb, 0, 0.18, kerb > 0 ? -1 : 1);
+          for (const [k, toward] of [
+            [0, 1],
+            [run.length - 1, run.length - 2],
+          ]) {
+            if (run.length < 2) break;
+            const p0 = run[k];
+            const d = [p0[0] - run[toward][0], p0[1] - run[toward][1]];
+            const l = Math.hypot(d[0], d[1]) || 1;
+            const mid = (o0 + o1) / 2;
+            boxAt(
+              walkways,
+              [p0[0] + (-d[1] / l) * mid, p0[1] + (d[0] / l) * mid],
+              [d[0] / l, d[1] / l],
+              0.01,
+              (o1 - o0) / 2,
+              p0[2],
+              p0[2] + 0.18,
+            );
+          }
+        }
+      }
     }
-    laneLines(path, carriage, br.lanes ?? 2, br.oneway, br.edgeLines);
-    // Concrete barriers (0.4 m wide, 0.85 m high) with a steel handrail above.
+    laneLines(dense, carriage, br.lanes ?? 2, br.oneway, br.edgeLines, {
+      lanes: over,
+      edges: merged,
+    });
+    // Concrete barriers (0.4 m wide, 0.85 m high) with a steel handrail above,
+    // on the slab edge; capped where they stop at a join.
     for (const side of [1, -1] as const) {
       const outer = side * half;
       const inner = side * (half - 0.4);
-      face(structure, path, outer, -0.55, 0.85, side);
-      face(structure, path, inner, 0, 0.85, -side as 1 | -1);
-      along(structure, path, Math.min(inner, outer), Math.max(inner, outer), 0.85);
       const rail = side * (half - 0.2);
-      face(structure, path, rail + 0.03 * side, 1.12, 1.2, side);
-      along(structure, path, rail - 0.04, rail + 0.04, 1.2);
+      for (const run of runsOutside(dense, rail, merged)) {
+        face(structure, run, outer, -0.55, 0.85, side);
+        face(structure, run, inner, 0, 0.85, -side as 1 | -1);
+        along(structure, run, Math.min(inner, outer), Math.max(inner, outer), 0.85);
+        // Handrail: a closed rail (seen from the road as well as from outside) on posts.
+        face(structure, run, rail + 0.04 * side, 1.12, 1.2, side);
+        face(structure, run, rail - 0.04 * side, 1.12, 1.2, -side as 1 | -1);
+        along(structure, run, rail - 0.04, rail + 0.04, 1.2);
+        along(structure, run, rail + 0.04, rail - 0.04, 1.12, -1);
+        for (let k = 0; k < run.length; k += 2) {
+          const q = run[k];
+          const r = run[Math.min(run.length - 1, k + 1)];
+          const pr = run[Math.max(0, k - 1)];
+          const dx = r[0] - pr[0];
+          const dy = r[1] - pr[1];
+          const l = Math.hypot(dx, dy) || 1;
+          boxAt(
+            structure,
+            [q[0] + (-dy / l) * rail, q[1] + (dx / l) * rail],
+            [dx / l, dy / l],
+            0.03,
+            0.03,
+            q[2] + 0.85,
+            q[2] + 1.12,
+          );
+        }
+        for (const [k, toward] of [
+          [0, 1],
+          [run.length - 1, run.length - 2],
+        ]) {
+          if (run.length < 2) break;
+          const p0 = run[k];
+          const d = [p0[0] - run[toward][0], p0[1] - run[toward][1]];
+          const l = Math.hypot(d[0], d[1]) || 1;
+          const at: [number, number] = [p0[0] + (-d[1] / l) * rail, p0[1] + (d[0] / l) * rail];
+          // No cap where the barrier carries on along the next deck (decks end to end).
+          if (continues(at)) continue;
+          boxAt(structure, at, [d[0] / l, d[1] / l], 0.02, 0.2, p0[2], p0[2] + 0.85);
+        }
+      }
     }
     // Slab edge and box girder underneath (narrower), its soffit.
     const girder = Math.max(1.5, half * 0.62);
@@ -728,12 +1125,24 @@ export function buildGround(
     // Soffits (facing down): slab outside the girder and the girder bottom.
     along(structure, path, half, -half, -0.55, -1);
     along(structure, path, girder, -girder, -1.4, -1);
+    // Closed ends: slab and girder end faces (seen where a deck stops).
+    for (const [k, toward] of [
+      [0, 1],
+      [path.length - 1, path.length - 2],
+    ]) {
+      const p0 = path[k];
+      const d = [p0[0] - path[toward][0], p0[1] - path[toward][1]];
+      const l = Math.hypot(d[0], d[1]) || 1;
+      const dir: [number, number] = [d[0] / l, d[1] / l];
+      boxAt(structure, [p0[0], p0[1]], dir, 0.01, half, p0[2] - 0.55, p0[2] - 0.01);
+      boxAt(structure, [p0[0], p0[1]], dir, 0.01, girder, p0[2] - 1.4, p0[2] - 0.55);
+    }
     // Piers: one column under narrow decks, two under wide ones, and a cap beam.
     for (const pier of br.piers ?? []) {
       const dir = pier.dir as [number, number];
       const n: [number, number] = [-dir[1], dir[0]];
-      const columns = br.width > 13 ? [-girder * 0.6, girder * 0.6] : [0];
-      for (const o of columns) {
+      // Column layout from the compiler (placed clear of the roads underneath).
+      for (const o of pier.columns ?? (br.width > 13 ? [-girder * 0.6, girder * 0.6] : [0])) {
         boxAt(
           structure,
           [pier.at[0] + n[0] * o, pier.at[1] + n[1] * o],
@@ -754,30 +1163,72 @@ export function buildGround(
         pier.top,
       );
     }
-  }
+  });
   const addMesh = (mb: MeshBuilder, mat: unknown, name: string, shadow: boolean) => {
     if (!mb.vertexCount) return;
     const m = new THREE.Mesh(mb.build(), mat as THREE.Material);
     m.castShadow = shadow;
     m.receiveShadow = true;
     m.name = name;
+    m.userData.pick = { ids: features, owners: mb.triangleOwner };
     group.add(m);
   };
 
   // ─── Underpasses and tunnels ────────────────────────────────────────────
   const concrete = new MeshBuilder();
-  const trenchFloor = new MeshBuilder();
   const tubeWalls = new MeshBuilder();
   const glow = new MeshBuilder();
   const fixtures = new MeshBuilder();
+  structureBuilders.push(concrete, tubeWalls, glow, fixtures);
   const C = (hex: string) => new THREE.Color(hex);
   const PANEL = C('#e6e3da');
   const COATING = C('#3d4246');
 
-  // Trenches: flat floor (paving under the draped road) and a retaining wall
-  // along each side of the footprint, up to the ground at the wall line plus a
-  // parapet (sampled every 2 m so the top follows the terrain's creases).
-  for (const c of model.cuttings ?? []) {
+  // Trenches: the ramp road itself (asphalt wall to wall at the exact floor
+  // height, lane lines, a raised kerb strip along the walls; ground surfaces
+  // and markings are not draped in a trench) and a retaining wall along each
+  // side, up to the ground at the wall line plus a parapet.
+  // Twin ramps side by side (one per direction): where the gap between two
+  // trench footprints is under MEDIAN m, one wall fills it (from this trench's
+  // floor to the other's), drawn by the earlier trench; the later one leaves
+  // its wall out there. Two 0.4 m walls in a 0.7 m gap stood in each other
+  // and flickered along the line where they crossed.
+  const MEDIAN = 1.6;
+  const cutLines = (model.cuttings ?? []).map((c) => ({
+    pts: c.path.map((q) => [q[0], q[1]] as [number, number]),
+    half: c.width / 2,
+  }));
+  /** Nearest other trench across the wall at q (outward u): its index and the gap to its footprint. */
+  const across = (self: number, q: [number, number], u: [number, number]) => {
+    let best: { j: number; gap: number } | null = null;
+    for (let j = 0; j < cutLines.length; j++) {
+      const o = cutLines[j];
+      if (j === self) continue;
+      let d = Infinity;
+      let cp: [number, number] = q;
+      for (let k = 1; k < o.pts.length; k++) {
+        const a = o.pts[k - 1];
+        const b = o.pts[k];
+        const dx = b[0] - a[0];
+        const dy = b[1] - a[1];
+        const l2 = dx * dx + dy * dy || 1;
+        const tt = Math.max(0, Math.min(1, ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / l2));
+        const c2: [number, number] = [a[0] + dx * tt, a[1] + dy * tt];
+        const dd = Math.hypot(q[0] - c2[0], q[1] - c2[1]);
+        if (dd < d) {
+          d = dd;
+          cp = c2;
+        }
+      }
+      // On the outward side, footprint within MEDIAN of the wall line.
+      if ((cp[0] - q[0]) * u[0] + (cp[1] - q[1]) * u[1] <= 0) continue;
+      const gap = d - o.half;
+      if (gap < MEDIAN && (!best || gap < best.gap)) best = { j, gap: Math.max(0, gap) };
+    }
+    return best;
+  };
+  (model.cuttings ?? []).forEach((c, ci) => {
+    own(`cutting|${c.roadId}|${c.width.toFixed(1)} m genişlik`);
     const path: V[] = [];
     for (let k = 0; k < c.path.length; k++) {
       const a = c.path[k] as V;
@@ -792,25 +1243,62 @@ export function buildGround(
       path.push(a);
     }
     const half = c.width / 2;
-    along(trenchFloor, path, -half, half, 0.05);
+    const carriage = Math.min(half - 0.25, (c.carriageway ?? c.width) / 2);
+    along(deckTops, path, -half, half, 0);
+    laneLines(path, carriage, c.lanes ?? 2, c.oneway ?? false, c.edgeLines ?? false);
+    if (half - carriage > 0.25) {
+      for (const side of [1, -1] as const) {
+        const [o0, o1] = side > 0 ? [carriage, half] : [-half, -carriage];
+        along(walkways, path, o0, o1, 0.16);
+        face(walkways, path, side * carriage, 0, 0.16, side > 0 ? -1 : 1);
+      }
+    }
     const n = miters(path);
     for (const side of [1, -1] as const) {
       const off = (k: number, o: number): [number, number] => [
         path[k][0] + n[k][0] * o,
         path[k][1] + n[k][1] * o,
       ];
-      const top = path.map((p, k) => {
-        const g = Math.max(
+      // Ground at the wall line, then the highest of each ±4 m and averaged
+      // over ±4 m: the top runs smooth (the 4 m terrain grid is creased along a
+      // street) and never below the ground beside it.
+      const ground = path.map((p, k) =>
+        Math.max(
+          p[2] + 0.3,
           terrainHeightAt(t, ...off(k, side * half)),
           terrainHeightAt(t, ...off(k, side * (half + 0.4))),
-        );
+        ),
+      );
+      const win = (k: number) => {
+        const out: number[] = [];
+        for (let j = Math.max(0, k - 2); j <= Math.min(path.length - 1, k + 2); j++) out.push(j);
+        return out;
+      };
+      const peak = ground.map((_, k) => Math.max(...win(k).map((j) => ground[j])));
+      const top = path.map((p, k) => {
+        const g = win(k).reduce((sum, j) => sum + peak[j], 0) / win(k).length;
         const depth = g - p[2];
-        return Math.max(g, p[2] + 0.3) + 0.15 + 0.75 * Math.min(1, Math.max(0, depth / 2));
+        return Math.max(g, ground[k]) + 0.15 + 0.75 * Math.min(1, Math.max(0, depth / 2));
       });
       const inner = side * half;
-      const outer = side * (half + 0.4);
+      // Per point: wall thickness (to the next trench's floor in a narrow
+      // median) or none (the other trench draws the median wall).
+      const thick = path.map((_, k) => {
+        const len = Math.hypot(n[k][0], n[k][1]) || 1;
+        const u: [number, number] = [(n[k][0] / len) * side, (n[k][1] / len) * side];
+        const o = across(ci, off(k, side * half), u);
+        if (!o) return 0.4;
+        return o.j < ci ? 0 : Math.max(0.4, o.gap);
+      });
       for (let k = 1; k < path.length; k++) {
-        const pt = (i: number, o: number, z: number): V => [...off(i, o), z];
+        if (thick[k - 1] === 0 && thick[k] === 0) continue;
+        const w = [Math.max(0.4, thick[k - 1]), Math.max(0.4, thick[k])];
+        const pt = (i: number, o: number, z: number): V => {
+          // Outer face: this point's own thickness.
+          const oo = Math.abs(o) > Math.abs(inner) + 1e-6 ? side * (half + w[i === k ? 1 : 0]) : o;
+          return [...off(i, oo), z];
+        };
+        const outer = side * (half + 0.4);
         const ks = [k - 1, k];
         const zb = ks.map((i) => path[i][2] - 0.3);
         const zt = ks.map((i) => top[i]);
@@ -835,10 +1323,11 @@ export function buildGround(
         );
       }
     }
-  }
+  });
 
   // Lids over tube mouths are drawn with the ground; where a lid stands above
   // the ground around it, its edge is a concrete face down to the ground.
+  own('lid||tünel ağzı kapağı');
   for (const lid of model.terrainCut?.lids ?? []) {
     for (const ring of [lid.outer, ...lid.holes]) {
       for (let k = 0; k < ring.length; k++) {
@@ -880,6 +1369,7 @@ export function buildGround(
 
   // Portals: headwall around the tube opening.
   for (const p of model.portals ?? []) {
+    own(`portal|${p.roadId}|${p.hill ? 'tepe tüneli' : 'alt geçit'} ağzı`);
     const [fx, fy] = p.facing;
     const nx = -fy;
     const ny = fx;
@@ -919,6 +1409,7 @@ export function buildGround(
   // dark coating above, ceiling, two rows of lights, jet fans, lane signals,
   // emergency-exit signs and SOS cabinets.
   for (const tn of model.tunnels ?? []) {
+    own(`tunnel|${tn.roadId}|${tn.name ?? ''}`);
     const path = tn.path as V[];
     const half = tn.width / 2;
     const carriage = tn.carriageway / 2;
@@ -1067,17 +1558,17 @@ export function buildGround(
   }
 
   addMesh(structure, mats.curb, 'bridges', true);
-  addMesh(concrete, mats.curb, 'cuttings', true);
+  addMesh(concrete, mats.retaining, 'cuttings', true);
   addMesh(deckTops, mats.asphalt, 'bridge-decks', false);
   addMesh(walkways, mats.sidewalk, 'bridge-walkways', false);
   addMesh(deckMarks, mats.marking, 'bridge-markings', false);
-  addMesh(trenchFloor, mats.paving, 'trench-floors', false);
   const colored = (mb: MeshBuilder, mat: unknown, name: string, shadow: boolean) => {
     if (!mb.vertexCount) return;
     const m = new THREE.Mesh(mb.build({ color: true }), mat as THREE.Material);
     m.castShadow = shadow;
     m.receiveShadow = true;
     m.name = name;
+    m.userData.pick = { ids: features, owners: mb.triangleOwner };
     group.add(m);
   };
   colored(tubeWalls, mats.tunnelWall, 'tunnel-walls', true);

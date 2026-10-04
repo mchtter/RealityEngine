@@ -50,9 +50,16 @@ export class MeshBuilder {
     return this.vertexCount - 1;
   }
 
+  /** Owner stamped on subsequent triangles that pass none (feature picking). */
+  private currentOwner = -1;
+
+  setOwner(owner: number): void {
+    this.currentOwner = owner;
+  }
+
   triangle(a: number, b: number, c: number, owner = -1): void {
     this.indices.push(a, b, c);
-    this.triangleOwner.push(owner);
+    this.triangleOwner.push(owner >= 0 ? owner : this.currentOwner);
   }
 
   /**
@@ -96,15 +103,21 @@ export class MeshBuilder {
   }
 }
 
+/** A height source: a terrain grid, or a height function (e.g. the street surface). */
+export type HeightSource = TerrainGrid | ((x: number, y: number) => number);
+const heightOf = (h: HeightSource, x: number, y: number) =>
+  typeof h === 'function' ? h(x, y) : terrainHeightAt(h, x, y);
+
 /**
  * Triangulates a polygon and subdivides every triangle until no edge is
- * longer than `maxEdge`, then drapes the vertices on the terrain so large
- * flat polygons (roads, sidewalks) follow the ground.
+ * longer than `maxEdge`, then drapes the vertices on the ground so large
+ * flat polygons (roads, sidewalks) follow it. Triangles keep to the
+ * polygon's own edges (unlike a grid drape, none crosses a carriageway edge).
  */
 export function drapePolygon(
   mb: MeshBuilder,
   poly: Polygon,
-  terrain: TerrainGrid,
+  terrain: HeightSource,
   lift: number,
   maxEdge = 4,
   c?: THREE.Color,
@@ -117,7 +130,7 @@ export function drapePolygon(
     const key = keyOf(x, y);
     let id = cache.get(key);
     if (id === undefined) {
-      const z = terrainHeightAt(terrain, x, y) + lift;
+      const z = heightOf(terrain, x, y) + lift;
       id = mb.vertex(toThree(x, y, z), up, c, x, y);
       cache.set(key, id);
     }
@@ -312,7 +325,7 @@ export function drapeOnTerrain(
 export function drapeRingWall(
   mb: MeshBuilder,
   ring: [number, number][],
-  terrain: TerrainGrid,
+  terrain: HeightSource,
   top: number,
   bottom: number,
   outward: boolean,
@@ -338,8 +351,8 @@ export function drapeRingWall(
         a[0] + (b[0] - a[0]) * ((s + 1) / n),
         a[1] + (b[1] - a[1]) * ((s + 1) / n),
       ];
-      const z0 = terrainHeightAt(terrain, p0[0], p0[1]);
-      const z1 = terrainHeightAt(terrain, p1[0], p1[1]);
+      const z0 = heightOf(terrain, p0[0], p0[1]);
+      const z1 = heightOf(terrain, p1[0], p1[1]);
       const pts: [number, number, number][] = outward
         ? [
             [p0[0], p0[1], z0 + bottom],
