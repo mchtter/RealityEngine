@@ -8,7 +8,21 @@
 // Design: docs/architecture/city-data-onboarding.md
 // =============================================================================
 
-export type CityTheme = 'boundary' | 'parcel' | 'building' | 'address' | 'road' | 'area' | 'asset';
+/** Themes of the canonical city model (one per delivered layer; see CITY_DELIVERY_SPEC). */
+export type CityTheme =
+  | 'boundary'
+  | 'parcel'
+  | 'building'
+  | 'address'
+  | 'road'
+  | 'area'
+  | 'asset'
+  | 'crossing'
+  | 'tree'
+  | 'utility'
+  | 'utility_node'
+  | 'landform'
+  | 'terrain';
 
 export type CityGeometryType =
   | 'Point'
@@ -40,7 +54,35 @@ export interface CityAttributeDef {
   range?: [number, number];
   /** Allowed values for `enum`. */
   values?: readonly string[];
+  /** Column name an institution delivers (at most 10 characters: Shapefile-safe). */
+  column?: string;
+  /** Must be filled in every record (the record is rejected without it). */
+  required?: boolean;
+  /** Unit of a number ("m", "mm"). */
+  unit?: string;
+  /** Meaning of each `values` entry, for the delivery specification. */
+  valueLabels?: Record<string, string>;
+  /** The DT compiler uses it (false: kept for records and applications only). */
+  dt?: boolean;
 }
+
+/** Sections of the delivery specification. */
+export type CityThemeGroup =
+  | 'base'
+  | 'buildings'
+  | 'transport'
+  | 'nature'
+  | 'furniture'
+  | 'utilities';
+
+export const CITY_THEME_GROUP_LABEL: Record<CityThemeGroup, string> = {
+  base: 'Temel katmanlar',
+  buildings: 'Yapılar',
+  transport: 'Ulaşım',
+  nature: 'Arazi, doğa ve açık alanlar',
+  furniture: 'Kent donatısı',
+  utilities: 'Altyapı ağları',
+};
 
 export interface CityThemeContract {
   theme: CityTheme;
@@ -49,6 +91,22 @@ export interface CityThemeContract {
   geometry: CityGeometryType[];
   attributes: CityAttributeDef[];
   rules: CityRuleDef[];
+  /**
+   * active: sources can be bound (CITY_CONTRACTS); draft: in the delivery
+   * specification only, no intake yet. Default active.
+   */
+  status?: 'active' | 'draft';
+  group?: CityThemeGroup;
+  /** Delivered file name without extension (`yapi` → yapi.zip / yapi.geojson). */
+  file?: string;
+  /** What the layer holds (delivery specification). */
+  description?: string;
+  /** What the city (2D / DT) makes of it. */
+  dtUse?: string;
+  /** Raster themes: delivery requirements in place of geometry / attributes. */
+  raster?: string[];
+  /** One record as delivered (column → value). */
+  example?: Record<string, string | number>;
 }
 
 /** Road classes the city compiler draws (same names as OSM `highway`). */
@@ -75,7 +133,8 @@ const ID_RULES: CityRuleDef[] = [
     code: 'id.present',
     severity: 'reject',
     label: 'Kimlik var',
-    description: 'Kaynakta kayda ait boş olmayan bir kimlik (ör. KIMLIKNO) bulunmalı.',
+    description:
+      'Kaynakta kayda ait boş olmayan bir kimlik bulunmalı (şartnamede KIMLIK kolonu; MAKS’ta KIMLIKNO).',
   },
   {
     code: 'id.unique',
@@ -215,11 +274,797 @@ export const ROAD_CONTRACT_V1: CityThemeContract = {
   ],
 };
 
-/** Contracts in force, by theme. Themes without one cannot be bound yet. */
-export const CITY_CONTRACTS: Partial<Record<CityTheme, CityThemeContract>> = {
-  building: BUILDING_CONTRACT_V1,
-  road: ROAD_CONTRACT_V1,
+// ─── The complete city (delivery specification) ─────────────────────────────
+//
+// Every layer a city is built from, in the form institutions deliver it.
+// Attribute keys are canonical (English); `column` is the delivered column
+// name. `dt: true` marks what the DT compiler reads today — the rest is kept
+// with the record (applications, reports) and not drawn yet.
+
+const geomType = (label: string, types: string): CityRuleDef => ({
+  code: 'geom.type',
+  severity: 'reject',
+  label,
+  description: `Geometri ${types} olmalı.`,
+});
+
+const REQUIRED_RULE: CityRuleDef = {
+  code: 'attr.required',
+  severity: 'reject',
+  label: 'Zorunlu alanlar',
+  description: 'Tablodaki zorunlu kolonlar dolu olmalı.',
 };
+
+const BASE_RULES = (label: string, types: string): CityRuleDef[] => [
+  geomType(label, types),
+  GEOMETRY_VALID,
+  ...ID_RULES,
+  SCOPE_RULE,
+  REQUIRED_RULE,
+];
+
+const enumKnown = (code: string, label: string): CityRuleDef => ({
+  code,
+  severity: 'reject',
+  label,
+  description: `${label} tablodaki değerlerden biri olmalı.`,
+});
+
+const NAME: CityAttributeDef = { key: 'name', type: 'string', label: 'Ad', column: 'AD' };
+
+/** Utility networks (same names as the compiler's UtilityKind). */
+export const CITY_UTILITY_NETWORKS = ['gas', 'water', 'sewer', 'power', 'telecom', 'heat'] as const;
+const NETWORK_LABELS: Record<(typeof CITY_UTILITY_NETWORKS)[number], string> = {
+  gas: 'Doğalgaz',
+  water: 'İçme suyu',
+  sewer: 'Kanalizasyon / yağmur suyu',
+  power: 'Elektrik (yeraltı kablosu)',
+  telecom: 'Fiber / haberleşme',
+  heat: 'Bölgesel ısıtma',
+};
+
+export const BOUNDARY_CONTRACT_V1: CityThemeContract = {
+  theme: 'boundary',
+  version: '1',
+  group: 'base',
+  file: 'idari_sinir',
+  label: 'İdari sınır',
+  description: 'İl, ilçe, mahalle ve köy sınırları.',
+  dtUse: 'Çalışma alanını ve mahalle bazlı raporları belirler; DT’de çizilmez.',
+  geometry: ['Polygon', 'MultiPolygon'],
+  attributes: [
+    {
+      key: 'level',
+      type: 'enum',
+      label: 'Sınır düzeyi',
+      column: 'DUZEY',
+      required: true,
+      values: ['province', 'district', 'neighbourhood', 'village'],
+      valueLabels: { province: 'İl', district: 'İlçe', neighbourhood: 'Mahalle', village: 'Köy' },
+    },
+    { ...NAME, required: true },
+    { key: 'code', type: 'string', label: 'Resmî kod (UAVT / TÜİK)', column: 'KOD' },
+  ],
+  rules: [
+    ...BASE_RULES('Poligon', 'Polygon ya da MultiPolygon'),
+    enumKnown('level.known', 'Sınır düzeyi'),
+  ],
+  example: { KIMLIK: '1203', DUZEY: 'neighbourhood', AD: 'Meşrutiyet', KOD: '40145' },
+};
+
+export const PARCEL_CONTRACT_V1: CityThemeContract = {
+  theme: 'parcel',
+  version: '1',
+  group: 'base',
+  file: 'parsel',
+  label: 'Ada / parsel',
+  description: 'Kadastro parselleri (MEGSİS / TKGM numaralandırması).',
+  dtUse:
+    'Yapı ile parseli ilişkilendirir (parsel anahtarlı senaryolar, gelir denetimi); DT’de çizilmez.',
+  geometry: ['Polygon', 'MultiPolygon'],
+  attributes: [
+    {
+      key: 'parcelId',
+      type: 'string',
+      label: 'Parsel kimliği (tapu kimlik no)',
+      column: 'PARSELKIML',
+      required: true,
+      description: 'Yapı katmanındaki PARSELKIML ile aynı numaralandırma.',
+    },
+    { key: 'block', type: 'string', label: 'Ada no', column: 'ADA' },
+    { key: 'parcel', type: 'string', label: 'Parsel no', column: 'PARSEL' },
+    { key: 'neighbourhood', type: 'string', label: 'Mahalle', column: 'MAHALLE' },
+  ],
+  rules: [
+    ...BASE_RULES('Poligon', 'Polygon ya da MultiPolygon'),
+    {
+      code: 'geom.area',
+      severity: 'reject',
+      label: 'Alan',
+      description: 'Parsel alanı en az 1 m² olmalı.',
+      params: { min: 1 },
+    },
+  ],
+  example: { KIMLIK: '88231', PARSELKIML: '88231', ADA: '412', PARSEL: '7', MAHALLE: 'Meşrutiyet' },
+};
+
+export const ADDRESS_CONTRACT_V1: CityThemeContract = {
+  theme: 'address',
+  version: '1',
+  group: 'base',
+  file: 'adres',
+  label: 'Adres / bağımsız bölüm',
+  description: 'Kapı numaraları ve bağımsız bölümler (UAVT).',
+  dtUse: 'Bina kartında adres ve bağımsız bölümler; aramada konum. DT’de çizilmez.',
+  geometry: ['Point'],
+  attributes: [
+    { key: 'uavtCode', type: 'string', label: 'UAVT adres kodu', column: 'UAVT', required: true },
+    { key: 'street', type: 'string', label: 'Cadde / sokak adı', column: 'YOL_ADI' },
+    { key: 'doorNo', type: 'string', label: 'Dış kapı no', column: 'KAPI_NO' },
+    { key: 'unitNo', type: 'string', label: 'İç kapı no', column: 'IC_KAPI' },
+    {
+      key: 'buildingId',
+      type: 'string',
+      label: 'Yapı kimliği',
+      column: 'YAPI_KIML',
+      description: 'Adresin bağlı olduğu yapının Yapı katmanındaki KIMLIK değeri.',
+    },
+  ],
+  rules: [
+    ...BASE_RULES('Nokta', 'Point'),
+    {
+      code: 'building.link',
+      severity: 'warn',
+      label: 'Yapıya bağlı',
+      description: 'Nokta bir yapının içinde olmalı ya da YAPI_KIML ile bir yapıya bağlanmalı.',
+    },
+  ],
+  example: { KIMLIK: '1029384756', UAVT: '1029384756', YOL_ADI: 'Gazipaşa Cd.', KAPI_NO: '12' },
+};
+
+/** Building uses the compiler understands (same names as OSM `building`). */
+const BUILDING_USES: Record<string, string> = {
+  residential: 'Konut (apartman)',
+  house: 'Müstakil konut',
+  commercial: 'Ticari',
+  retail: 'Dükkân / perakende (zemin katı mağaza)',
+  office: 'Ofis',
+  public: 'Kamu binası',
+  school: 'Okul',
+  university: 'Üniversite',
+  hospital: 'Hastane',
+  mosque: 'Cami / ibadethane',
+  industrial: 'Sanayi',
+  warehouse: 'Depo',
+  garage: 'Garaj (tek kat)',
+  shed: 'Baraka / kulübe (tek kat)',
+  kiosk: 'Büfe (tek kat)',
+};
+
+export const BUILDING_CONTRACT_V2: CityThemeContract = {
+  ...BUILDING_CONTRACT_V1,
+  version: '2',
+  group: 'buildings',
+  file: 'yapi',
+  description: 'Yapı taban alanları (MAKS yapı katmanı ya da belediye CBS).',
+  dtUse:
+    'Taban alanından, kat sayısı ve yükseklikten 3B bina; kullanım türüne göre cephe ve zemin katı (dükkân), çatı tipi ve renkler verilmişse onlar. Kat sayısı yoksa tahmin edilir ve tahmin olarak işaretlenir.',
+  attributes: [
+    { ...NAME, dt: false },
+    {
+      key: 'levels',
+      type: 'integer',
+      label: 'Zemin üstü kat sayısı',
+      column: 'KAT',
+      range: [0, 99],
+      dt: true,
+      description: 'Yoksa DT kat sayısını tahmin eder ve tahmin olarak işaretler.',
+    },
+    {
+      key: 'levelsUnderground',
+      type: 'integer',
+      label: 'Zemin altı kat sayısı',
+      column: 'BODRUM',
+      range: [0, 19],
+      dt: false,
+    },
+    {
+      key: 'height',
+      type: 'number',
+      label: 'Yükseklik',
+      unit: 'm',
+      column: 'YUKSEKLIK',
+      range: [1, 400],
+      dt: true,
+      description: 'Kat sayısı yoksa kat sayısı yükseklikten çıkarılır (3 m / kat).',
+    },
+    {
+      key: 'use',
+      type: 'enum',
+      label: 'Kullanım türü',
+      column: 'KULLANIM',
+      values: Object.keys(BUILDING_USES),
+      valueLabels: BUILDING_USES,
+      dt: true,
+    },
+    {
+      key: 'parcelId',
+      type: 'string',
+      label: 'Parsel kimliği',
+      column: 'PARSELKIML',
+      dt: false,
+      description:
+        'Yapının üzerinde durduğu parselin kimliği (Ada / parsel katmanındaki PARSELKIML).',
+    },
+    {
+      key: 'roofShape',
+      type: 'enum',
+      label: 'Çatı tipi',
+      column: 'CATI_TIPI',
+      values: ['flat', 'hipped', 'gabled'],
+      valueLabels: { flat: 'Düz (teras)', hipped: 'Kırma', gabled: 'Beşik' },
+      dt: true,
+    },
+    {
+      key: 'roofColour',
+      type: 'string',
+      label: 'Çatı rengi',
+      column: 'CATI_RENK',
+      dt: true,
+      description: '#rrggbb (ör. #b5523b) ya da red, brown, grey, white …',
+    },
+    {
+      key: 'wallColour',
+      type: 'string',
+      label: 'Cephe rengi',
+      column: 'CEPHE_RENK',
+      dt: true,
+      description: '#rrggbb (ör. #e8dcc4) ya da white, beige, cream, yellow …',
+    },
+  ],
+  example: {
+    KIMLIK: '4711',
+    KAT: 5,
+    BODRUM: 1,
+    YUKSEKLIK: 16.5,
+    KULLANIM: 'residential',
+    PARSELKIML: '88231',
+    CATI_TIPI: 'hipped',
+  },
+};
+
+const ROAD_CLASS_LABELS: Record<CityRoadClass, string> = {
+  motorway: 'Otoyol',
+  trunk: 'Devlet yolu',
+  primary: 'Bulvar / ana arter',
+  secondary: 'İl yolu / toplayıcı',
+  tertiary: 'Cadde',
+  residential: 'Sokak',
+  unclassified: 'Diğer taşıt yolu (köy yolu)',
+  living_street: 'Yaşam sokağı (yaya öncelikli)',
+  pedestrian: 'Yaya yolu / meydan (taşıt yok)',
+  service: 'Servis yolu (otopark, site içi)',
+  footway: 'Yürüyüş yolu',
+  steps: 'Merdiven',
+  track: 'Tarla / orman yolu',
+  cycleway: 'Bisiklet yolu',
+};
+
+export const ROAD_CONTRACT_V2: CityThemeContract = {
+  ...ROAD_CONTRACT_V1,
+  version: '2',
+  group: 'transport',
+  file: 'yol',
+  description: 'Yol orta hatları: taşıt yolları, yaya yolları, merdivenler, bisiklet yolları.',
+  dtUse:
+    'Orta hattan şerit genişliğinde asfalt, sınıfına göre kaldırım ve bordür, şerit çizgileri, kavşaklar, köprü ve tüneller. Yaya / bisiklet yolları kendi kaplamasıyla çizilir. Yollar arsa adalarını (bina bloklarını) oluşturur.',
+  attributes: [
+    { ...NAME, dt: true },
+    {
+      key: 'class',
+      type: 'enum',
+      label: 'Yol sınıfı',
+      column: 'SINIF',
+      required: true,
+      values: CITY_ROAD_CLASSES,
+      valueLabels: ROAD_CLASS_LABELS,
+      dt: true,
+      description:
+        'Kurumun kendi tip kodları da kabul edilir (ör. MAKS TIP 1–5); eşleme tablosuyla bu listeye çevrilir.',
+    },
+    {
+      key: 'width',
+      type: 'number',
+      label: 'Taşıt yolu genişliği (kaldırım hariç)',
+      unit: 'm',
+      column: 'GENISLIK',
+      range: [1, 60],
+      dt: true,
+      description: 'Yoksa sınıfa göre varsayılan kullanılır (ör. sokak 5,8 m, cadde 6,2 m).',
+    },
+    {
+      key: 'lanes',
+      type: 'integer',
+      label: 'Şerit sayısı',
+      column: 'SERIT',
+      range: [1, 12],
+      dt: true,
+    },
+    { key: 'oneway', type: 'boolean', label: 'Tek yön', column: 'TEK_YON', dt: true },
+    { key: 'bridge', type: 'boolean', label: 'Köprü / viyadük', column: 'KOPRU', dt: true },
+    { key: 'tunnel', type: 'boolean', label: 'Tünel / alt geçit', column: 'TUNEL', dt: true },
+    {
+      key: 'layer',
+      type: 'integer',
+      label: 'Kot katmanı',
+      column: 'KOT',
+      range: [-5, 5],
+      dt: true,
+      description: 'Üst üste geçen yollarda: 0 zemin, 1 üst geçit, −1 alt geçit.',
+    },
+    { key: 'roundabout', type: 'boolean', label: 'Dönel kavşak', column: 'DONEL_KAV', dt: true },
+    {
+      key: 'sidewalk',
+      type: 'boolean',
+      label: 'Kaldırım var',
+      column: 'KALDIRIM',
+      dt: true,
+      description: 'Hayır verilirse kaldırım çizilmez; boşsa sınıfın kaldırımı kullanılır.',
+    },
+  ],
+  example: {
+    KIMLIK: 'Y-10442',
+    AD: 'Gazipaşa Caddesi',
+    SINIF: 'tertiary',
+    GENISLIK: 7,
+    SERIT: 2,
+    TEK_YON: 0,
+    KOPRU: 0,
+    TUNEL: 0,
+    KOT: 0,
+  },
+};
+
+export const CROSSING_CONTRACT_V1: CityThemeContract = {
+  theme: 'crossing',
+  version: '1',
+  group: 'transport',
+  file: 'yaya_gecidi',
+  label: 'Yaya geçidi',
+  description: 'Yaya geçitleri: yolun orta hattı üzerinde, geçidin ortasında bir nokta.',
+  dtUse:
+    'Yol genişliği boyunca zebra çizgileri; ışıklı kavşakta ışıkla birlikte. Yoksa DT ana kavşaklara kendi geçidini koyar.',
+  geometry: ['Point'],
+  attributes: [
+    {
+      key: 'type',
+      type: 'enum',
+      label: 'Geçit türü',
+      column: 'TUR',
+      values: ['zebra', 'signals', 'uncontrolled'],
+      valueLabels: { zebra: 'Zebra', signals: 'Işıklı', uncontrolled: 'İşaretsiz' },
+      dt: false,
+    },
+  ],
+  rules: [
+    ...BASE_RULES('Nokta', 'Point'),
+    {
+      code: 'road.near',
+      severity: 'warn',
+      label: 'Yol üzerinde',
+      description: 'Nokta bir taşıt yolunun orta hattına 3 m’den yakın olmalı; uzaktaysa çizilmez.',
+      params: { maxDistance: 3 },
+    },
+  ],
+  example: { KIMLIK: 'YG-118', TUR: 'zebra' },
+};
+
+/** Area kinds the compiler understands (Area['kind']). */
+const AREA_KINDS: Record<string, string> = {
+  park: 'Park / bahçe',
+  playground: 'Çocuk oyun alanı',
+  grass: 'Çim / yeşil alan / mezarlık / spor sahası',
+  forest: 'Orman / koruluk',
+  water: 'Su yüzeyi (göl, gölet, havuz)',
+  parking: 'Açık otopark',
+  plaza: 'Meydan / pazar yeri',
+  school: 'Okul / hastane / kampüs bahçesi',
+  religious: 'İbadethane avlusu',
+  industrial: 'Sanayi / liman / demiryolu alanı',
+  residential: 'Konut / ticaret alanı',
+};
+
+export const AREA_CONTRACT_V1: CityThemeContract = {
+  theme: 'area',
+  version: '1',
+  group: 'nature',
+  file: 'alan',
+  label: 'Alan (arazi kullanımı)',
+  description: 'Parklar, yeşil alanlar, su yüzeyleri, otoparklar, meydanlar, kampüs alanları.',
+  dtUse:
+    'Türüne göre çim, ağaçlık, su ya da sert zemin; otoparkta park yerleri ve araçlar, oyun alanında oyun aletleri. Bu alanlara DT kendiliğinden bina koymaz.',
+  geometry: ['Polygon', 'MultiPolygon'],
+  attributes: [
+    {
+      key: 'kind',
+      type: 'enum',
+      label: 'Alan türü',
+      column: 'TUR',
+      required: true,
+      values: Object.keys(AREA_KINDS),
+      valueLabels: AREA_KINDS,
+      dt: true,
+    },
+    { ...NAME, dt: false },
+  ],
+  rules: [
+    ...BASE_RULES('Poligon', 'Polygon ya da MultiPolygon'),
+    enumKnown('kind.known', 'Alan türü'),
+    {
+      code: 'geom.area',
+      severity: 'reject',
+      label: 'Alan',
+      description: 'Alan en az 1 m² olmalı.',
+      params: { min: 1 },
+    },
+  ],
+  example: { KIMLIK: 'P-55', TUR: 'park', AD: 'Atatürk Parkı' },
+};
+
+export const TREE_CONTRACT_V1: CityThemeContract = {
+  theme: 'tree',
+  version: '1',
+  group: 'nature',
+  file: 'agac',
+  label: 'Ağaç',
+  description: 'Tek tek ağaçlar (park ve bahçeler müdürlüğü envanteri).',
+  dtUse:
+    'Konumunda ağaç. Verisi olmayan sokak ve parklara DT görsel amaçlı ağaç ekleyebilir; bunlar kayıt sayılmaz.',
+  geometry: ['Point'],
+  attributes: [
+    { key: 'species', type: 'string', label: 'Tür', column: 'TUR', dt: false },
+    {
+      key: 'height',
+      type: 'number',
+      label: 'Boy',
+      unit: 'm',
+      column: 'BOY',
+      range: [0.5, 60],
+      dt: false,
+    },
+    {
+      key: 'crown',
+      type: 'number',
+      label: 'Taç çapı',
+      unit: 'm',
+      column: 'TAC_CAPI',
+      range: [0.5, 40],
+      dt: false,
+    },
+  ],
+  rules: BASE_RULES('Nokta', 'Point'),
+  example: { KIMLIK: 'A-20931', TUR: 'Platanus orientalis', BOY: 14, TAC_CAPI: 9 },
+};
+
+export const LANDFORM_CONTRACT_V1: CityThemeContract = {
+  theme: 'landform',
+  version: '1',
+  group: 'nature',
+  file: 'falez_kiyi',
+  label: 'Falez / kıyı çizgisi',
+  description: 'Yüksek eğimli yüzeylerin üst kenarı (falez, şev) ve kıyı çizgisi.',
+  dtUse: 'Arazi modelinde keskin uçurum; kıyıda kara ile deniz ayrımı.',
+  geometry: ['LineString', 'MultiLineString'],
+  attributes: [
+    {
+      key: 'kind',
+      type: 'enum',
+      label: 'Tür',
+      column: 'TUR',
+      required: true,
+      values: ['cliff', 'coastline'],
+      valueLabels: {
+        cliff: 'Falez / şev (üst kenar)',
+        coastline: 'Kıyı çizgisi',
+      },
+      dt: true,
+      description:
+        'Çizim yönü önemlidir: falezde yüksek taraf, kıyı çizgisinde kara çizim yönünün SOLUNDA kalmalıdır.',
+    },
+  ],
+  rules: [
+    ...BASE_RULES('Çizgi', 'LineString ya da MultiLineString'),
+    enumKnown('kind.known', 'Tür'),
+  ],
+  example: { KIMLIK: 'F-3', TUR: 'cliff' },
+};
+
+export const TERRAIN_CONTRACT_V1: CityThemeContract = {
+  theme: 'terrain',
+  version: '1',
+  status: 'draft',
+  group: 'nature',
+  file: 'yukseklik_modeli',
+  label: 'Sayısal yükseklik modeli',
+  description: 'Arazinin yükseklik modeli (DEM / DTM: bina ve ağaçsız zemin).',
+  dtUse:
+    'Arazinin şekli; yollar ve binalar bu zemine oturur. Verilmezse platform 30 m çözünürlüklü küresel modeli kullanır.',
+  geometry: [],
+  attributes: [],
+  rules: [],
+  raster: [
+    'Biçim: GeoTIFF, tek bant, 32 bit ondalık (Float32).',
+    'Değer: metre cinsinden ortometrik yükseklik (deniz seviyesinden); bina ve ağaçlar çıkarılmış zemin (DTM).',
+    'Çözünürlük: 5 m ya da daha iyi (önerilen 1 m).',
+    'Koordinat sistemi dosyada tanımlı olmalı (TUREF TM / ED50 UTM / WGS84).',
+    'Boş hücreler için NoData değeri tanımlanmalı.',
+    'Birden çok pafta teslim ediliyorsa paftalar arasında boşluk kalmamalı.',
+  ],
+};
+
+/** Street furniture kinds (props of the DT compiler). */
+const ASSET_KINDS: Record<string, string> = {
+  street_lamp: 'Sokak lambası / aydınlatma direği',
+  traffic_signals: 'Trafik ışığı',
+  bus_stop: 'Otobüs durağı',
+  bench: 'Bank',
+  waste_basket: 'Çöp kutusu',
+  power_pole: 'Elektrik direği (havai hat)',
+};
+
+export const ASSET_CONTRACT_V1: CityThemeContract = {
+  theme: 'asset',
+  version: '1',
+  group: 'furniture',
+  file: 'kent_donatisi',
+  label: 'Kent donatısı',
+  description:
+    'Sokak lambaları, trafik ışıkları, duraklar, banklar, çöp kutuları, elektrik direkleri.',
+  dtUse:
+    'Konumunda 3B nesne; taşıt yolunun üstüne düşen nesne bordüre çekilir. Verisi olmayan sokaklara DT görsel amaçlı lamba ekleyebilir; bunlar kayıt sayılmaz.',
+  geometry: ['Point'],
+  attributes: [
+    {
+      key: 'kind',
+      type: 'enum',
+      label: 'Donatı türü',
+      column: 'TUR',
+      required: true,
+      values: Object.keys(ASSET_KINDS),
+      valueLabels: ASSET_KINDS,
+      dt: true,
+    },
+    { ...NAME, dt: false, description: 'Duraklarda durak adı.' },
+  ],
+  rules: [...BASE_RULES('Nokta', 'Point'), enumKnown('kind.known', 'Donatı türü')],
+  example: { KIMLIK: 'L-7781', TUR: 'street_lamp' },
+};
+
+export const UTILITY_CONTRACT_V1: CityThemeContract = {
+  theme: 'utility',
+  version: '1',
+  group: 'utilities',
+  file: 'altyapi_hat',
+  label: 'Altyapı hattı',
+  description:
+    'Yeraltı boru ve kabloları: doğalgaz, içme suyu, kanalizasyon / yağmur suyu, elektrik, fiber, bölgesel ısıtma. Ana hatlar ve bina bağlantıları.',
+  dtUse:
+    'Yeraltı görünümünde hattın rengi ve çapında boru, verilen derinlikte. Farklı ağların hatları 0,3 m’den yakın kesişirse küçük olan yeterli örtü kalıyorsa üstten, kalmıyorsa alttan geçirilir (kanalizasyon hiç oynatılmaz). Bina bağlantıları ana hattın kotuna bağlanır. Ana hattın 1,5 m yakınına DT kendiliğinden bina koymaz.',
+  geometry: ['LineString', 'MultiLineString'],
+  attributes: [
+    {
+      key: 'network',
+      type: 'enum',
+      label: 'Ağ',
+      column: 'AG',
+      required: true,
+      values: CITY_UTILITY_NETWORKS,
+      valueLabels: NETWORK_LABELS,
+      dt: true,
+    },
+    {
+      key: 'role',
+      type: 'enum',
+      label: 'Hat türü',
+      column: 'HAT_TURU',
+      values: ['main', 'service'],
+      valueLabels: { main: 'Ana / dağıtım hattı', service: 'Bina bağlantısı (servis hattı)' },
+      dt: true,
+      description: 'Boşsa ana hat sayılır.',
+    },
+    {
+      key: 'diameter',
+      type: 'number',
+      label: 'Dış çap',
+      unit: 'mm',
+      column: 'CAP_MM',
+      range: [10, 3000],
+      dt: true,
+      description:
+        'Yoksa ağ ve hat türüne göre tipik çap kullanılır (ör. doğalgaz ana hat 125 mm).',
+    },
+    {
+      key: 'depth',
+      type: 'number',
+      label: 'Derinlik (zeminden borunun üstüne)',
+      unit: 'm',
+      column: 'DERINLIK',
+      range: [0.2, 15],
+      dt: true,
+      description:
+        'Örtü kalınlığı. Yoksa tipik değer: doğalgaz 0,9, su 1,2, kanalizasyon 2,5, elektrik 0,8, fiber 0,6 m.',
+    },
+    {
+      key: 'depthEnd',
+      type: 'number',
+      label: 'Bitiş derinliği',
+      unit: 'm',
+      column: 'DERIN_SON',
+      range: [0.2, 15],
+      dt: true,
+      description:
+        'Eğimli hatlarda (kanalizasyon) çizginin son noktasındaki derinlik; hat iki değer arasında doğrusal iner.',
+    },
+    {
+      key: 'material',
+      type: 'string',
+      label: 'Malzeme',
+      column: 'MALZEME',
+      dt: true,
+      description: 'PE, HDPE, PVC, beton, sfero döküm, çelik, bakır …',
+    },
+    {
+      key: 'pressure',
+      type: 'string',
+      label: 'Basınç kademesi / gerilim',
+      column: 'KADEME',
+      dt: false,
+    },
+    {
+      key: 'year',
+      type: 'integer',
+      label: 'Yapım yılı',
+      column: 'YIL',
+      range: [1850, 2100],
+      dt: false,
+    },
+  ],
+  rules: [
+    ...BASE_RULES('Çizgi', 'LineString ya da MultiLineString'),
+    enumKnown('network.known', 'Ağ'),
+    {
+      code: 'depth.range',
+      severity: 'warn',
+      label: 'Derinlik',
+      description: 'Derinlik 0,2–15 m arasında olmalı; dışındaysa tipik değer kullanılır.',
+      params: { min: 0.2, max: 15 },
+    },
+    {
+      code: 'diameter.range',
+      severity: 'warn',
+      label: 'Çap',
+      description: 'Çap 10–3000 mm arasında olmalı; dışındaysa tipik değer kullanılır.',
+      params: { min: 10, max: 3000 },
+    },
+  ],
+  example: {
+    KIMLIK: 'DG-00412',
+    AG: 'gas',
+    HAT_TURU: 'main',
+    CAP_MM: 125,
+    DERINLIK: 0.9,
+    MALZEME: 'PE',
+    KADEME: '4 bar',
+    YIL: 2014,
+  },
+};
+
+export const UTILITY_NODE_CONTRACT_V1: CityThemeContract = {
+  theme: 'utility_node',
+  version: '1',
+  group: 'utilities',
+  file: 'altyapi_nokta',
+  label: 'Altyapı noktası',
+  description:
+    'Rögar / baca kapakları, vanalar ve sokak dağıtım kutuları (fiber, elektrik kabinleri).',
+  dtUse:
+    'Rögar ve vana: yolda kapak, yeraltı görünümünde hattın tabanına inen baca. Dağıtım kutusu: kaldırımın arkasında, yüzü yola dönük kabin; en yakın aynı ağ hattına 12 m içinde bağlantı borusu çizilir.',
+  geometry: ['Point'],
+  attributes: [
+    {
+      key: 'type',
+      type: 'enum',
+      label: 'Nokta türü',
+      column: 'TUR',
+      required: true,
+      values: ['manhole', 'valve', 'cabinet'],
+      valueLabels: {
+        manhole: 'Rögar / baca',
+        valve: 'Vana',
+        cabinet: 'Sokak dağıtım kutusu (kabin)',
+      },
+      dt: true,
+    },
+    {
+      key: 'network',
+      type: 'enum',
+      label: 'Ağ',
+      column: 'AG',
+      required: true,
+      values: CITY_UTILITY_NETWORKS,
+      valueLabels: NETWORK_LABELS,
+      dt: true,
+    },
+    {
+      key: 'depth',
+      type: 'number',
+      label: 'Baca derinliği (kapaktan tabana)',
+      unit: 'm',
+      column: 'DERINLIK',
+      range: [0.3, 20],
+      dt: true,
+      description: 'Yoksa bacanın altındaki hattın tabanına kadar inilir.',
+    },
+  ],
+  rules: [
+    ...BASE_RULES('Nokta', 'Point'),
+    enumKnown('type.known', 'Nokta türü'),
+    enumKnown('network.known', 'Ağ'),
+  ],
+  example: { KIMLIK: 'R-9921', TUR: 'manhole', AG: 'sewer', DERINLIK: 3.2 },
+};
+
+/**
+ * Contracts in force, by theme: sources of these themes can be bound and
+ * synced. The terrain model (raster) has its own intake.
+ */
+export const CITY_CONTRACTS: Partial<Record<CityTheme, CityThemeContract>> = {
+  boundary: BOUNDARY_CONTRACT_V1,
+  parcel: PARCEL_CONTRACT_V1,
+  address: ADDRESS_CONTRACT_V1,
+  building: BUILDING_CONTRACT_V2,
+  road: ROAD_CONTRACT_V2,
+  crossing: CROSSING_CONTRACT_V1,
+  area: AREA_CONTRACT_V1,
+  tree: TREE_CONTRACT_V1,
+  asset: ASSET_CONTRACT_V1,
+  landform: LANDFORM_CONTRACT_V1,
+  utility: UTILITY_CONTRACT_V1,
+  utility_node: UTILITY_NODE_CONTRACT_V1,
+};
+
+/** Themes the DT compiler builds the city from (the others are records only). */
+export const CITY_DT_THEMES: readonly CityTheme[] = [
+  'building',
+  'road',
+  'crossing',
+  'area',
+  'tree',
+  'asset',
+  'landform',
+  'utility',
+  'utility_node',
+];
+
+/**
+ * The complete city as institutions deliver it: the latest contract of every
+ * theme, in delivery-specification order (tools/city/delivery-spec.ts).
+ */
+export const CITY_DELIVERY_SPEC: CityThemeContract[] = [
+  BOUNDARY_CONTRACT_V1,
+  PARCEL_CONTRACT_V1,
+  ADDRESS_CONTRACT_V1,
+  BUILDING_CONTRACT_V2,
+  ROAD_CONTRACT_V2,
+  CROSSING_CONTRACT_V1,
+  TERRAIN_CONTRACT_V1,
+  LANDFORM_CONTRACT_V1,
+  AREA_CONTRACT_V1,
+  TREE_CONTRACT_V1,
+  ASSET_CONTRACT_V1,
+  UTILITY_CONTRACT_V1,
+  UTILITY_NODE_CONTRACT_V1,
+];
 
 // ─── Identifier keys ────────────────────────────────────────────────────────
 
