@@ -253,6 +253,32 @@ export function normalizeKeyColumn(name: string): string {
     .replace(/[^a-z0-9]/g, '');
 }
 
+/**
+ * A join key value as compared everywhere (scenario overlay ↔ layer feature
+ * ↔ DT building): "4711", 4711 and "4711.0" are the same key.
+ */
+export function normalizeJoinKey(v: unknown): string {
+  const s = String(v).trim();
+  return /^-?\d+\.0+$/.test(s) ? s.replace(/\.0+$/, '') : s;
+}
+
+/** POST /layers/:id/extent — where the features carrying some join keys lie. */
+export interface LayerKeyExtentRequest {
+  /** Feature property joined on (e.g. `KIMLIKNO`, `tapukimlik`). */
+  key: string;
+  /** Key values (compared with normalizeJoinKey). */
+  values: Array<string | number>;
+}
+
+export interface LayerKeyExtentResponse {
+  /** [minLon, minLat, maxLon, maxLat] of the matched features; null if none matched. */
+  bbox: [number, number, number, number] | null;
+  /** Requested keys found in the layer. */
+  matched: number;
+  /** Distinct keys requested. */
+  requested: number;
+}
+
 /** True when a join column names a parcel identifier. */
 export function isParcelKeyColumn(name: string): boolean {
   return (PARCEL_KEY_COLUMNS as readonly string[]).includes(normalizeKeyColumn(name));
