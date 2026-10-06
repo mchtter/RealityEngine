@@ -232,7 +232,8 @@ export function simplifyRing(ring: Vec2[], tolerance: number): Vec2[] {
   return out.length >= 3 ? out : ring;
 }
 
-function simplifyLine(points: Vec2[], tolerance: number): Vec2[] {
+/** Douglas–Peucker simplification of an open polyline (keeps its ends). */
+export function simplifyLine(points: Vec2[], tolerance: number): Vec2[] {
   if (points.length <= 2) return points;
   const a = points[0];
   const b = points[points.length - 1];

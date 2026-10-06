@@ -1,7 +1,15 @@
 import { add, closestOnSegment, dist, normalize, perp, polylineLength, scale, sub } from './geo';
 import type { SourcePoint, SourceRoad } from './osm';
-import { bufferPolylinePaths, clean, difference, intersection, union, unionPaths } from './poly';
-import { RoadIndex } from './spatial';
+import {
+  bufferPolylinePaths,
+  clean,
+  difference,
+  intersection,
+  offset,
+  union,
+  unionPaths,
+} from './poly';
+import { PolygonSet, RoadIndex } from './spatial';
 import type {
   Crossing,
   Grade,
@@ -22,23 +30,109 @@ interface ClassSpec {
   sidewalk: number;
   formsBlocks: boolean;
   vehicular: boolean;
+  /** Widest carriageway (m) a source may claim for the class; wider is a data error. */
+  maxWidth: number;
 }
 
 const SPECS: Record<RoadClass, ClassSpec> = {
-  motorway: { lanes: 4, laneWidth: 3.5, sidewalk: 0, formsBlocks: true, vehicular: true },
-  trunk: { lanes: 4, laneWidth: 3.3, sidewalk: 2.2, formsBlocks: true, vehicular: true },
-  primary: { lanes: 2, laneWidth: 3.3, sidewalk: 2.2, formsBlocks: true, vehicular: true },
-  secondary: { lanes: 2, laneWidth: 3.2, sidewalk: 2, formsBlocks: true, vehicular: true },
-  tertiary: { lanes: 2, laneWidth: 3.1, sidewalk: 1.8, formsBlocks: true, vehicular: true },
-  residential: { lanes: 2, laneWidth: 2.9, sidewalk: 1.5, formsBlocks: true, vehicular: true },
-  unclassified: { lanes: 2, laneWidth: 2.9, sidewalk: 1.2, formsBlocks: true, vehicular: true },
-  living_street: { lanes: 1, laneWidth: 4.5, sidewalk: 0, formsBlocks: true, vehicular: true },
-  pedestrian: { lanes: 1, laneWidth: 6, sidewalk: 0, formsBlocks: true, vehicular: false },
-  service: { lanes: 1, laneWidth: 3.6, sidewalk: 0, formsBlocks: false, vehicular: true },
-  track: { lanes: 1, laneWidth: 3, sidewalk: 0, formsBlocks: false, vehicular: true },
-  footway: { lanes: 1, laneWidth: 2, sidewalk: 0, formsBlocks: false, vehicular: false },
-  steps: { lanes: 1, laneWidth: 2, sidewalk: 0, formsBlocks: false, vehicular: false },
-  cycleway: { lanes: 1, laneWidth: 2, sidewalk: 0, formsBlocks: false, vehicular: false },
+  motorway: {
+    lanes: 4,
+    laneWidth: 3.5,
+    sidewalk: 0,
+    formsBlocks: true,
+    vehicular: true,
+    maxWidth: 40,
+  },
+  trunk: {
+    lanes: 4,
+    laneWidth: 3.3,
+    sidewalk: 2.2,
+    formsBlocks: true,
+    vehicular: true,
+    maxWidth: 35,
+  },
+  primary: {
+    lanes: 2,
+    laneWidth: 3.3,
+    sidewalk: 2.2,
+    formsBlocks: true,
+    vehicular: true,
+    maxWidth: 30,
+  },
+  secondary: {
+    lanes: 2,
+    laneWidth: 3.2,
+    sidewalk: 2,
+    formsBlocks: true,
+    vehicular: true,
+    maxWidth: 25,
+  },
+  tertiary: {
+    lanes: 2,
+    laneWidth: 3.1,
+    sidewalk: 1.8,
+    formsBlocks: true,
+    vehicular: true,
+    maxWidth: 20,
+  },
+  residential: {
+    lanes: 2,
+    laneWidth: 2.9,
+    sidewalk: 1.5,
+    formsBlocks: true,
+    vehicular: true,
+    maxWidth: 15,
+  },
+  unclassified: {
+    lanes: 2,
+    laneWidth: 2.9,
+    sidewalk: 1.2,
+    formsBlocks: true,
+    vehicular: true,
+    maxWidth: 15,
+  },
+  living_street: {
+    lanes: 1,
+    laneWidth: 4.5,
+    sidewalk: 0,
+    formsBlocks: true,
+    vehicular: true,
+    maxWidth: 12,
+  },
+  pedestrian: {
+    lanes: 1,
+    laneWidth: 6,
+    sidewalk: 0,
+    formsBlocks: true,
+    vehicular: false,
+    maxWidth: 40,
+  },
+  service: {
+    lanes: 1,
+    laneWidth: 3.6,
+    sidewalk: 0,
+    formsBlocks: false,
+    vehicular: true,
+    maxWidth: 10,
+  },
+  track: { lanes: 1, laneWidth: 3, sidewalk: 0, formsBlocks: false, vehicular: true, maxWidth: 6 },
+  footway: {
+    lanes: 1,
+    laneWidth: 2,
+    sidewalk: 0,
+    formsBlocks: false,
+    vehicular: false,
+    maxWidth: 6,
+  },
+  steps: { lanes: 1, laneWidth: 2, sidewalk: 0, formsBlocks: false, vehicular: false, maxWidth: 6 },
+  cycleway: {
+    lanes: 1,
+    laneWidth: 2,
+    sidewalk: 0,
+    formsBlocks: false,
+    vehicular: false,
+    maxWidth: 6,
+  },
 };
 
 export function roadClassOf(highway: string): RoadClass | null {
@@ -68,22 +162,35 @@ export function densify(points: Vec2[], maxStep: number): Vec2[] {
 export function classifyRoads(source: SourceRoad[]): Road[] {
   const roads: Road[] = [];
   for (const r of source) {
-    const cls = roadClassOf(r.tags.highway);
+    let cls = roadClassOf(r.tags.highway);
     if (!cls || r.points.length < 2) continue;
+    // A service road or track closed to motor traffic and designated for
+    // walking / cycling is a path (promenades, park ways), drawn as one.
+    const designated = r.tags.foot === 'designated' || r.tags.bicycle === 'designated';
+    const noMotor = ['motor_vehicle', 'motorcar', 'vehicle'].some((k) => r.tags[k] === 'no');
+    if ((cls === 'service' || cls === 'track') && (designated || noMotor)) cls = 'footway';
     const spec = SPECS[cls];
     const oneway =
       r.tags.oneway === 'yes' ||
       r.tags.oneway === '1' ||
       r.tags.junction === 'roundabout' ||
       cls === 'motorway';
-    const tagLanes = Number.parseInt(r.tags.lanes ?? '', 10);
+    // Source widths and lane counts are kept only when plausible for the
+    // class; others are data errors (set aside, the class default used).
+    const rejected: { width?: number; lanes?: number } = {};
+    const rawLanes = Number.parseInt(r.tags.lanes ?? '', 10);
+    const maxLanes = Math.max(1, Math.floor(spec.maxWidth / 2.5));
+    if (Number.isFinite(rawLanes) && rawLanes > maxLanes) rejected.lanes = rawLanes;
+    const tagLanes = rejected.lanes === undefined ? rawLanes : Number.NaN;
     const lanes =
       Number.isFinite(tagLanes) && tagLanes > 0
         ? tagLanes
         : oneway
           ? Math.max(1, Math.ceil(spec.lanes / 2))
           : spec.lanes;
-    const tagWidth = Number.parseFloat(r.tags.width ?? '');
+    const rawWidth = Number.parseFloat(r.tags.width ?? '');
+    if (Number.isFinite(rawWidth) && rawWidth > spec.maxWidth) rejected.width = rawWidth;
+    const tagWidth = rejected.width === undefined ? rawWidth : Number.NaN;
     const width = Number.isFinite(tagWidth) && tagWidth > 1 ? tagWidth : lanes * spec.laneWidth;
     const sidewalkTag = r.tags.sidewalk;
     const sidewalk = sidewalkTag === 'no' || sidewalkTag === 'none' ? 0 : spec.sidewalk;
@@ -115,6 +222,7 @@ export function classifyRoads(source: SourceRoad[]): Road[] {
         width: Number.isFinite(tagWidth) ? 'observed' : 'inferred',
         lanes: Number.isFinite(tagLanes) ? 'observed' : 'inferred',
       },
+      ...(rejected.width !== undefined || rejected.lanes !== undefined ? { rejected } : {}),
     });
   }
   return roads;
@@ -244,23 +352,26 @@ export function deckHalf(r: Road): number {
 }
 
 /**
- * Streets that run on onto a narrower bridge deck: their sidewalks narrow to
- * the deck's walkways over the last TAPER m and the round end cap is trimmed
- * to the deck's width (a 0.7 m kerb step stood beside the barrier). The part
- * of the cap under the deck stays corridor, so no block reaches under the
- * ramp. Returns the roads and the strips cut off their corridor.
+ * Streets that run on onto a bridge deck (alone, not at a junction): they stop
+ * square at the deck — a round end cap left a crescent of sidewalk over the
+ * deck's start — and where the deck is narrower their sidewalks narrow to its
+ * walkways over the last TAPER m (a 0.7 m kerb step stood beside the barrier).
+ * Returns the street ends (node keys), the strips cut off their corridor and
+ * the aprons: the ground under the deck's start, kept free of blocks.
  */
 function bridgeLandings(
   ground: Road[],
   bridges: Road[],
   key: (p: Vec2) => string,
-): { roads: Set<Road>; cut: Polygon[] } {
+): { ends: Set<string>; roads: Set<Road>; cut: Polygon[]; aprons: Polygon[] } {
+  const ends = new Set<string>();
   const roads = new Set<Road>();
   const cut: Polygon[] = [];
+  const aprons: Polygon[] = [];
   const decks = new Map<string, Road>();
   for (const b of bridges)
     for (const p of [b.centerline[0], b.centerline[b.centerline.length - 1]]) decks.set(key(p), b);
-  if (!decks.size) return { roads, cut };
+  if (!decks.size) return { ends, roads, cut, aprons };
   const groundEnds = new Map<string, number>();
   for (const r of ground)
     for (const p of [r.centerline[0], r.centerline[r.centerline.length - 1]])
@@ -271,8 +382,7 @@ function bridgeLandings(
       const c = start ? r.centerline : [...r.centerline].reverse();
       const p = c[0];
       const deck = decks.get(key(p));
-      // Only a street that alone runs on onto the deck (not a junction there).
-      if (!deck || groundEnds.get(key(p)) !== 1) continue;
+      if (!deck || groundEnds.get(key(p)) !== 1 || dist(c[0], c[1]) < 1e-6) continue;
       const crossing = ground.some(
         (o) =>
           o !== r &&
@@ -281,25 +391,26 @@ function bridgeLandings(
           ),
       );
       if (crossing) continue;
+      ends.add(key(p));
       const w1 = Math.max(r.width / 2 + 0.3, deckHalf(deck));
+      // Apron: as far out as the round corridor cap reached.
+      const d0 = normalize(sub(c[0], c[1]));
+      const n0 = perp(d0);
+      const reach = half + 0.5;
+      aprons.push({
+        outer: [
+          add(p, scale(n0, -w1)),
+          add(add(p, scale(n0, -w1)), scale(d0, reach)),
+          add(add(p, scale(n0, w1)), scale(d0, reach)),
+          add(p, scale(n0, w1)),
+        ],
+        holes: [],
+      });
       if (half - w1 <= 0.3) continue;
       const len = Math.min(TAPER, polylineLength(c) / 2);
       if (len < 2) continue;
       roads.add(r);
-      const d0 = normalize(sub(c[0], c[1]));
       for (const side of [1, -1]) {
-        // The cap beyond the end, beside the deck.
-        const n0 = scale(perp(d0), side);
-        const reach = half + 0.5;
-        cut.push({
-          outer: [
-            add(p, scale(n0, w1)),
-            add(add(p, scale(n0, w1)), scale(d0, reach)),
-            add(add(p, scale(n0, reach)), scale(d0, reach)),
-            add(p, scale(n0, reach)),
-          ],
-          holes: [],
-        });
         const inner: Vec2[] = [];
         const outer: Vec2[] = [];
         let walked = 0;
@@ -321,24 +432,26 @@ function bridgeLandings(
       }
     }
   }
-  return { roads, cut };
+  return { ends, roads, cut, aprons };
 }
 
 export function buildSurfaces(roads: Road[], clipTo: Polygon[]): RoadSurfaces {
   const ground = roads.filter((r) => r.grade === 'ground');
   // A road ending at a tunnel mouth stops square at the portal (a round end
-  // reached past it, over the street above an underpass).
+  // reached past it, over the street above an underpass); one running on
+  // onto a bridge deck stops square at the deck.
   const key = (p: Vec2) => `${Math.round(p[0] * 2)},${Math.round(p[1] * 2)}`;
-  const mouths = new Set(
-    roads
-      .filter((r) => r.grade === 'tunnel')
-      .flatMap((r) => [key(r.centerline[0]), key(r.centerline[r.centerline.length - 1])]),
-  );
   const landings = bridgeLandings(
     ground.filter((r) => r.formsBlocks && isVehicular(r.cls)),
     roads.filter((r) => r.grade === 'bridge'),
     key,
   );
+  const mouths = new Set([
+    ...roads
+      .filter((r) => r.grade === 'tunnel')
+      .flatMap((r) => [key(r.centerline[0]), key(r.centerline[r.centerline.length - 1])]),
+    ...landings.ends,
+  ]);
   const buffer = (r: Road, half: number) => {
     const c = r.centerline;
     const ends = [c[0], c[c.length - 1]];
@@ -351,11 +464,13 @@ export function buildSurfaces(roads: Road[], clipTo: Polygon[]): RoadSurfaces {
   const asphaltPaths = ground
     .filter((r) => isVehicular(r.cls))
     .flatMap((r) => buffer(r, r.width / 2));
+  // Pedestrian streets and steps are stone paving; walking / running / cycle
+  // paths are their own (coloured track) surface.
   const pavingPaths = ground
-    .filter((r) => r.cls === 'pedestrian')
+    .filter((r) => r.cls === 'pedestrian' || r.cls === 'steps')
     .flatMap((r) => bufferPolylinePaths(r.centerline, r.width / 2));
   const pathPaths = ground
-    .filter((r) => r.cls === 'footway' || r.cls === 'steps' || r.cls === 'cycleway')
+    .filter((r) => r.cls === 'footway' || r.cls === 'cycleway')
     .flatMap((r) => bufferPolylinePaths(r.centerline, r.width / 2));
   const corridorOf = (r: Road) => buffer(r, r.width / 2 + r.sidewalk);
   const corridorPaths = ground.filter((r) => r.formsBlocks).flatMap(corridorOf);
@@ -383,8 +498,12 @@ export function buildSurfaces(roads: Road[], clipTo: Polygon[]): RoadSurfaces {
         ),
       )
     : union(unionPaths(corridorPaths), tapers);
-  const corridor = clean(intersection(kept, clipTo), 0.15);
-  const sidewalks = difference(corridor, [...carriageway, ...paving]);
+  const street = clean(intersection(kept, clipTo), 0.15);
+  const sidewalks = difference(street, [...carriageway, ...paving]);
+  // Blocks keep off the deck aprons too (not drawn: the deck lies there).
+  const corridor = landings.aprons.length
+    ? union(street, intersection(landings.aprons, clipTo))
+    : street;
   const paths = difference(intersection(unionPaths(pathPaths), clipTo), [
     ...carriageway,
     ...paving,
@@ -492,6 +611,77 @@ export function buildMarkings(roads: Road[], junctions: Junction[]): Marking[] {
     if (['motorway', 'trunk', 'primary'].includes(road.cls)) {
       add('edge', road.width / 2 - 0.35);
       add('edge', -road.width / 2 + 0.35);
+    }
+  }
+  // Walking / cycle paths: a dashed centre on cycle ways and wide paths (the
+  // edge lines come from the path outline, pathEdgeMarkings). It stops where
+  // the path crosses a carriageway or runs into another path across it.
+  const paths = roads.filter(
+    (r) => (r.cls === 'footway' || r.cls === 'cycleway') && r.grade === 'ground',
+  );
+  const pathIndex = new RoadIndex(paths);
+  for (const road of paths) {
+    if (road.width < 1.5 || (road.cls !== 'cycleway' && road.width < 2.5)) continue;
+    const onCarriageway = (p: Vec2) => carriageways.covering(p, (r) => r.width / 2 + 0.3) !== null;
+    const line = densify(road.centerline, 2);
+    const across = (p: Vec2) => crossingPath(pathIndex, road, p, tangentNear(line, p).dir);
+    for (const run of runsOutside(line, [], (p) => onCarriageway(p) || across(p)))
+      out.push({ kind: 'path-dashed', points: run });
+  }
+  return out;
+}
+
+/** Another path whose surface holds p and runs across `road` there (> 30° apart). */
+function crossingPath(index: RoadIndex, road: Road, p: Vec2, dir: Vec2): boolean {
+  for (const other of index.roadsNear(p[0] - 20, p[1] - 20, p[0] + 20, p[1] + 20)) {
+    if (other === road) continue;
+    for (let k = 1; k < other.centerline.length; k++) {
+      const a = other.centerline[k - 1];
+      const b = other.centerline[k];
+      if (closestOnSegment(p, a, b).d >= other.width / 2 + 0.2) continue;
+      const d = normalize(sub(b, a));
+      if (Math.abs(d[0] * dir[0] + d[1] * dir[1]) < Math.cos(Math.PI / 6)) return true;
+    }
+  }
+  return false;
+}
+
+/** Inset of a path's white edge line from its side. */
+export const PATH_EDGE_INSET = 0.15;
+
+/**
+ * White edge lines of walking / cycle paths (a plain blue ribbon read as a
+ * stream from above), traced along the outline of the joined path surface
+ * like a kerb: where paths meet the lines turn the corner instead of running
+ * on across the other path. They stop where the path opens onto a street
+ * (carriageway, sidewalk, paving).
+ */
+export function pathEdgeMarkings(paths: Polygon[], street: Polygon[]): Marking[] {
+  const open = new PolygonSet(offset(street, PATH_EDGE_INSET + 0.15, 'round'));
+  const out: Marking[] = [];
+  for (const poly of offset(paths, -PATH_EDGE_INSET)) {
+    for (const ring of [poly.outer, ...poly.holes]) {
+      if (polylineLength([...ring, ring[0]]) < 4) continue;
+      const pts = densify([...ring, ring[0]], 0.5);
+      const runs: Vec2[][] = [];
+      let run: Vec2[] = [];
+      for (const p of pts) {
+        if (open.contains(p[0], p[1])) {
+          if (run.length >= 2) runs.push(run);
+          run = [];
+        } else run.push(p);
+      }
+      if (run.length >= 2) runs.push(run);
+      // The ring closes: a run through its start point is one line.
+      if (runs.length > 1) {
+        const first = runs[0];
+        const last = runs[runs.length - 1];
+        if (first[0] === pts[0] && last[last.length - 1] === pts[pts.length - 1]) {
+          runs[0] = [...last, ...first.slice(1)];
+          runs.pop();
+        }
+      }
+      for (const r of runs) if (polylineLength(r) > 1) out.push({ kind: 'path-edge', points: r });
     }
   }
   return out;

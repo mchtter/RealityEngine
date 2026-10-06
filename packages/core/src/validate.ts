@@ -1,12 +1,20 @@
 import { TWIN_MEDIAN } from './cuttings';
 import { closestOnSegment, dist, pointInRing } from './geo';
-import { GroundModel, STREET_SURFACES, type Support } from './ground-model';
-import { bufferPolyline, difference, intersection, offset, polygonArea } from './poly';
+import { GroundModel, STREET_SURFACES, SURFACE_LIFT, type Support } from './ground-model';
+import {
+  HAIRLINE,
+  bufferPolyline,
+  difference,
+  intersection,
+  meanThickness,
+  offset,
+  polygonArea,
+} from './poly';
 import { PROP_RADIUS, carriageReach, poleReach } from './props';
-import { isVehicular } from './roads';
-import { GridIndex, RoadIndex } from './spatial';
+import { GridIndex, PolygonSet, RoadIndex } from './spatial';
 import type {
   Bridge,
+  Building,
   CityModel,
   Fence,
   FenceStyle,
@@ -17,6 +25,7 @@ import type {
   Vec2,
   Vec3,
 } from './types';
+import { UTILITY_SPECS, utilityClashes } from './utilities';
 
 /**
  * Rules every compiled tile must keep — the contract of each class with the
@@ -30,7 +39,11 @@ export const RULES = {
   'street.kerb-step': 'Birleşen yolların kaldırım genişliği basamak yapıyor (> 0,3 m)',
   'street.kerb-notch':
     'Kaldırım kenarında sivri girinti / çıkıntı (> 0,3 m, kısa kenarlı keskin köşe)',
+  'surface.over-carriageway': 'Kaldırım / ada / taş kaplama taşıt yolunun (asfalt) üstüne biniyor',
+  'surface.hairline': 'Kıl inceliğinde yüzey parçası (< 5 cm, koyu çizgi gibi görünür)',
   'crossing.in-cut': 'Yaya geçidi hendek / tünel ağzı kapağı içinde',
+  'marking.path-cross':
+    'Yürüyüş / bisiklet yolu kenar çizgisi başka bir yolun içinden geçiyor (köşeyi dönmüyor)',
   // Props
   'prop.support': 'Üretilen nesne uygun olmayan zeminde (ağaç asfaltta, direk çimde …)',
   'data.prop-support': 'Veriden gelen nesne uygun olmayan zeminde (kaynak veri hatası)',
@@ -44,11 +57,27 @@ export const RULES = {
   'seam.trench-end': 'Hendek yolu açık uçta sokakla aynı yükseklikte / genişlikte değil',
   'seam.twin-trench': 'İkiz rampa: iki hendek arası < 4 m ama tek orta duvar altında değil',
   'seam.bridge-end': 'Köprü ucu sokakla aynı yükseklikte / genişlikte değil',
-  'bridge.barrier-road': 'Sokak seviyesindeki köprünün korkuluğu başka bir yolun şeridinde',
+  'bridge.barrier-road':
+    'Sokak seviyesindeki köprünün korkuluğu kesilmeden başka bir yolun şeridinde',
   // Structures
   'building.structure': 'Bina köprü tabliyesi / ayağı / hendekle kesişiyor',
   'fence.street': 'Bahçe duvarı / çit yola ya da kaldırıma taşıyor',
+  // Nothing stands in anything else
+  'overlap.prop': 'İki nesnenin gövdesi iç içe (ağaç gövdesi, direk, bank, araba …)',
+  'overlap.prop-building': 'Nesne bina içinde',
+  'overlap.fence': 'İki bahçe duvarı / çit iç içe ya da kesişiyor',
+  'overlap.fence-building': 'Bahçe duvarı / çit bina içinden geçiyor',
+  'overlap.building': 'İki bina iç içe (> 0,5 m²)',
+  'data.overlap': 'Veriden gelen iki nesne iç içe (kaynak veri)',
+  'data.road-attr':
+    'Yolun genişlik / şerit sayısı verisi sınıfı için olanaksız; varsayılan kullanıldı (kaynak veri)',
+  'fence.stub': 'Bahçe duvarı parçası 1,5 m’den kısa (kopuk parça)',
+  'fence.gap': 'İki bahçe duvarı arasında kapısız 0,3–2 m boşluk',
   'pier.carriageway': 'Köprü ayağı taşıt yolunda',
+  // Buried networks
+  'utility.clash': 'İki farklı altyapı hattı kesişiminde duvarlar arası < 0,3 m (çakışma)',
+  'utility.cover': 'Boru / kablo üstü örtü derinliği türü için az (gaz < 0,6 m, su < 0,8 m …)',
+  'utility.building': 'Ana hat bina altından geçiyor (bağlantı hattı değil)',
 } as const;
 
 export type RuleId = keyof typeof RULES;
@@ -87,6 +116,7 @@ export const SUPPORTS: Partial<Record<PropKind, ReadonlySet<Support>>> = (() => 
     'street-lamp': set(...hard, 'trench'),
     'traffic-signal': set(...hard),
     'power-pole': set(...hard, 'ground'),
+    'street-cabinet': set(...hard, 'ground'),
     'bus-stop': set('sidewalk', 'paving', 'island'),
     bench: set(...hard, 'ground', 'playground'),
     'waste-basket': set(...hard, 'ground', 'playground'),
@@ -156,9 +186,48 @@ export function validateCity(model: CityModel): ValidationReport {
     p[0] >= core.minX && p[0] < core.maxX && p[1] >= core.minY && p[1] < core.maxY;
 
   streetRules(model, ground, groundRoads, add);
+  for (const r of model.roads)
+    if (r.rejected) {
+      const mid = r.centerline[Math.floor(r.centerline.length / 2)];
+      const what = [
+        r.rejected.width !== undefined ? `genişlik ${r.rejected.width} m` : '',
+        r.rejected.lanes !== undefined ? `${r.rejected.lanes} şerit` : '',
+      ].filter(Boolean);
+      add('data.road-attr', [mid[0], mid[1]], `${r.cls} ${r.ref}: ${what.join(', ')}`);
+    }
+  overlapRules(model, add);
+  for (const sf of model.surfaces)
+    for (const p of sf.polygons)
+      if (meanThickness(p) < HAIRLINE) add('surface.hairline', centroidOf(p), sf.kind);
+  // Street layers never cover the carriageway (they lie above it and hid the road).
+  const asphalt = model.surfaces.filter((s) => s.kind === 'asphalt').flatMap((s) => s.polygons);
+  for (const sf of model.surfaces) {
+    if (sf.kind !== 'sidewalk' && sf.kind !== 'island' && sf.kind !== 'paving') continue;
+    for (const piece of intersection(sf.polygons, asphalt)) {
+      if (polygonArea(piece) < 1 || meanThickness(piece) < 0.2) continue;
+      add(
+        'surface.over-carriageway',
+        centroidOf(piece),
+        `${sf.kind} ${polygonArea(piece).toFixed(0)} m²`,
+      );
+    }
+  }
   for (const c of model.crossings) {
     if (ground.cut.inTrench(c.center[0], c.center[1]) || ground.cut.inLid(c.center[0], c.center[1]))
       add('crossing.in-cut', c.center);
+  }
+  // Path edge lines run along the path's side; one deep inside the path
+  // surface is a line carried on across a joining path.
+  const pathInner = new PolygonSet(
+    offset(
+      model.surfaces.filter((sf) => sf.kind === 'path').flatMap((sf) => sf.polygons),
+      -0.5,
+    ),
+  );
+  for (const m of model.markings) {
+    if (m.kind !== 'path-edge') continue;
+    const hit = m.points.find((p) => inCore(p) && pathInner.contains(p[0], p[1]));
+    if (hit) add('marking.path-cross', hit);
   }
 
   // ─── Props ────────────────────────────────────────────────────────────
@@ -261,6 +330,60 @@ export function validateCity(model: CityModel): ValidationReport {
       }
     }
   }
+  // Garden walls run on: no short loose pieces, no small holes between two
+  // walls except at a gate.
+  const fences = model.fences ?? [];
+  const gateAt = new GridIndex<Vec2>(10);
+  for (const p of model.props)
+    if (p.kind === 'gate')
+      gateAt.insert(
+        [p.position[0], p.position[1]],
+        p.position[0],
+        p.position[1],
+        p.position[0],
+        p.position[1],
+      );
+  const endAt = new GridIndex<{ p: Vec2; f: number }>(10);
+  fences.forEach((f, i) => {
+    let len = 0;
+    for (let k = 1; k < f.points.length; k++) len += dist(f.points[k - 1], f.points[k]);
+    if (len < 1.5) add('fence.stub', f.points[0], `${len.toFixed(1)} m`);
+    for (const p of [f.points[0], f.points[f.points.length - 1]])
+      endAt.insert({ p, f: i }, p[0], p[1], p[0], p[1]);
+  });
+  // A free end: one touching no other wall (a joint or a T is not a gap).
+  const wallSegs = new GridIndex<{ f: number; a: Vec2; b: Vec2 }>(10);
+  fences.forEach((f, i) => {
+    for (let k = 1; k < f.points.length; k++) {
+      const a = f.points[k - 1];
+      const b = f.points[k];
+      wallSegs.insert(
+        { f: i, a, b },
+        Math.min(a[0], b[0]),
+        Math.min(a[1], b[1]),
+        Math.max(a[0], b[0]),
+        Math.max(a[1], b[1]),
+      );
+    }
+  });
+  const free = (p: Vec2, i: number) =>
+    !wallSegs
+      .query(p[0] - 0.3, p[1] - 0.3, p[0] + 0.3, p[1] + 0.3)
+      .some((sg) => sg.f !== i && closestOnSegment(p, sg.a, sg.b).d < 0.3);
+  fences.forEach((f, i) => {
+    for (const p of [f.points[0], f.points[f.points.length - 1]]) {
+      if (!free(p, i)) continue;
+      for (const o of endAt.query(p[0] - 2, p[1] - 2, p[0] + 2, p[1] + 2)) {
+        if (o.f <= i || !free(o.p, o.f)) continue;
+        const g = dist(p, o.p);
+        if (g <= 0.3 || g >= 2) continue;
+        const m: Vec2 = [(p[0] + o.p[0]) / 2, (p[1] + o.p[1]) / 2];
+        if (gateAt.query(m[0] - 2, m[1] - 2, m[0] + 2, m[1] + 2).some((q) => dist(q, m) < 2))
+          continue;
+        add('fence.gap', m, `${g.toFixed(2)} m`);
+      }
+    }
+  });
   for (const d of decks) {
     for (const pier of d.br.piers) {
       const n: Vec2 = [-pier.dir[1], pier.dir[0]];
@@ -269,6 +392,28 @@ export function validateCity(model: CityModel): ValidationReport {
         if (roadIndex.covering(c, carriageReach)) add('pier.carriageway', c);
       }
     }
+  }
+
+  // ─── Buried networks ──────────────────────────────────────────────────
+  const utilities = model.utilities ?? [];
+  for (const c of utilityClashes(utilities)) {
+    const p = c.a.path[c.ka - 1];
+    const q = c.a.path[c.ka];
+    const at: Vec2 = [p[0] + (q[0] - p[0]) * c.ta, p[1] + (q[1] - p[1]) * c.ta];
+    if (inCore(at)) add('utility.clash', at, `${c.a.kind}/${c.b.kind} ${c.gap.toFixed(2)} m`);
+  }
+  const footprints = new PolygonSet(model.buildings.map((b) => b.footprint));
+  for (const u of utilities) {
+    const min = UTILITY_SPECS[u.kind].minCover;
+    const shallow = u.path.find(
+      (p) =>
+        inCore([p[0], p[1]]) &&
+        ground.surfaceAt(p[0], p[1]).z - (p[2] + u.diameter / 2) < min - 0.05,
+    );
+    if (shallow) add('utility.cover', [shallow[0], shallow[1]], u.kind);
+    if (u.service) continue;
+    const under = u.path.find((p) => inCore([p[0], p[1]]) && footprints.contains(p[0], p[1]));
+    if (under) add('utility.building', [under[0], under[1]], u.kind);
   }
 
   return { counts, samples, ms: Date.now() - started };
@@ -286,8 +431,9 @@ function streetRules(
     const opened = offset(offset([b.polygon], -1.5, 'round'), 1.5, 'round');
     for (const piece of difference([b.polygon], opened)) {
       const area = polygonArea(piece);
-      // Opening again leaves arc-approximation crumbs of ~1 m².
-      if (area < 1.5) continue;
+      // Opening an opened block again leaves arc-approximation crumbs: under
+      // 1.5 m², or hairline thin (mm-wide crescents along a corner arc).
+      if (area < 1.5 || meanThickness(piece) < HAIRLINE) continue;
       add('street.sliver', centroidOf(piece), `${area.toFixed(1)} m²`);
     }
     // Notches: sharp corners between short edges along the kerb line.
@@ -351,6 +497,159 @@ function streetRules(
         c[0],
         `${half(wide.road).toFixed(1)} / ${half(narrow.road).toFixed(1)} m`,
       );
+  }
+}
+
+/**
+ * Solid body radius of a prop for the overlap rule (metres): a tree's trunk,
+ * not its crown (crowns interlock, trunks do not); 0 = not checked.
+ */
+const BODY_RADIUS: Partial<Record<PropKind, number>> = {
+  tree: 0.3,
+  'street-lamp': 0.15,
+  'traffic-signal': 0.15,
+  'power-pole': 0.2,
+  'waste-basket': 0.25,
+  bench: 0.9,
+  'bus-stop': 0.85,
+  car: 1,
+  booth: 1,
+  swing: 1.5,
+  slide: 1.5,
+  seesaw: 1.4,
+  climber: 1.4,
+};
+
+/** Shortest distance between segments ab and cd (0 when they cross). */
+function segmentGap(a: Vec2, b: Vec2, c: Vec2, d: Vec2): number {
+  const cross = (p: Vec2, q: Vec2, r: Vec2) =>
+    (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  const d1 = cross(a, b, c);
+  const d2 = cross(a, b, d);
+  const d3 = cross(c, d, a);
+  const d4 = cross(c, d, b);
+  if (d1 * d2 < 0 && d3 * d4 < 0) return 0;
+  return Math.min(
+    closestOnSegment(a, c, d).d,
+    closestOnSegment(b, c, d).d,
+    closestOnSegment(c, a, b).d,
+    closestOnSegment(d, a, b).d,
+  );
+}
+
+/** Nothing stands in anything else: props, garden walls and buildings. */
+function overlapRules(
+  model: CityModel,
+  add: (rule: RuleId, at: Vec2, note?: string) => void,
+): void {
+  const footprints = new PolygonSet(model.buildings.map((b) => b.footprint));
+  // Props: bodies apart, none in a building.
+  const props = model.props.filter((p) => !p.buildingId && (BODY_RADIUS[p.kind] ?? 0) > 0);
+  const bodies = new GridIndex<Prop>(6);
+  for (const p of props) {
+    const r = BODY_RADIUS[p.kind]! * p.scale;
+    bodies.insert(p, p.position[0] - r, p.position[1] - r, p.position[0] + r, p.position[1] + r);
+  }
+  const seen = new Set<string>();
+  for (const p of props) {
+    const r = BODY_RADIUS[p.kind]! * p.scale;
+    const q: Vec2 = [p.position[0], p.position[1]];
+    const inBuilding = [
+      q,
+      [q[0] + r, q[1]],
+      [q[0] - r, q[1]],
+      [q[0], q[1] + r],
+      [q[0], q[1] - r],
+    ].some((v) => footprints.contains(v[0], v[1]));
+    if (inBuilding)
+      add(p.provenance === 'observed' ? 'data.overlap' : 'overlap.prop-building', q, p.kind);
+    for (const o of bodies.query(q[0] - r - 1.5, q[1] - r - 1.5, q[0] + r + 1.5, q[1] + r + 1.5)) {
+      if (o === p) continue;
+      const key = p.id < o.id ? `${p.id}|${o.id}` : `${o.id}|${p.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const ro = BODY_RADIUS[o.kind]! * o.scale;
+      if (dist(q, [o.position[0], o.position[1]]) >= r + ro - 0.02) continue;
+      const data = p.provenance === 'observed' && o.provenance === 'observed';
+      add(data ? 'data.overlap' : 'overlap.prop', q, `${p.kind} / ${o.kind}`);
+    }
+  }
+  // Garden walls: bodies apart (joints at their ends allowed), none through a building.
+  const fences = model.fences ?? [];
+  type Seg = { f: number; a: Vec2; b: Vec2 };
+  const segs = new GridIndex<Seg>(10);
+  fences.forEach((f, i) => {
+    for (let k = 1; k < f.points.length; k++) {
+      const a = f.points[k - 1];
+      const b = f.points[k];
+      segs.insert(
+        { f: i, a, b },
+        Math.min(a[0], b[0]),
+        Math.min(a[1], b[1]),
+        Math.max(a[0], b[0]),
+        Math.max(a[1], b[1]),
+      );
+      const n = Math.max(1, Math.round(dist(a, b) / 0.5));
+      for (let j = 1; j < n; j++) {
+        const t = j / n;
+        const q: Vec2 = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        if (footprints.contains(q[0], q[1])) {
+          add('overlap.fence-building', q);
+          break;
+        }
+      }
+    }
+  });
+  const ends = fences.map((f) => [f.points[0], f.points[f.points.length - 1]]);
+  const atEnd = (q: Vec2, i: number) => ends[i].some((e) => dist(e, q) < 0.4);
+  const pairs = new Set<string>();
+  fences.forEach((f, i) => {
+    for (let k = 1; k < f.points.length; k++) {
+      const a = f.points[k - 1];
+      const b = f.points[k];
+      for (const o of segs.query(
+        Math.min(a[0], b[0]) - 0.6,
+        Math.min(a[1], b[1]) - 0.6,
+        Math.max(a[0], b[0]) + 0.6,
+        Math.max(a[1], b[1]) + 0.6,
+      )) {
+        if (o.f <= i || pairs.has(`${i}|${o.f}`)) continue;
+        const room = (FENCE_WIDTH[f.style] + FENCE_WIDTH[fences[o.f].style]) / 2 - 0.02;
+        if (segmentGap(a, b, o.a, o.b) >= room) continue;
+        // Where they touch: a joint (an end of either wall) is how walls meet.
+        const near = [a, b, o.a, o.b].filter(
+          (q) =>
+            closestOnSegment(q, a, b).d < room + 0.05 &&
+            closestOnSegment(q, o.a, o.b).d < room + 0.05,
+        );
+        if (near.some((q) => atEnd(q, i) || atEnd(q, o.f))) continue;
+        pairs.add(`${i}|${o.f}`);
+        add('overlap.fence', near[0] ?? [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+      }
+    }
+  });
+  // Buildings: footprints apart.
+  const boxes = new GridIndex<Building>(30);
+  for (const b of model.buildings) {
+    const bb = boundsOf(b.footprint);
+    boxes.insert(b, bb[0], bb[1], bb[2], bb[3]);
+  }
+  const bpairs = new Set<string>();
+  for (const b of model.buildings) {
+    const bb = boundsOf(b.footprint);
+    for (const o of boxes.query(bb[0], bb[1], bb[2], bb[3])) {
+      if (o === b) continue;
+      const key = b.id < o.id ? `${b.id}|${o.id}` : `${o.id}|${b.id}`;
+      if (bpairs.has(key)) continue;
+      bpairs.add(key);
+      const ob = boundsOf(o.footprint);
+      if (ob[0] > bb[2] || ob[2] < bb[0] || ob[1] > bb[3] || ob[3] < bb[1]) continue;
+      const shared = intersection([b.footprint], [o.footprint]).reduce(
+        (s2, q) => s2 + polygonArea(q),
+        0,
+      );
+      if (shared > 0.5) add('overlap.building', centroidOf(b.footprint), `${shared.toFixed(1)} m²`);
+    }
   }
 }
 
@@ -446,17 +745,32 @@ function seamRules(
   }
   for (const br of model.bridges ?? []) {
     bridgeEnds(br, model.bridges ?? [], ground, roadIndex, add);
-    if (barrierOnRoad(br, ground).length)
+    if (barrierOnRoad(br, ground, roadIndex).length)
       add('bridge.barrier-road', [br.path[0][0], br.path[0][1]]);
   }
 }
 
+/** A deck less than this above the street meets it at street level (culvert, low bridge). */
+export const LOW_DECK = 2;
+
 /**
- * Points of a deck's barrier lines that stand on another road's carriageway
- * at street level (a low bridge or culvert at a junction): there the barrier
- * must stop. Returns the barrier sample points (deck path index, side).
+ * Whether a deck's barrier / walkway stops at a point: a low deck over another
+ * road's asphalt (a junction at street level). The one decision, shared by the
+ * viewer (which leaves the barrier out there) and the validator.
  */
-export function barrierOnRoad(br: Bridge, ground: GroundModel): { k: number; side: 1 | -1 }[] {
+export function barrierStops(ground: GroundModel, deckZ: number, x: number, y: number): boolean {
+  return deckZ - ground.streetAt(x, y) < LOW_DECK && ground.supportAt(x, y) === 'asphalt';
+}
+
+/**
+ * Barrier points left standing on another road's carriageway at street level
+ * (not stopped by `barrierStops`, e.g. where the junction has no asphalt drawn).
+ */
+export function barrierOnRoad(
+  br: Bridge,
+  ground: GroundModel,
+  roads: RoadIndex,
+): { k: number; side: 1 | -1 }[] {
   const out: { k: number; side: 1 | -1 }[] = [];
   const p = br.path;
   const o = br.width / 2 - 0.2;
@@ -468,8 +782,9 @@ export function barrierOnRoad(br: Bridge, ground: GroundModel): { k: number; sid
     for (const side of [1, -1] as const) {
       const x = p[k][0] + n[0] * o * side;
       const y = p[k][1] + n[1] * o * side;
-      if (p[k][2] - ground.streetAt(x, y) > 2) continue;
-      if (ground.supportAt(x, y) === 'asphalt') out.push({ k, side });
+      if (p[k][2] - ground.streetAt(x, y) >= LOW_DECK) continue;
+      if (barrierStops(ground, p[k][2], x, y)) continue;
+      if (roads.covering([x, y], carriageReach)) out.push({ k, side });
     }
   }
   return out;
@@ -497,30 +812,25 @@ function bridgeEnds(
             closestOnSegment(q, [d.path[k - 1][0], d.path[k - 1][1]], [a[0], a[1]]).d < d.width / 2,
         ),
     );
-  // Each end: the deck runs 1–1.5 m on past its road's end (p[0] / p[n-1]);
-  // the street it lands on ends at the original end (p[1] / p[n-2]).
-  for (const [e, o] of [
-    [p[0], p[1]],
-    [p[p.length - 1], p[p.length - 2]],
-  ] as [Vec3, Vec3][]) {
+  // Each end: the deck runs 1–1.5 m on past its road's end (p[0] / p[n-1],
+  // under the street); the street it lands on ends at the original end
+  // (p[1] / p[n-2]).
+  for (const o of [p[1], p[p.length - 2]] as Vec3[]) {
     const end: Vec2 = [o[0], o[1]];
     const endsHere = (r: Road) =>
       r.grade === 'ground' &&
       [r.centerline[0], r.centerline[r.centerline.length - 1]].some((q) => dist(q, end) < 2);
     const street = roads.nearest(end, 2, endsHere);
     if (!street) continue; // joins another deck, or leaves the tile
-    const dz = e[2] - ground.streetAt(e[0], e[1]);
-    if (Math.abs(dz) > 0.1) add('seam.bridge-end', [e[0], e[1]], `Δz ${dz.toFixed(2)} m`);
-    // A junction at the deck end: the crossing street's own surface is there.
+    // The deck end lies flush with the street asphalt (on the ground where it
+    // lands on a footpath or open ground).
+    const st = ground.street.heightAt(o[0], o[1]);
+    const dz = o[2] - (st !== null ? st + SURFACE_LIFT.asphalt : ground.baseAt(o[0], o[1]));
+    if (Math.abs(dz) > 0.1) add('seam.bridge-end', end, `Δz ${dz.toFixed(2)} m`);
+    // A junction at the deck end (streets, or footpaths meeting a footbridge):
+    // the other ways' own surfaces are there.
     const reach = street.road.width / 2 + street.road.sidewalk;
-    if (
-      roads.nearest(
-        end,
-        reach,
-        (r) => r !== street.road && r.grade === 'ground' && isVehicular(r.cls),
-      )
-    )
-      continue;
+    if (roads.nearest(end, reach, (r) => r !== street.road && r.grade === 'ground')) continue;
     // 2 m out along the street (its own direction from the deck end): the
     // street surface reaches the deck edge, not past it.
     const sc = street.road.centerline;

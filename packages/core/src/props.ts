@@ -27,6 +27,7 @@ import type {
   Provenance,
   Road,
   TerrainGrid,
+  UtilityKind,
   Vec2,
 } from './types';
 
@@ -47,6 +48,7 @@ const OBSERVED_KINDS: [(t: Record<string, string>) => boolean, PropKind][] = [
   [(t) => t.amenity === 'bench', 'bench'],
   [(t) => t.amenity === 'waste_basket', 'waste-basket'],
   [(t) => t.power === 'pole' || t.power === 'tower', 'power-pole'],
+  [(t) => t.man_made === 'street_cabinet', 'street-cabinet'],
 ];
 
 /** Band around a ground-level vehicular centreline where nothing may stand (RoadIndex.covering). */
@@ -85,6 +87,7 @@ export const PROP_RADIUS: Record<PropKind, number> = {
   bench: 0.95,
   'waste-basket': 0.25,
   'power-pole': 0.3,
+  'street-cabinet': 0.55,
   chimney: 0,
   'solar-heater': 0,
   'satellite-dish': 0,
@@ -110,6 +113,7 @@ export const PROP_HEIGHT: Partial<Record<PropKind, number>> = {
   bench: 0.8,
   'waste-basket': 0.9,
   'power-pole': 9,
+  'street-cabinet': 1.35,
 };
 /** Reach (m) of a prop at scale 1 for bridge clearance: a lamp's arm, not just its pole. */
 const STRUCTURE_RADIUS: Partial<Record<PropKind, number>> = {
@@ -258,6 +262,28 @@ function toKerb(ctx: PropContext, p: Vec2): { p: Vec2; heading: number } {
   return { p: q, heading: headingOf(scale(side, -1)) };
 }
 
+/** Depth of a street cabinet (front to back), metres. */
+const CABINET_DEPTH = 0.45;
+/** Gap behind a street cabinet: clear of the garden wall on the lot line, metres. */
+const CABINET_BACK = 0.4;
+
+/**
+ * Where a street cabinet stands: on the sidewalk of the nearest street, its
+ * back near the sidewalk's outer edge but clear of the garden wall there (the
+ * walkway stays free in front of it),
+ * facing the road; on a street without a sidewalk, just off the kerb. Far
+ * from any street (a yard, a park) it stays where the data puts it.
+ */
+function toSidewalkBack(ctx: PropContext, p: Vec2): { p: Vec2; heading: number } {
+  const hit = ctx.roadIndex.nearest(p, 15, (r) => isVehicular(r.cls) && r.grade === 'ground');
+  if (!hit || hit.d > hit.road.width / 2 + hit.road.sidewalk + 4) return { p, heading: 0 };
+  const side = hit.d < 0.01 ? scale(perp(hit.dir), -1) : normalize(sub(p, hit.point));
+  const off =
+    hit.road.width / 2 +
+    Math.max(0.35 + CABINET_DEPTH / 2, hit.road.sidewalk - CABINET_BACK - CABINET_DEPTH / 2);
+  return { p: add(hit.point, scale(side, off)), heading: headingOf(scale(side, -1)) };
+}
+
 /**
  * Nearest point to `p` off every carriageway (rings of 1 m out to 15 m), for a
  * kerb point that landed on another street (signals at a junction).
@@ -287,7 +313,12 @@ export function observedProps(points: SourcePoint[], ctx: PropContext): Prop[] {
     if (!kind) continue;
     let p = pt.p;
     let heading = 0;
-    if (
+    if (kind === 'street-cabinet') {
+      // Against the back of the sidewalk, door to the street, clear of the walkway.
+      const k = toSidewalkBack(ctx, pt.p);
+      p = k.p;
+      heading = k.heading;
+    } else if (
       kind === 'bus-stop' ||
       kind === 'traffic-signal' ||
       kind === 'street-lamp' ||
@@ -306,10 +337,21 @@ export function observedProps(points: SourcePoint[], ctx: PropContext): Prop[] {
       heading,
       scale: 1,
       provenance: 'observed',
+      ...(kind === 'street-cabinet' && CABINET_NETWORK[pt.tags.street_cabinet ?? '']
+        ? { network: CABINET_NETWORK[pt.tags.street_cabinet ?? ''] }
+        : {}),
     });
   }
   return out;
 }
+
+/** Network of a street cabinet from its `street_cabinet` tag. */
+const CABINET_NETWORK: Record<string, UtilityKind> = {
+  telecom: 'telecom',
+  power: 'power',
+  water: 'water',
+  gas: 'gas',
+};
 
 function nearJunction(ctx: PropContext, p: Vec2, extra: number): boolean {
   return ctx.junctions.some((j) => dist(j.center, p) < j.radius + extra);

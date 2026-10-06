@@ -23,8 +23,15 @@ import {
 } from './geo';
 import { isGraded, transferGrades } from './grade';
 import { GroundModel, SURFACE_LIFT } from './ground-model';
-import { type SourceFeatures, type SourceRoad, mergeFeatures, readFeatures, readOsm } from './osm';
-import { bufferPolyline, difference, intersection, offset, union } from './poly';
+import {
+  LANDFORM_LINES,
+  type SourceFeatures,
+  type SourceRoad,
+  mergeFeatures,
+  readFeatures,
+  readOsm,
+} from './osm';
+import { bufferPolyline, difference, dropHairlines, intersection, offset, union } from './poly';
 import {
   buildingDetails,
   carriageReach,
@@ -39,6 +46,7 @@ import { Rng } from './random';
 import {
   buildCrossings,
   buildMarkings,
+  pathEdgeMarkings,
   buildSurfaces,
   classifyRoads,
   deckHalf,
@@ -52,6 +60,7 @@ import {
   conformTerrainToFill,
   conformTerrainToRoads,
   raiseLandAboveSea,
+  sharpenLandforms,
   terrainHeightAt,
 } from './terrain';
 import { type Projection, TileProjection } from './tiles';
@@ -72,13 +81,14 @@ import type {
   Vec3,
   SurfaceKind,
 } from './types';
+import { buildUtilities, isServiceLine, utilityKindOf } from './utilities';
 import { SUPPORTS, fenceIndex, inFence } from './validate';
 
 /**
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '41';
+export const COMPILER_VERSION = '60';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -95,7 +105,7 @@ const NO_BUILD: AreaKind[] = [
 
 type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
 
-const EMPTY: SourceFeatures = { roads: [], buildings: [], points: [], areas: [] };
+const EMPTY: SourceFeatures = { roads: [], buildings: [], points: [], areas: [], lines: [] };
 
 /**
  * Compiles source data into a renderable, deterministic city model:
@@ -182,6 +192,12 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       maxY: align(region.maxY + pad, g[1], 'up'),
     },
     cell,
+  );
+  // Cliffs (mapped, and high coasts) stand as cliffs, not 30 m-DEM slopes;
+  // streets are levelled onto the sharpened ground after.
+  sharpenLandforms(
+    terrain,
+    features.lines.filter((l) => LANDFORM_LINES.has(l.tags.natural ?? '')),
   );
   // Street surface: terrain levelled to it; each conformed road keeps its
   // centreline profile (the viewer drapes the road surfaces on it).
@@ -282,7 +298,13 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   // Gaps between sidewalks become sidewalk, levelled to the street surface.
   if (slivers.length) {
     const sidewalk = net.surfaces.find((sf) => sf.kind === 'sidewalk');
-    if (sidewalk) sidewalk.polygons = union(sidewalk.polygons, slivers);
+    // Never over a carriageway or paving: a kerb taper spans the narrower
+    // road's full width, and a sliver beside a service road (not a block
+    // edge) lies on its asphalt — as sidewalk they covered the road.
+    const taken = net.surfaces
+      .filter((sf) => sf.kind === 'asphalt' || sf.kind === 'paving')
+      .flatMap((sf) => sf.polygons);
+    if (sidewalk) sidewalk.polygons = difference(union(sidewalk.polygons, slivers), taken);
     net.corridor = union(net.corridor, slivers);
     conformTerrainToFill(
       terrain,
@@ -297,6 +319,27 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
         new PolygonSet(slivers),
       ),
       slivers,
+    );
+  }
+  // Path edge lines from the final path outline (sidewalk now holds the fill).
+  const markedPaths = roads
+    .filter(
+      (r) =>
+        (r.cls === 'footway' || r.cls === 'cycleway') && r.grade === 'ground' && r.width >= 1.5,
+    )
+    .flatMap((r) => bufferPolyline(r.centerline, r.width / 2));
+  if (markedPaths.length) {
+    const surface = (kind: string) =>
+      net.surfaces.filter((sf) => sf.kind === kind).flatMap((sf) => sf.polygons);
+    markings.push(
+      ...clipMarkings(
+        pathEdgeMarkings(intersection(surface('path'), union(markedPaths)), [
+          ...surface('asphalt'),
+          ...surface('paving'),
+          ...surface('sidewalk'),
+        ]),
+        inRegion,
+      ),
     );
   }
   // The street surface (what the viewer drapes the street on): trench wall
@@ -328,6 +371,11 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     serviceRoads,
   );
 
+  // Nothing is built over a buried main: its easement (1 m beyond the pipe
+  // wall) stays clear of generated buildings.
+  const easements = features.lines
+    .filter((l) => utilityKindOf(l.tags) && !isServiceLine(l.tags))
+    .flatMap((l) => bufferPolyline(l.points, 1.5));
   for (const block of blocks) block.observedCoverage = observedCoverage(block, observed);
   const synthetic: Building[] = [];
   if (infill) {
@@ -337,7 +385,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       roads,
       {
         terrain,
-        blocked: noBuild,
+        blocked: easements.length ? union(noBuild, easements) : noBuild,
         globalOffset: g,
         region,
       },
@@ -366,7 +414,16 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   layoutFacades(buildings, buildingIndex);
 
   // Hard ground (car parks, playgrounds, plazas, yards of institutions, dense blocks).
-  const hard = groundSurfaces(areas, blocks, buildings, net.corridor);
+  // Kept off the street corridors, and off the carriageways that are not
+  // block edges (a service road through a square: the plaza's paving covered
+  // it). Those are cut once, road by road — the network's asphalt as one
+  // polygon made every area's cut ten times slower.
+  const looseCarriage = roads
+    .filter((r) => r.grade === 'ground' && !r.formsBlocks && isVehicular(r.cls))
+    .flatMap((r) => bufferPolyline(r.centerline, r.width / 2));
+  const hard = groundSurfaces(areas, blocks, buildings, net.corridor).map((sf) =>
+    looseCarriage.length ? { ...sf, polygons: difference(sf.polygons, looseCarriage) } : sf,
+  );
   const noTrees = hard
     .filter((sf) => sf.kind === 'parking' || sf.kind === 'playground' || sf.kind === 'paving')
     .flatMap((sf) => sf.polygons);
@@ -459,9 +516,9 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   let outSurfaces = [
     ...net.surfaces.map((sf) => ({
       kind: sf.kind,
-      polygons: cutStreet(sf.kind, difference(sf.polygons, mouths)),
+      polygons: dropHairlines(cutStreet(sf.kind, difference(sf.polygons, mouths))),
     })),
-    { kind: 'island' as const, polygons: cutStreet('island', islands) },
+    { kind: 'island' as const, polygons: dropHairlines(cutStreet('island', islands)) },
     { kind: 'yard' as const, polygons: yards },
     ...hard,
   ];
@@ -486,7 +543,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     outFixes = fixes.filter((f) => kept.has(f.targetId));
     outSurfaces = outSurfaces.map((sf) => ({
       kind: sf.kind,
-      polygons: intersection(sf.polygons, [corePoly]),
+      polygons: dropHairlines(intersection(sf.polygons, [corePoly])),
     }));
     outMarkings = clipMarkings(allMarkings, inCore);
     outFences = walls.fences.filter((f) => {
@@ -560,6 +617,20 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     return p.provenance === 'observed' || !allowed || allowed.has(s.support);
   });
 
+  // Buried networks, on the final ground; clipped to the core like tunnels.
+  const network = buildUtilities(
+    features.lines,
+    features.points,
+    (x, y) => groundModel.surfaceAt(x, y).z,
+    props
+      .filter((p) => p.kind === 'street-cabinet' && p.network)
+      .map((p) => ({ ref: p.id, p: [p.position[0], p.position[1]] as Vec2, kind: p.network! })),
+  );
+  const outUtilities = network.utilities.flatMap((u) =>
+    corePathRuns(u.path, inCore).map((path, k) => ({ ...u, id: k ? `${u.id}~${k}` : u.id, path })),
+  );
+  const outNodes = network.nodes.filter((n) => inCore([n.position[0], n.position[1]]));
+
   const observedOut = buildings.filter((b) => b.source !== 'synthetic');
   const count = (pred: (p: Prop) => boolean) => props.filter(pred).length;
   return {
@@ -574,6 +645,8 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     surfaces: outSurfaces,
     markings: outMarkings,
     fences: outFences,
+    ...(outUtilities.length ? { utilities: outUtilities } : {}),
+    ...(outNodes.length ? { utilityNodes: outNodes } : {}),
     ...(outFill.length ? { streetFill: outFill } : {}),
     crossings: outCrossings,
     junctions: outJunctions,
@@ -798,9 +871,13 @@ function buildBridges(
   streetAt: (x: number, y: number) => number | null,
 ): Bridge[] {
   const bridges = roads.filter((r) => r.grade === 'bridge');
-  // A deck lands on the street surface (levelled across the carriageway),
-  // not on the terrain under it: no step where the two meet.
-  const landAt = (p: Vec2) => streetAt(p[0], p[1]) ?? terrainHeightAt(terrain, p[0], p[1]);
+  // A deck lands on the street surface (levelled across the carriageway) at
+  // its asphalt's height, not on the terrain under it: flush where the street
+  // stops at the deck.
+  const landAt = (p: Vec2) => {
+    const z = streetAt(p[0], p[1]);
+    return z !== null ? z + SURFACE_LIFT.asphalt : terrainHeightAt(terrain, p[0], p[1]);
+  };
   // Chain ends where other bridges meet (a Y split) stay up; ends on the ground road ramp down.
   const key = (p: Vec2) => `${Math.round(p[0] * 2)},${Math.round(p[1] * 2)}`;
   const ends = new Map<string, number>();
@@ -895,8 +972,9 @@ function buildBridges(
       const head = extend(path[0], path[1], startInner ? 1 : 1.5);
       const tail = extend(path[path.length - 1], path[path.length - 2], endInner ? 1 : 1.5);
       // Run on under the road surface at its own height there.
-      if (!startInner) head[2] = landAt([head[0], head[1]]);
-      if (!endInner) tail[2] = landAt([tail[0], tail[1]]);
+      // Just under the street asphalt there (coplanar, the two z-fought).
+      if (!startInner) head[2] = landAt([head[0], head[1]]) - 0.03;
+      if (!endInner) tail[2] = landAt([tail[0], tail[1]]) - 0.03;
       path.unshift(head);
       path.push(tail);
     }

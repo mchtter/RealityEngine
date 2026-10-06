@@ -114,6 +114,29 @@ export function polygonArea(p: Polygon): number {
   return Math.abs(ringArea(p.outer)) - p.holes.reduce((s, h) => s + Math.abs(ringArea(h)), 0);
 }
 
+/** Mean thickness of a polygon: twice its area over its perimeter (metres). */
+export function meanThickness(p: Polygon): number {
+  let per = 0;
+  for (const r of [p.outer, ...p.holes])
+    for (let k = 0; k < r.length; k++) {
+      const a = r[k];
+      const b = r[(k + 1) % r.length];
+      per += Math.hypot(b[0] - a[0], b[1] - a[1]);
+    }
+  return per > 0 ? (2 * polygonArea(p)) / per : 0;
+}
+
+/**
+ * Surface pieces at least `min` m thick: boolean operations leave hairline
+ * slivers (a few mm wide) along shared edges, which drape as dark lines.
+ */
+export function dropHairlines(polys: Polygon[], min = HAIRLINE): Polygon[] {
+  return polys.filter((p) => meanThickness(p) >= min);
+}
+
+/** Thinner surface pieces than this are hairline slivers (metres). */
+export const HAIRLINE = 0.05;
+
 export function totalArea(polys: Polygon[]): number {
   return polys.reduce((s, p) => s + polygonArea(p), 0);
 }

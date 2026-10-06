@@ -370,3 +370,139 @@ export function conformTerrainToFill(t: TerrainGrid, surface: RoadSurface, fill:
     }
   }
 }
+
+/**
+ * How far from a landform line the terrain is reshaped (m): on the high side
+ * the plateau is found and levelled out to HIGH_BAND (the DEM smears a cliff
+ * over ~100 m, so 40 m inland is still mid-slope), on the low side to LOW_BAND.
+ */
+const HIGH_BAND = 60;
+const LOW_BAND = 30;
+/**
+ * A coast's sea side: the elevation model leaves 1–3 m humps of "land" in the
+ * sea up to ~100 m out from a cliff; they are taken down to the sea floor out
+ * to 2/3 of this band.
+ */
+const COAST_LOW_BAND = 90;
+/** A coastline counts as a cliff where the land within HIGH_BAND inland rises this high above the sea (m). */
+const COAST_CLIFF = 15;
+/** A mapped cliff lower than this (top − foot, m) is left as the elevation model has it. */
+const MIN_CLIFF_DROP = 3;
+
+/**
+ * Sharpens cliffs the 30 m elevation model smears into slopes (Antalya's 35 m
+ * falez came out as a 110 m long, 17° bank). Along `natural=cliff` lines, and
+ * along coastlines whose land stands at least COAST_CLIFF above the sea, the
+ * ground on the high (left) side is raised to the plateau up to the line and
+ * the ground on the low (right) side dropped to the foot — the cliff face
+ * falls within one grid cell. Low shores and beaches are left alone.
+ * Returns the number of grid nodes changed.
+ */
+export function sharpenLandforms(
+  t: TerrainGrid,
+  lines: { points: Vec2[]; tags: Record<string, string> }[],
+): number {
+  const n = t.cols * t.rows;
+  const bestD = new Float32Array(n).fill(Infinity);
+  const target = new Float32Array(n);
+  const side = new Int8Array(n);
+  // Inland direction (the line's left normal) of the nearest segment, high side.
+  const inX = new Float32Array(n);
+  const inY = new Float32Array(n);
+  /** The nearest line is a coastline (its sea side reaches further). */
+  const coastal = new Uint8Array(n);
+  const h = (x: number, y: number) => terrainHeightAt(t, x, y);
+  for (const line of lines) {
+    const coast = line.tags.natural === 'coastline';
+    const pts = line.points;
+    if (pts.length < 2) continue;
+    // Per vertex: left normal, plateau top and foot.
+    const shape = pts.map((p, k) => {
+      const a = pts[Math.max(0, k - 1)];
+      const b = pts[Math.min(pts.length - 1, k + 1)];
+      const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      const nx = -(b[1] - a[1]) / l;
+      const ny = (b[0] - a[0]) / l;
+      let top = -Infinity;
+      let foot = Infinity;
+      for (let d = 8; d <= HIGH_BAND; d += 8) top = Math.max(top, h(p[0] + nx * d, p[1] + ny * d));
+      for (let d = 8; d <= LOW_BAND + 10; d += 8)
+        foot = Math.min(foot, h(p[0] - nx * d, p[1] - ny * d));
+      if (coast) foot = t.seaLevel - 3;
+      const cliff = coast ? top - t.seaLevel >= COAST_CLIFF : top - foot >= MIN_CLIFF_DROP;
+      return cliff ? { top, foot } : null;
+    });
+    for (let k = 1; k < pts.length; k++) {
+      const sa = shape[k - 1];
+      const sb = shape[k];
+      if (!sa || !sb) continue;
+      const a = pts[k - 1];
+      const b = pts[k];
+      const i0 = Math.max(
+        0,
+        Math.floor((Math.min(a[0], b[0]) - COAST_LOW_BAND - t.minX) / t.cellSize),
+      );
+      const i1 = Math.min(
+        t.cols - 1,
+        Math.ceil((Math.max(a[0], b[0]) + COAST_LOW_BAND - t.minX) / t.cellSize),
+      );
+      const j0 = Math.max(
+        0,
+        Math.floor((Math.min(a[1], b[1]) - COAST_LOW_BAND - t.minY) / t.cellSize),
+      );
+      const j1 = Math.min(
+        t.rows - 1,
+        Math.ceil((Math.max(a[1], b[1]) + COAST_LOW_BAND - t.minY) / t.cellSize),
+      );
+      for (let j = j0; j <= j1; j++) {
+        for (let i = i0; i <= i1; i++) {
+          const q: Vec2 = [t.minX + i * t.cellSize, t.minY + j * t.cellSize];
+          const c = closestOnSegment(q, a, b);
+          const idx = j * t.cols + i;
+          const cross = (b[0] - a[0]) * (q[1] - a[1]) - (b[1] - a[1]) * (q[0] - a[0]);
+          const lowBand = coast ? COAST_LOW_BAND : LOW_BAND;
+          if (c.d >= (cross >= 0 ? HIGH_BAND : lowBand) || c.d >= bestD[idx]) continue;
+          coastal[idx] = coast ? 1 : 0;
+          bestD[idx] = c.d;
+          side[idx] = cross >= 0 ? 1 : -1;
+          const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+          inX[idx] = -(b[1] - a[1]) / l;
+          inY[idx] = (b[0] - a[0]) / l;
+          target[idx] =
+            cross >= 0 ? sa.top + (sb.top - sa.top) * c.t : sa.foot + (sb.foot - sa.foot) * c.t;
+        }
+      }
+    }
+  }
+  // Heights as the elevation model has them (targets read the original ground).
+  const original = { ...t, heights: [...t.heights] };
+  let changed = 0;
+  for (let idx = 0; idx < n; idx++) {
+    if (!Number.isFinite(bestD[idx])) continue;
+    const was = t.heights[idx];
+    let to: number;
+    if (side[idx] > 0) {
+      // High side: the highest ground between here and the band's edge,
+      // inland — the plateau reaches the edge flat, meets the ground at the
+      // band's edge without a step, and a ridge keeps its crest.
+      const x = t.minX + (idx % t.cols) * t.cellSize;
+      const y = t.minY + Math.floor(idx / t.cols) * t.cellSize;
+      to = was;
+      for (let s = 0; s <= HIGH_BAND - bestD[idx]; s += t.cellSize)
+        to = Math.max(to, terrainHeightAt(original, x + inX[idx] * s, y + inY[idx] * s));
+      to = Math.min(to, target[idx]);
+      t.heights[idx] = Math.max(was, to);
+    } else {
+      // Low side: the foot near the line, easing back to the ground by the
+      // band's edge (a coast's sea floor holds out to 2/3 of its band).
+      const f = coastal[idx]
+        ? Math.max(0, (bestD[idx] - (COAST_LOW_BAND * 2) / 3) / (COAST_LOW_BAND / 3))
+        : bestD[idx] / LOW_BAND;
+      const keep = f * f * (3 - 2 * f);
+      to = target[idx] + (was - target[idx]) * keep;
+      t.heights[idx] = Math.min(was, to);
+    }
+    if (t.heights[idx] !== was) changed++;
+  }
+  return changed;
+}

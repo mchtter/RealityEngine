@@ -42,11 +42,24 @@ export interface SourceArea extends SourceBase {
   polygons: Polygon[];
 }
 
+/**
+ * A landform line: `natural=cliff` (top on the left, foot on the right) or
+ * `natural=coastline` (land on the left, sea on the right) — OSM's
+ * direction conventions. They shape the terrain (sharpenLandforms).
+ */
+export interface SourceLine extends SourceBase {
+  points: Vec2[];
+}
+
+/** Natural lines that shape the terrain. */
+export const LANDFORM_LINES = new Set(['cliff', 'coastline']);
+
 export interface SourceFeatures {
   roads: SourceRoad[];
   buildings: SourceBuilding[];
   points: SourcePoint[];
   areas: SourceArea[];
+  lines: SourceLine[];
 }
 
 const NON_ROAD_HIGHWAYS = new Set([
@@ -173,7 +186,7 @@ function osmBase(el: OsmElement) {
 /** Converts compacted Overpass elements into local-metre source features. */
 export function readOsm(elements: OsmElement[], proj: Projection): SourceFeatures {
   const project = ([lon, lat]: [number, number]): Vec2 => proj.forward(lon, lat);
-  const out: SourceFeatures = { roads: [], buildings: [], points: [], areas: [] };
+  const out: SourceFeatures = { roads: [], buildings: [], points: [], areas: [], lines: [] };
 
   for (const el of elements) {
     const tags = el.tags ?? {};
@@ -196,6 +209,10 @@ export function readOsm(elements: OsmElement[], proj: Projection): SourceFeature
       }
       if (tags.highway && !NON_ROAD_HIGHWAYS.has(tags.highway) && tags.area !== 'yes') {
         out.roads.push({ ...osmBase(el), points });
+        continue;
+      }
+      if (LANDFORM_LINES.has(tags.natural ?? '')) {
+        out.lines.push({ ...osmBase(el), points });
         continue;
       }
       const kind = areaKindOf(tags);
@@ -255,7 +272,7 @@ function geometryLines(g: SourceGeometry, project: (c: Position) => Vec2): Vec2[
  */
 export function readFeatures(features: SourceFeatureInput[], proj: Projection): SourceFeatures {
   const project = ([lon, lat]: Position): Vec2 => proj.forward(lon, lat);
-  const out: SourceFeatures = { roads: [], buildings: [], points: [], areas: [] };
+  const out: SourceFeatures = { roads: [], buildings: [], points: [], areas: [], lines: [] };
   for (const f of features) {
     const tags = Object.fromEntries(Object.entries(f.tags ?? {}).map(([k, v]) => [k, String(v)]));
     const base = {
@@ -288,6 +305,13 @@ export function readFeatures(features: SourceFeatureInput[], proj: Projection): 
         if (kind && polygons.length) out.areas.push({ ...base, osmId, kind, polygons });
         break;
       }
+      case 'line': {
+        geometryLines(f.geometry, project).forEach((points, i) => {
+          if (points.length >= 2)
+            out.lines.push({ ...base, ref: i ? `${f.ref}#${i}` : f.ref, osmId, points });
+        });
+        break;
+      }
       case 'point': {
         if (f.geometry.type === 'Point') {
           out.points.push({ ...base, osmId, p: project(f.geometry.coordinates as Position) });
@@ -305,5 +329,6 @@ export function mergeFeatures(...sets: SourceFeatures[]): SourceFeatures {
     buildings: sets.flatMap((s) => s.buildings),
     points: sets.flatMap((s) => s.points),
     areas: sets.flatMap((s) => s.areas),
+    lines: sets.flatMap((s) => s.lines),
   };
 }

@@ -75,7 +75,8 @@ export interface SourceFeatureInput {
    * building and no procedural infill is placed.
    */
   authoritative?: boolean;
-  kind: 'building' | 'road' | 'area' | 'point';
+  /** `line`: a landform line (`natural=cliff` / `coastline`) that shapes the terrain. */
+  kind: 'building' | 'road' | 'area' | 'point' | 'line';
   geometry: SourceGeometry;
   tags: Record<string, string | number>;
 }
@@ -154,6 +155,11 @@ export interface Road {
   /** Part of a roundabout ring (OSM junction=roundabout / circular). */
   roundabout?: boolean;
   provenance: { width: Provenance; lanes: Provenance };
+  /**
+   * Source width / lanes set aside as implausible for the class (a 1581 m
+   * footway covered a whole district); the class default was used instead.
+   */
+  rejected?: { width?: number; lanes?: number };
   /** Centreline heights of a ground road (the street surface, see RoadSurface). */
   profile?: number[];
 }
@@ -165,7 +171,10 @@ export type MarkingKind =
   | 'edge'
   | 'stop'
   /** Parking stall lines. */
-  | 'stall';
+  | 'stall'
+  /** Walking / cycle path: white edge lines, dashed centre (on the path surface). */
+  | 'path-edge'
+  | 'path-dashed';
 
 export interface Marking {
   kind: MarkingKind;
@@ -355,6 +364,8 @@ export type PropKind =
   | 'bench'
   | 'waste-basket'
   | 'power-pole'
+  /** Street cabinet: fibre / telecom distribution box (or a power / traffic one). */
+  | 'street-cabinet'
   | 'chimney'
   | 'solar-heater'
   | 'satellite-dish'
@@ -394,6 +405,8 @@ export interface Prop {
   /** Human readable reason for inferred / suggested props. */
   reason?: string;
   buildingId?: string;
+  /** Street cabinets: the network they serve. */
+  network?: UtilityKind;
 }
 
 export type FixKind = 'road-overlap' | 'building-overlap' | 'invalid-geometry' | 'sliver';
@@ -509,6 +522,39 @@ export interface Tunnel {
   edgeLines: boolean;
 }
 
+/** Buried networks. */
+export type UtilityKind = 'gas' | 'water' | 'sewer' | 'power' | 'telecom' | 'heat';
+
+/** A buried pipe / cable run. */
+export interface Utility {
+  id: string;
+  /** Source feature. */
+  ref: string;
+  kind: UtilityKind;
+  /** Service connection to a building (not a main). */
+  service: boolean;
+  /** Outer diameter, m. */
+  diameter: number;
+  /** Centre line, absolute heights (below the surface by cover + radius). */
+  path: Vec3[];
+  material?: string;
+  provenance: Provenance;
+  /** Crossings where the compiler moved this run over / under another network. */
+  rerouted?: number;
+}
+
+/** Access point of a buried network: a manhole / chamber or a valve. */
+export interface UtilityNode {
+  id: string;
+  ref: string;
+  kind: UtilityKind;
+  type: 'manhole' | 'valve';
+  /** Cover on the surface. */
+  position: Vec3;
+  /** Shaft depth below the cover, m. */
+  depth: number;
+}
+
 export interface CityModel {
   version: 1;
   name: string;
@@ -532,6 +578,9 @@ export interface CityModel {
   terrainCut?: TerrainCut;
   /** Garden walls, fences and hedges. */
   fences?: Fence[];
+  /** Buried pipes and cables, and their manholes / valves. */
+  utilities?: Utility[];
+  utilityNodes?: UtilityNode[];
   /**
    * Street land outside the road corridors: gaps narrower than 3 m between two
    * sidewalks, drawn as sidewalk and levelled to the street surface (see

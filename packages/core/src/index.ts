@@ -31,8 +31,17 @@ export {
   FENCE_WIDTH,
   RULES,
   barrierOnRoad,
+  barrierStops,
+  LOW_DECK,
   type RuleId,
   type ValidationReport,
   validateCity,
 } from './validate';
 export { barrelRise } from './styles';
+export {
+  UTILITY_CLEARANCE,
+  UTILITY_SPECS,
+  buildUtilities,
+  utilityClashes,
+  utilityKindOf,
+} from './utilities';

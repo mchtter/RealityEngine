@@ -1,5 +1,6 @@
 import {
   add,
+  closestOnSegment,
   dist,
   dot,
   lerp2,
@@ -219,6 +220,22 @@ export function makeBuilding(
  * carriageway or inside an earlier building, and records every correction as
  * a Fix (original geometry is never silently changed).
  */
+/** How far the deepest footprint corner reaches into a street corridor (metres, ≤ 0 outside). */
+function corridorDepth(parts: Polygon[], roads: Road[]): number {
+  let depth = -Infinity;
+  for (const r of roads) {
+    const half = r.width / 2 + r.sidewalk;
+    for (const p of parts)
+      for (const q of p.outer) {
+        let d = Infinity;
+        for (let k = 1; k < r.centerline.length; k++)
+          d = Math.min(d, closestOnSegment(q, r.centerline[k - 1], r.centerline[k]).d);
+        depth = Math.max(depth, half - d);
+      }
+  }
+  return depth;
+}
+
 export function placeObservedBuildings(
   source: SourceBuilding[],
   ctx: BuildingContext,
@@ -323,7 +340,11 @@ export function placeObservedBuildings(
         )
       : [];
     const onRoadArea = totalArea(onRoad);
-    if (onRoadArea >= ROAD_FIX_MIN_AREA) {
+    // Deepest corner inside a corridor: a corner reaching well into the
+    // sidewalk covers little area (it slipped under the area test) but stands
+    // on the sidewalk all the same.
+    const depth = around.length ? corridorDepth(parts, around) : 0;
+    if (onRoadArea >= ROAD_FIX_MIN_AREA || depth > ROAD_TOLERANCE) {
       const nearRoad = union(around.flatMap((r) => roadBuffers(r).full));
       const removed = intersection(parts, nearRoad);
       parts = difference(parts, nearRoad);

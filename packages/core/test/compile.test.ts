@@ -15,6 +15,7 @@ import { PROP_RADIUS } from '../src/props';
 import { isVehicular } from '../src/roads';
 import { terrainHeightAt } from '../src/terrain';
 import type { CityModel, CitySource, OsmElement, Polygon, TerrainGrid } from '../src/types';
+import { validateCity } from '../src/validate';
 
 const ORIGIN = { lon: 31.79, lat: 41.45 };
 const proj = new LocalProjection(ORIGIN);
@@ -780,6 +781,11 @@ describe('simplifyRing', () => {
 const FIXTURE = resolve(__dirname, 'fixtures/zonguldak-merkez.json');
 
 describe.skipIf(!existsSync(FIXTURE))('Zonguldak fixture', () => {
+  it('keeps street layers off the carriageway (no sidewalk over a road)', () => {
+    const m = compileCity(JSON.parse(readFileSync(FIXTURE, 'utf8')) as CitySource);
+    expect(validateCity(m).counts['surface.over-carriageway'] ?? 0).toBe(0);
+  }, 60_000);
+
   it('keeps synthetic buildings off roads and observed buildings', () => {
     const m = compileCity(JSON.parse(readFileSync(FIXTURE, 'utf8')) as CitySource);
     // Bounding-box prefilter: checking each building against the whole network is quadratic.
