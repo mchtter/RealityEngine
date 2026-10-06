@@ -1,4 +1,4 @@
-import { isParcelKeyColumn } from '@opentwin/shared';
+import { isParcelKeyColumn, normalizeJoinKey } from '@opentwin/shared';
 import * as THREE from 'three/webgpu';
 import type { BuildingInfo } from './engine/tile-payload';
 import type { ResolvedOverlay } from '@/store/scenario.store';
@@ -16,15 +16,9 @@ export function overlayKeyColors(expression: unknown): Map<string, THREE.Color> 
     const color = expression[i + 1];
     if (typeof color !== 'string' || /^rgba\(.*,\s*0\)$/.test(color)) continue;
     const c = new THREE.Color().setStyle(color.replace(/^rgba\((.*),[^,]*\)$/, 'rgb($1)'));
-    for (const key of Array.isArray(labels) ? labels : [labels]) out.set(normalizeKey(key), c);
+    for (const key of Array.isArray(labels) ? labels : [labels]) out.set(normalizeJoinKey(key), c);
   }
   return out;
-}
-
-/** "4711", 4711 and "4711.0" are the same building number. */
-function normalizeKey(v: unknown): string {
-  const s = String(v).trim();
-  return /^-?\d+\.0+$/.test(s) ? s.replace(/\.0+$/, '') : s;
 }
 
 /**
@@ -51,7 +45,7 @@ export function scenarioColorOf(
   return (b) => {
     for (const o of active) {
       if (o.parcel) {
-        const hit = b.parcelRef ? o.colors.get(normalizeKey(b.parcelRef)) : undefined;
+        const hit = b.parcelRef ? o.colors.get(normalizeJoinKey(b.parcelRef)) : undefined;
         if (hit) return hit;
         continue;
       }
@@ -67,7 +61,7 @@ export function scenarioColorOf(
       // Source id ("maks:4711" → "4711") only when the building has no such
       // column: two different numbering schemes must not match by coincidence.
       const key = value ?? b.ref?.split(':').slice(1).join(':');
-      const hit = key === undefined ? undefined : o.colors.get(normalizeKey(key));
+      const hit = key === undefined ? undefined : o.colors.get(normalizeJoinKey(key));
       if (hit) return hit;
     }
     return null;

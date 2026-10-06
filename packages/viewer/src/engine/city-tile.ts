@@ -1,4 +1,4 @@
-import { CutGround } from '@opentwin/city-core';
+import { CutGround, type UtilityKind } from '@opentwin/city-core';
 import * as THREE from 'three/webgpu';
 import { toThree } from './geom';
 import { BUILDING_SLOT, type DtMaterials } from './materials';
@@ -25,6 +25,15 @@ interface SubTile {
 const SUB_ROLE = /^sub:(\d+):(obsShell|obsDetail|synShell|synDetail|obsProps|synProps)$/;
 
 /**
+ * How much of a tile is on the GPU: `full`, or `far` — what shows from more
+ * than GROUND_DETAIL_RANGE away (building shells, coarse ground, bridges);
+ * near ground, trims, building detail, props and fixes are not built.
+ */
+export type TileLevel = 'full' | 'far';
+const NEAR_ONLY =
+  /^(ground:near|fix|tile:(obs|syn)Trim|props:.*|sub:\d+:(obsDetail|synDetail|obsProps|synProps))$/;
+
+/**
  * One compiled city tile in the scene, assembled from buffers the tile
  * worker prepared (no geometry work here). Visibility follows role tags:
  * detail and furniture only near the camera, holograms / fixes in the data view.
@@ -40,6 +49,12 @@ export class CityTile {
   private readonly trims: { mesh: THREE.Mesh; synthetic: boolean }[] = [];
   private readonly subTiles: SubTile[];
   private readonly synShells: { mesh: THREE.Mesh; material: THREE.Material }[] = [];
+  private readonly obsShells: { mesh: THREE.Mesh; material: THREE.Material }[] = [];
+  /** Buried networks (underground view), per network. */
+  private readonly utilities = new Map<UtilityKind, THREE.Mesh[]>();
+  private readonly utilityMeshes = new Set<THREE.Mesh>();
+  /** Underground view on: networks shown, buildings as holograms, detail and furniture off. */
+  private under = false;
   private readonly pickables: { mesh: THREE.Mesh; ids: string[]; owners: Int32Array }[] = [];
   private readonly buildingsById: Map<string, BuildingInfo>;
   private readonly local = new THREE.Vector3();
@@ -58,6 +73,7 @@ export class CityTile {
     geometryCache: Map<string, THREE.BufferGeometry>,
     /** Start of this tile's building slot ranges in the scenario texture (null: none free). */
     readonly slotBases: { obs: number | null; syn: number | null },
+    readonly level: TileLevel = 'full',
   ) {
     this.slots = payload.slots;
     this.summary = payload.summary;
@@ -74,6 +90,7 @@ export class CityTile {
       synProps: [],
     }));
     for (const p of payload.meshes) {
+      if (level === 'far' && NEAR_ONLY.test(p.role)) continue;
       const mesh = buildMesh(p, mats, geometryCache);
       this.group.add(mesh);
       const layer = /^tile:(obs|syn)(Shell|Trim)$/.exec(p.role)?.[1] as 'obs' | 'syn' | undefined;
@@ -89,6 +106,13 @@ export class CityTile {
         this.groundFar.push(mesh);
       } else if (p.role === 'tile:obsTrim' || p.role === 'tile:synTrim') {
         this.trims.push({ mesh, synthetic: p.role === 'tile:synTrim' });
+      } else if (p.role.startsWith('util:')) {
+        const kind = p.role.slice(5) as UtilityKind;
+        mesh.visible = false;
+        this.utilities.set(kind, [...(this.utilities.get(kind) ?? []), mesh]);
+        this.utilityMeshes.add(mesh);
+      } else if (p.role === 'tile:obsShell') {
+        this.obsShells.push({ mesh, material: mesh.material as THREE.Material });
       } else if (p.role === 'tile:synShell') {
         this.synShells.push({ mesh, material: mesh.material as THREE.Material });
       } else if (p.role === 'props:showcase') {
@@ -103,6 +127,9 @@ export class CityTile {
         switch (m[2]) {
           case 'synShell':
             this.synShells.push({ mesh, material: mesh.material as THREE.Material });
+            break;
+          case 'obsShell':
+            this.obsShells.push({ mesh, material: mesh.material as THREE.Material });
             break;
           case 'obsDetail':
             sub.obsDetail.push(mesh);
@@ -146,13 +173,15 @@ export class CityTile {
     const tileDistance = Math.hypot(dx, dz);
     const furniture = tileDistance < FURNITURE_RANGE;
     const groundDetail = tileDistance < GROUND_DETAIL_RANGE;
+    const under = this.under;
     for (const m of this.groundNear) m.visible = groundDetail;
     for (const m of this.groundFar) m.visible = !groundDetail;
-    for (const t of this.trims) t.mesh.visible = groundDetail && !(t.synthetic && this.data);
-    for (const m of this.propsShowcase) m.visible = furniture && !this.data;
-    for (const m of this.propsData) m.visible = furniture && this.data;
+    for (const t of this.trims)
+      t.mesh.visible = groundDetail && !under && !(t.synthetic && this.data);
+    for (const m of this.propsShowcase) m.visible = furniture && !this.data && !under;
+    for (const m of this.propsData) m.visible = furniture && this.data && !under;
     for (const t of this.subTiles) {
-      const near = this.local.distanceTo(t.center) < DETAIL_RANGE + t.radius;
+      const near = this.local.distanceTo(t.center) < DETAIL_RANGE + t.radius && !under;
       for (const m of t.obsDetail) m.visible = near;
       for (const m of t.obsProps) m.visible = near;
       for (const m of t.synDetail) m.visible = near && !this.data;
@@ -162,12 +191,53 @@ export class CityTile {
 
   setMode(mode: PropMode): void {
     this.data = mode === 'data';
-    // Synthetic buildings become translucent holograms so observed data stands out.
-    for (const s of this.synShells) {
-      s.mesh.material = this.data ? this.mats.holoBuilding : s.material;
-      s.mesh.castShadow = !this.data;
-    }
+    this.applyShells();
     for (const m of this.fix) m.visible = this.data || this.cuts;
+  }
+
+  /**
+   * Underground view: the networks in `kinds` show, every building turns to
+   * a faint hologram and building detail / street furniture is hidden, so the
+   * pipes read through the (faded) ground. Empty: the normal city.
+   */
+  setUnderground(kinds: ReadonlySet<UtilityKind>): void {
+    this.under = kinds.size > 0;
+    for (const [kind, meshes] of this.utilities)
+      for (const m of meshes) m.visible = kinds.has(kind);
+    this.applyShells();
+  }
+
+  /** Grows `box` (world three.js coords) by this tile's networks in `kinds` (all when empty). */
+  utilityBox(kinds: ReadonlySet<UtilityKind>, box: THREE.Box3): void {
+    for (const [kind, meshes] of this.utilities) {
+      if (kinds.size && !kinds.has(kind)) continue;
+      for (const m of meshes) {
+        if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+        box.union(m.geometry.boundingBox!.clone().applyMatrix4(m.matrixWorld));
+      }
+    }
+  }
+
+  /** Networks in this tile, with runs and length. */
+  get utilityStats(): TileSummary['utilities'] {
+    return this.summary.utilities ?? {};
+  }
+
+  private applyShells(): void {
+    // Synthetic buildings become translucent holograms so observed data stands
+    // out (data view); in the underground view every building does.
+    for (const s of this.synShells) {
+      s.mesh.material = this.under
+        ? this.mats.holoGhost
+        : this.data
+          ? this.mats.holoBuilding
+          : s.material;
+      s.mesh.castShadow = !this.data && !this.under;
+    }
+    for (const s of this.obsShells) {
+      s.mesh.material = this.under ? this.mats.holoGhost : s.material;
+      s.mesh.castShadow = !this.under;
+    }
   }
 
   private cuts = false;
@@ -233,6 +303,8 @@ export class CityTile {
     this.group.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh || !shown(mesh)) return;
+      // Underground: the faded ground and holograms are seen through, not picked.
+      if (this.under && !this.utilityMeshes.has(mesh)) return;
       const g = mesh.geometry as THREE.InstancedBufferGeometry;
       if (g.isInstancedBufferGeometry) {
         if (!/^(real|holo)-/.test(mesh.name)) return;
@@ -324,6 +396,53 @@ export class CityTile {
     return best;
   }
 
+  /**
+   * Geometry this tile holds on the GPU (bytes): its own vertex, index and
+   * per-instance arrays; shared model geometry is not counted.
+   */
+  get bytes(): number {
+    let total = 0;
+    const seen = new Set<ArrayBufferLike>();
+    const count = (a: {
+      array: ArrayLike<number> & { buffer: ArrayBufferLike; byteLength: number };
+    }) => {
+      if (seen.has(a.array.buffer)) return;
+      seen.add(a.array.buffer);
+      total += a.array.byteLength;
+    };
+    this.group.traverse((o) => {
+      if (!(o instanceof THREE.Mesh) || o.geometry.userData.shared) return;
+      const g = o.geometry as THREE.BufferGeometry;
+      const instanced = (g as THREE.InstancedBufferGeometry).isInstancedBufferGeometry === true;
+      for (const a of Object.values(g.attributes)) {
+        if (instanced && !(a as THREE.InstancedBufferAttribute).isInstancedBufferAttribute)
+          continue;
+        count(a as never);
+      }
+      if (g.index && !instanced) count(g.index as never);
+    });
+    return total;
+  }
+
+  /** Development aid: GPU bytes per mesh name (shared geometry not counted). */
+  debugBytes(): Record<string, number> {
+    const out: Record<string, number> = {};
+    this.group.traverse((o) => {
+      if (!(o instanceof THREE.Mesh) || o.geometry.userData.shared) return;
+      const g = o.geometry as THREE.BufferGeometry;
+      const instanced = (g as THREE.InstancedBufferGeometry).isInstancedBufferGeometry === true;
+      let n = 0;
+      for (const a of Object.values(g.attributes)) {
+        if (instanced && !(a as THREE.InstancedBufferAttribute).isInstancedBufferAttribute)
+          continue;
+        n += (a as THREE.BufferAttribute).array.byteLength;
+      }
+      if (g.index && !instanced) n += g.index.array.byteLength;
+      out[o.name] = (out[o.name] ?? 0) + n;
+    });
+    return out;
+  }
+
   dispose(): void {
     this.group.traverse((o) => {
       if (o instanceof THREE.Mesh && !o.geometry.userData.shared) o.geometry.dispose();
@@ -342,6 +461,7 @@ export interface DtInspect {
     | 'tunnel'
     | 'lid'
     | 'fence'
+    | 'utility'
     | 'prop'
     | 'surface';
   /** Kind in words (Turkish UI). */
@@ -365,6 +485,7 @@ const FEATURE_LABEL: Record<string, string> = {
   tunnel: 'Tünel tüpü',
   lid: 'Tünel ağzı kapağı',
   fence: 'Bahçe duvarı / çit',
+  utility: 'Altyapı hattı',
 };
 
 const SURFACE_LABEL: Record<string, string> = {
@@ -386,6 +507,7 @@ const PROP_LABEL: Record<string, string> = {
   bench: 'Bank',
   'waste-basket': 'Çöp kutusu',
   'power-pole': 'Elektrik direği',
+  'street-cabinet': 'Sokak dağıtım kutusu (kabin)',
   car: 'Park etmiş araç',
   booth: 'Otopark kulübesi',
   'barrier-arm': 'Otopark bariyeri',

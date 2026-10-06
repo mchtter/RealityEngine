@@ -165,6 +165,8 @@ export interface DtMaterials {
   yard: THREE.MeshStandardNodeMaterial;
   marking: THREE.MeshStandardNodeMaterial;
   terrain: THREE.MeshStandardNodeMaterial;
+  /** Ground of an area without city data: a grey editor grid. */
+  terrainGrid: THREE.MeshStandardNodeMaterial;
   water: THREE.MeshStandardNodeMaterial;
   prop: THREE.MeshStandardNodeMaterial;
   /**
@@ -192,7 +194,18 @@ export interface DtMaterials {
   holoSynthetic: THREE.MeshBasicNodeMaterial;
   holoSuggested: THREE.MeshBasicNodeMaterial;
   holoBuilding: THREE.MeshBasicNodeMaterial;
+  /** Buildings in the underground view (fainter than holoBuilding). */
+  holoGhost: THREE.MeshBasicNodeMaterial;
   fix: THREE.MeshBasicNodeMaterial;
+  /**
+   * Buried pipes and cables (underground view): vertex colour per network,
+   * light pulses travelling along the run (`ua` = metres along), rim glow.
+   */
+  utility: THREE.MeshStandardNodeMaterial;
+  /** Cast-iron manhole / valve covers on the street. */
+  utilityCover: THREE.MeshStandardNodeMaterial;
+  /** Opacity of the ground in the underground view (1 = solid; see setUnderground). */
+  groundFade: THREE.UniformNode<'float', number>;
   dispose(): void;
 }
 
@@ -234,6 +247,7 @@ export function createMaterials(): DtMaterials {
   // ─── Scenario colouring of building shells ───────────────────────────────
   // One texture for every loaded tile keeps a single shader build per material.
   const scenarioOn = uniform(0);
+  const groundFade = uniform(1);
   const scenario = new THREE.DataTexture(
     new Uint8Array(SCENARIO_TEXTURE_WIDTH * SCENARIO_TEXTURE_HEIGHT * 4),
     SCENARIO_TEXTURE_WIDTH,
@@ -552,8 +566,8 @@ export function createMaterials(): DtMaterials {
   decal(asphalt, -1);
 
   // Sidewalks: interlocking concrete pavers (kilit taşı), 20 × 10 cm in a
-  // running bond with sanded joints; stone-to-stone tone variation, some
-  // streets laid grey with red stones mixed in, dirt and wear. Joints fade out
+  // running bond with sanded joints; stone-to-stone tone variation, streets
+  // laid grey, grey and red, or mostly red; dirt and wear. Joints fade out
   // with distance (fwidth) instead of shimmering.
   const sidewalk = new THREE.MeshStandardNodeMaterial({ roughness: 0.88, metalness: 0 });
   {
@@ -573,10 +587,20 @@ export function createMaterials(): DtMaterials {
     // Stone-to-stone tone also fades out with distance (it aliased into rings).
     const tone = hash(id).mul(0.16).sub(0.08).mul(fade).add(0.94);
     const grey = vec3(0.5, 0.49, 0.465).mul(tone);
-    const red = vec3(0.52, 0.41, 0.37).mul(tone);
-    // A street's paving scheme: grey, or grey with red stones mixed in.
-    const scheme = step(0.55, mx_noise_float(wp.mul(0.01)).mul(0.5).add(0.5));
-    const isRed = step(0.9, hash(id.add(7.3))).mul(scheme);
+    // Two reds (terracotta and a browner one), stone by stone.
+    const red = mix(vec3(0.55, 0.39, 0.34), vec3(0.5, 0.4, 0.37), step(0.5, hash(id.add(3.1)))).mul(
+      tone,
+    );
+    // A street's paving scheme, by area: grey with a few red stones, grey and
+    // red mixed, or mostly red. `share` is the red stones' fraction.
+    const area = mx_noise_float(wp.mul(0.01)).mul(0.5).add(0.5);
+    const share = mix(
+      float(0.05),
+      mix(float(0.3), float(0.75), smoothstep(0.56, 0.6, area)),
+      smoothstep(0.4, 0.44, area),
+    );
+    // Stone by stone up close; the mixed colour where stones are below a pixel.
+    const isRed = mix(share, step(oneMinus(share), hash(id.add(7.3))), fade);
     const stone = mix(grey, red, isRed);
     const dirt = mx_noise_float(wp.mul(0.45)).mul(0.5).add(0.5);
     const worn = mix(float(0.84), float(1.04), dirt);
@@ -597,8 +621,20 @@ export function createMaterials(): DtMaterials {
   }
   decal(paving, -2);
 
-  const path = new THREE.MeshStandardNodeMaterial({ roughness: 0.9, metalness: 0 });
-  path.colorNode = vec3(0.55, 0.52, 0.47).mul(float(0.9).add(mx_noise_float(wp.mul(3)).mul(0.1)));
+  // Walking / running / cycle paths: blue poured-rubber track, as Turkish
+  // cities lay them (fine EPDM granules, sun-faded and worn in places).
+  const path = new THREE.MeshStandardNodeMaterial({ roughness: 0.98, metalness: 0 });
+  {
+    const granule = mx_noise_float(wp.mul(14)).mul(0.08);
+    const fade = mx_noise_float(wp.mul(0.12)).mul(0.5).add(0.5);
+    const wear = smoothstep(0.65, 0.9, mx_noise_float(wp.mul(0.6)).mul(0.5).add(0.5)).mul(0.25);
+    // Brighter, matte sport-track blue (a deep blue ribbon read as water).
+    const blue = mix(vec3(0.17, 0.4, 0.72), vec3(0.23, 0.47, 0.78), fade);
+    const speck = step(0.82, mx_noise_float(wp.mul(40)).mul(0.5).add(0.5)).mul(0.08);
+    path.colorNode = mix(blue, vec3(0.42, 0.5, 0.6), wear)
+      .mul(float(1).add(granule))
+      .add(speck);
+  }
   decal(path, -2);
 
   // Retaining walls: cast in 2.4 × 1.2 m formwork panels (joints, a grid of
@@ -756,12 +792,51 @@ export function createMaterials(): DtMaterials {
     );
     const slope = oneMinus(normalWorld.y);
     g = mix(g, vec3(0.45, 0.43, 0.4), smoothstep(0.35, 0.6, slope));
+    // Cliff faces (sharpened coasts, mapped cliffs): bedded limestone /
+    // travertine — beige and ochre beds, wavy with noise, dark joints.
+    const bed = fract(wp.y.div(1.7).add(n1.mul(1.4)).add(n3.mul(0.12)));
+    const strata = mix(vec3(0.5, 0.4, 0.29), vec3(0.38, 0.3, 0.21), smoothstep(0.35, 0.65, bed));
+    const joint = smoothstep(0.9, 0.98, bed).add(smoothstep(0.82, 0.95, n2).mul(0.35));
+    const rock = mix(strata, vec3(0.2, 0.17, 0.13), clamp(joint, 0, 1).mul(0.7));
+    g = mix(g, rock, smoothstep(0.42, 0.58, slope));
     // Sand only on the waterline (low-lying city ground near the sea is not a beach).
     const shore = smoothstep(1.0, 0.3, wp.y);
     g = mix(g, vec3(0.62, 0.57, 0.45), shore);
     terrain.colorNode = g.mul(n3.mul(0.1).add(n4.mul(0.06)).add(1));
     // Grass clumps and tussocks catch the low sun.
     terrain.normalNode = bumpedNormal(n2.mul(0.6).add(n3.mul(0.3)).add(n4.mul(0.15)), 0.9, 120);
+  }
+
+  // Empty ground (an area without city data yet): a neutral grey grid, the
+  // blank level of a game editor — 10 m checker cells, 1 m minor lines that
+  // fade out with distance (no moiré), 10 m major lines.
+  const terrainGrid = new THREE.MeshStandardNodeMaterial({ roughness: 0.92, metalness: 0 });
+  {
+    const line = (u: ReturnType<typeof float>, cell: number, half: number) => {
+      const d = abs(fract(u.div(cell).add(0.5)).sub(0.5)).mul(cell);
+      return oneMinus(smoothstep(float(half), fwidth(u).add(half), d));
+    };
+    const blur = fwidth(wp.x).add(fwidth(wp.z));
+    const minor = max(line(wp.x, 1, 0.012), line(wp.z, 1, 0.012)).mul(
+      oneMinus(smoothstep(0.08, 0.35, blur)),
+    );
+    const major = max(line(wp.x, 10, 0.035), line(wp.z, 10, 0.035)).mul(
+      oneMinus(smoothstep(1.5, 6, blur)),
+    );
+    const checker = step(
+      0.5,
+      fract(
+        floor(wp.x.div(10))
+          .add(floor(wp.z.div(10)))
+          .mul(0.5),
+      ),
+    );
+    const base = mix(vec3(0.34, 0.34, 0.35), vec3(0.3, 0.3, 0.31), checker);
+    terrainGrid.colorNode = mix(
+      mix(base, vec3(0.25, 0.25, 0.26), minor.mul(0.6)),
+      vec3(0.17, 0.17, 0.18),
+      major.mul(0.85),
+    );
   }
 
   const water = new THREE.MeshStandardNodeMaterial({
@@ -782,7 +857,7 @@ export function createMaterials(): DtMaterials {
     water.emissiveNode = skyTint
       .mul(fresnel(4).mul(0.7).add(glint.mul(0.2)))
       .mul(day.mul(0.9).add(0.1));
-    water.opacityNode = float(0.93);
+    water.opacityNode = float(0.93).mul(groundFade);
   }
 
   const prop = new THREE.MeshStandardNodeMaterial({
@@ -925,9 +1000,11 @@ export function createMaterials(): DtMaterials {
       .add(hedge.mul(is(2)))
       .add(metal.mul(is(3).add(is(4)).add(is(5))));
     fence.roughnessNode = mix(float(0.85), float(0.45), is(3).add(is(4)).add(is(5)));
+    // Under the alpha test once the ground fades: fences give way to the pipes.
     fence.opacityNode = float(1)
       .sub(is(3).mul(oneMinus(max(bar, rails))))
-      .sub(is(4).mul(oneMinus(wire)));
+      .sub(is(4).mul(oneMinus(wire)))
+      .mul(groundFade);
   }
 
   const lampGlow = new THREE.MeshStandardNodeMaterial({ roughness: 0.3, metalness: 0 });
@@ -964,6 +1041,8 @@ export function createMaterials(): DtMaterials {
   const holoSynthetic = holo(new THREE.Color(0.25, 0.85, 1.0), 0.9);
   const holoSuggested = holo(new THREE.Color(1.0, 0.68, 0.18), 1.2);
   const holoBuilding = holo(new THREE.Color(0.3, 0.6, 1.0), 0.11);
+  // Underground view: buildings barely there, so the networks under them lead.
+  const holoGhost = holo(new THREE.Color(0.3, 0.6, 1.0), 0.035);
 
   const tunnelDark = new THREE.MeshBasicNodeMaterial();
   tunnelDark.colorNode = vec3(0.015, 0.016, 0.018);
@@ -998,6 +1077,46 @@ export function createMaterials(): DtMaterials {
   fix.colorNode = vec3(1.0, 0.16, 0.12);
   fix.opacityNode = sin(time.mul(3.2)).mul(0.14).add(0.46).add(fresnel(2).mul(0.3));
 
+  // ─── Buried networks (underground view) ───────────────────────────────────
+  const utility = new THREE.MeshStandardNodeMaterial({ roughness: 0.35, metalness: 0.1 });
+  {
+    const vc = vertexColor().rgb;
+    const ua = attribute<'float'>('ua', 'float');
+    // Pulses one every 8 m, moving 1.6 m/s: the network reads as live.
+    const pulse = smoothstep(0.82, 1.0, fract(ua.div(8).sub(time.mul(0.2))));
+    utility.colorNode = vc.mul(0.55);
+    utility.emissiveNode = vc.mul(fresnel(2).mul(1.4).add(0.9).add(pulse.mul(2.4)));
+  }
+  const utilityCover = new THREE.MeshStandardNodeMaterial({ roughness: 0.55, metalness: 0.55 });
+  {
+    // Raised grip pattern of a cast-iron cover.
+    const grip = step(
+      0.55,
+      fract(wp.x.mul(14))
+        .add(fract(wp.z.mul(14)))
+        .mul(0.5),
+    );
+    utilityCover.colorNode = vertexColor().rgb.mul(mix(float(0.8), float(1.12), grip));
+  }
+  decal(utilityCover, -1);
+
+  // The ground fades (see setUnderground): its opacity follows groundFade.
+  for (const m of [
+    terrain,
+    terrainGrid,
+    ground,
+    marking,
+    yard,
+    asphalt,
+    sidewalk,
+    paving,
+    path,
+    curb,
+    island,
+    retaining,
+  ])
+    m.opacityNode = groundFade;
+
   const all = [
     wall,
     trim,
@@ -1023,6 +1142,7 @@ export function createMaterials(): DtMaterials {
     ground,
     marking,
     terrain,
+    terrainGrid,
     water,
     prop,
     roofClutter,
@@ -1031,12 +1151,15 @@ export function createMaterials(): DtMaterials {
     holoSynthetic,
     holoSuggested,
     holoBuilding,
+    holoGhost,
     fix,
     lampPool,
     tunnelDark,
     tunnelWall,
     tunnelGlow,
     tunnelFixture,
+    utility,
+    utilityCover,
   ];
 
   return {
@@ -1068,6 +1191,7 @@ export function createMaterials(): DtMaterials {
     ground,
     marking,
     terrain,
+    terrainGrid,
     water,
     prop,
     roofClutter,
@@ -1081,7 +1205,11 @@ export function createMaterials(): DtMaterials {
     holoSynthetic,
     holoSuggested,
     holoBuilding,
+    holoGhost,
     fix,
+    utility,
+    utilityCover,
+    groundFade,
     dispose: () => {
       all.forEach((m) => {
         disposeVariants(m);
@@ -1090,4 +1218,38 @@ export function createMaterials(): DtMaterials {
       scenario.dispose();
     },
   };
+}
+
+/** Ground materials faded in the underground view. */
+const FADED: (keyof DtMaterials)[] = [
+  'terrain',
+  'terrainGrid',
+  'ground',
+  'marking',
+  'yard',
+  'asphalt',
+  'sidewalk',
+  'paving',
+  'path',
+  'curb',
+  'island',
+  'retaining',
+  'water',
+  'fence',
+];
+const UNDERGROUND_OPACITY = 0.16;
+
+/**
+ * Underground view: the ground turns to a faint see-through skin (no depth
+ * writes, so the pipes under it show) — or back to solid.
+ */
+export function setUnderground(mats: DtMaterials, on: boolean): void {
+  mats.groundFade.value = on ? UNDERGROUND_OPACITY : 1;
+  for (const key of FADED) {
+    const m = mats[key] as THREE.Material;
+    const saved = (m.userData.solid ??= { transparent: m.transparent, depthWrite: m.depthWrite });
+    m.transparent = on || saved.transparent;
+    m.depthWrite = on ? false : saved.depthWrite;
+    m.needsUpdate = true;
+  }
 }

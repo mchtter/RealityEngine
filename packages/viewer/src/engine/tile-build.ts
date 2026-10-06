@@ -7,7 +7,8 @@ import { buildGround } from './ground';
 import type { DtMaterials } from './materials';
 import { buildFixOverlay } from './overlays';
 import { buildPropGroup } from './props';
-import { type TilePayload, serializeMeshes, summarize } from './tile-payload';
+import { type TilePayload, isEmptyTile, serializeMeshes, summarize } from './tile-payload';
+import { buildUtilities } from './utilities';
 
 /**
  * Building shells (walls, roofs, cornices) are one mesh per tile: draw calls,
@@ -32,7 +33,7 @@ function tag(o: THREE.Object3D | null, role: string): void {
 
 /**
  * Builds the complete render content of one compiled tile and serializes it
- * (runs in the tile worker). Roles: `ground`, `fix`, `props:showcase`,
+ * (runs in the tile worker). Roles: `ground`, `fix`, `util:<kind>`, `props:showcase`,
  * `props:data`, `sub:<i>:obsShell|obsDetail|synShell|synDetail|obsProps|synProps`.
  */
 export function buildTilePayload(model: CityModel): {
@@ -44,9 +45,11 @@ export function buildTilePayload(model: CityModel): {
   // Sea only where the tile reaches down to it (the scene backdrop is ground).
   const t = model.terrain;
   const coastal = t.heights.some((h) => h <= t.seaLevel + 0.5);
-  root.add(buildGround(model, mats, { sea: coastal }));
+  root.add(buildGround(model, mats, { sea: coastal, empty: isEmptyTile(model) }));
   const fences = buildFences(model, mats);
   if (fences) root.add(fences);
+  const utilities = buildUtilities(model, mats);
+  if (utilities) root.add(utilities);
 
   const street = model.props.filter((p) => !p.buildingId);
   const showcase = buildPropGroup(street, mats, 'showcase', 'props-showcase');

@@ -78,23 +78,57 @@ export function buildFences(model: CityModel, mats: DtMaterials): THREE.Mesh | n
   return mesh;
 }
 
-/** Points about every metre along the fence, on the ground. */
+/**
+ * Points along the fence on the ground: every metre where the ground bends,
+ * only the corners where it runs straight (a 1 m sampling of every wall held
+ * more GPU memory than the buildings in a dense tile: 35 MB).
+ */
 function sample(f: Fence, heightAt: (x: number, y: number) => number): P3[] {
-  const out: P3[] = [];
+  const fine: { p: P3; corner: boolean; s: number }[] = [];
+  let s = 0;
   for (let k = 0; k < f.points.length; k++) {
     const a = f.points[k];
     if (k > 0) {
       const b = f.points[k - 1];
-      const n = Math.ceil(Math.hypot(a[0] - b[0], a[1] - b[1]) / 1);
+      const len = Math.hypot(a[0] - b[0], a[1] - b[1]);
+      const n = Math.ceil(len / 1);
       for (let i = 1; i < n; i++) {
         const x = b[0] + ((a[0] - b[0]) * i) / n;
         const y = b[1] + ((a[1] - b[1]) * i) / n;
-        out.push([x, y, heightAt(x, y)]);
+        fine.push({ p: [x, y, heightAt(x, y)], corner: false, s: s + (len * i) / n });
+      }
+      s += len;
+    }
+    fine.push({ p: [a[0], a[1], heightAt(a[0], a[1])], corner: true, s });
+  }
+  // Keep corners, and the points where the ground leaves the straight line
+  // between kept points by more than 4 cm (Douglas–Peucker on the profile).
+  const keep = fine.map((q) => q.corner);
+  const split = (i: number, j: number) => {
+    if (j - i < 2) return;
+    let worst = -1;
+    let dev = 0.04;
+    for (let m = i + 1; m < j; m++) {
+      const t = (fine[m].s - fine[i].s) / (fine[j].s - fine[i].s || 1);
+      const z = fine[i].p[2] + (fine[j].p[2] - fine[i].p[2]) * t;
+      const d = Math.abs(fine[m].p[2] - z);
+      if (d > dev) {
+        dev = d;
+        worst = m;
       }
     }
-    out.push([a[0], a[1], heightAt(a[0], a[1])]);
+    if (worst < 0) return;
+    keep[worst] = true;
+    split(i, worst);
+    split(worst, j);
+  };
+  let last = 0;
+  for (let m = 1; m < fine.length; m++) {
+    if (!keep[m]) continue;
+    split(last, m);
+    last = m;
   }
-  return out;
+  return fine.filter((_, m) => keep[m]).map((q) => q.p);
 }
 
 /** Mitred left normals per point (as the bridge strips). */
@@ -248,15 +282,29 @@ function piers(
   fk: number,
 ): void {
   mb.setAttribute('fk', [fk]);
-  const at: P3[] = [pts[0]];
+  // Every `every` m along the line (evenly spread over its length), and at
+  // both ends; the points are sparse where the ground runs straight.
+  let total = 0;
+  for (let k = 1; k < pts.length; k++)
+    total += Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
+  const count = Math.max(1, Math.round(total / every));
+  const at: P3[] = [];
+  let k = 1;
   let walked = 0;
-  let next = every;
-  for (let k = 1; k < pts.length; k++) {
-    walked += Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
-    if (walked >= next || k === pts.length - 1) {
-      at.push(pts[k]);
-      next = walked + every;
+  for (let i = 0; i <= count; i++) {
+    const want = (total * i) / count;
+    while (
+      k < pts.length - 1 &&
+      walked + Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]) < want
+    ) {
+      walked += Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
+      k++;
     }
+    const a = pts[k - 1];
+    const b = pts[k];
+    const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    const t = Math.min(1, Math.max(0, (want - walked) / l));
+    at.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]);
   }
   const h = size / 2;
   for (const p of at) {

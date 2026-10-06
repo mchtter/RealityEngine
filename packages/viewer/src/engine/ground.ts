@@ -16,6 +16,7 @@ import {
   rectPolygon,
   subtractPolygons,
   TWIN_MEDIAN,
+  barrierStops,
   terrainHeightAt,
   triangulate,
   unionPolygons,
@@ -50,6 +51,11 @@ const SURF_KERB = 6;
 const LIFT = SURFACE_LIFT;
 /** Lane markings / zebra stripes above the asphalt. */
 const MARKING_LIFT = LIFT.asphalt + 0.025;
+/**
+ * Path lines above the walking / cycle path surface (draped on the terrain,
+ * like the path; a little margin for the terrain triangles' interpolation).
+ */
+const PATH_MARKING_LIFT = LIFT.path + 0.04;
 /**
  * Far tiles (> 900 m): terrain from every FAR_STEP-th grid node (40 m) and the
  * surfaces cut to that same mesh. Must divide the tile's 250 grid cells.
@@ -374,8 +380,10 @@ function dashes(pts: [number, number][], on: number, off: number): [number, numb
 export function buildGround(
   model: CityModel,
   mats: DtMaterials,
-  opts: { sea?: boolean } = {},
+  /** empty: no city data in the tile — the terrain is drawn as the grey grid. */
+  opts: { sea?: boolean; empty?: boolean } = {},
 ): THREE.Group {
+  const terrainMat = opts.empty ? mats.terrainGrid : mats.terrain;
   const group = new THREE.Group();
   group.name = 'ground';
   // Ground is cut into CHUNK-metre cells so frustum culling can drop the parts
@@ -422,7 +430,7 @@ export function buildGround(
     }
     return false;
   };
-  const far = terrainMesh(t, mats.terrain, FAR_STEP, 6, undefined, undefined, noSkirt);
+  const far = terrainMesh(t, terrainMat, FAR_STEP, 6, undefined, undefined, noSkirt);
   far.userData.role = 'ground:far';
   group.add(far);
   if (opts.sea !== false) group.add(seaPlane(model, mats));
@@ -445,6 +453,7 @@ export function buildGround(
   const lids = model.terrainCut?.lids ?? [];
   const holes = [...trenches, ...lids];
   const carved = cellsUnder(t, holes);
+  const terrainAt = (x: number, y: number) => terrainHeightAt(t, x, y);
   const groundAt = (x: number, y: number) =>
     ground.inTrench(x, y) || ground.inLid(x, y) ? ground.heightAt(x, y) : streetAt(x, y);
   const onHoleEdge = (a: [number, number], b: [number, number]) =>
@@ -470,7 +479,7 @@ export function buildGround(
       const chunk = new THREE.Group();
       chunk.name = `ground-${i0}-${j0}`;
 
-      const terrain = terrainMesh(shown, mats.terrain, 1, 6, [i0, j0, i1, j1], carved, noSkirt);
+      const terrain = terrainMesh(shown, terrainMat, 1, 6, [i0, j0, i1, j1], carved, noSkirt);
       terrain.userData.role = 'ground:near';
       chunk.add(terrain);
       const cellsHere: Polygon[] = [];
@@ -488,7 +497,7 @@ export function buildGround(
         for (const poly of subtractPolygons(area, holes)) drapeShaded(patch, poly, shown);
         for (const poly of clipPolygons(area, lids)) drapeShaded(patch, poly, ground.lid);
         if (patch.indices.length) {
-          const mesh = new THREE.Mesh(patch.build(), mats.terrain);
+          const mesh = new THREE.Mesh(patch.build(), terrainMat);
           mesh.receiveShadow = true;
           mesh.name = 'terrain-carved';
           mesh.userData.role = 'ground:near';
@@ -585,7 +594,12 @@ export function buildGround(
         }
         if (part.length >= 2) parts.push(part);
         for (const pts of parts) {
-          if (m.kind === 'center-dashed' || m.kind === 'lane-dashed') {
+          if (m.kind === 'path-dashed') {
+            for (const d of dashes(pts, 1.5, 1.5))
+              ribbon(marks, terrainAt, d, 0.1, PATH_MARKING_LIFT);
+          } else if (m.kind === 'path-edge') {
+            ribbon(marks, terrainAt, pts, 0.1, PATH_MARKING_LIFT);
+          } else if (m.kind === 'center-dashed' || m.kind === 'lane-dashed') {
             for (const d of dashes(pts, 3, 5)) ribbon(marks, groundAt, d, 0.13, MARKING_LIFT);
           } else {
             ribbon(marks, groundAt, pts, m.kind === 'edge' ? 0.15 : 0.13, MARKING_LIFT);
@@ -1016,10 +1030,7 @@ export function buildGround(
     // A low deck (culvert, a bridge at street level) meeting a junction: its
     // barriers and walkways stop where they would stand on another road.
     const merged: Owned = {
-      inside: (x, y) =>
-        joined.inside(x, y) ||
-        (deckAt(br, [x, y]) - groundModel.streetAt(x, y) < 2 &&
-          groundModel.supportAt(x, y) === 'asphalt'),
+      inside: (x, y) => joined.inside(x, y) || barrierStops(groundModel, deckAt(br, [x, y]), x, y),
     };
     // A barrier end that lies on another deck's barrier line carries on there.
     const continues = (q: [number, number]) =>
@@ -1255,13 +1266,34 @@ export function buildGround(
     }
     const half = c.width / 2;
     const carriage = Math.min(half - 0.25, (c.carriageway ?? c.width) / 2);
-    along(deckTops, path, -half, half, 0);
-    laneLines(path, carriage, c.lanes ?? 2, c.oneway ?? false, c.edgeLines ?? false);
+    // The ramp road lies at the street's asphalt height (floor + its lift), so
+    // it meets the street flush at the open end; there it also runs on 1 m
+    // under the street surface (both stopped on one line and left a crack
+    // showing the ground below).
+    const road = path.map((q): V => [q[0], q[1], q[2] + LIFT.asphalt]);
+    const runOn = (end: V, toward: V): V[] | null => {
+      if (Math.abs(end[2] - groundModel.streetAt(end[0], end[1])) > 0.3) return null;
+      const l = Math.hypot(end[0] - toward[0], end[1] - toward[1]) || 1;
+      const u = [(end[0] - toward[0]) / l, (end[1] - toward[1]) / l];
+      const z = end[2] + LIFT.asphalt - 0.03;
+      return [
+        [end[0], end[1], z],
+        [end[0] + u[0], end[1] + u[1], z],
+      ];
+    };
+    for (const ext of [
+      runOn(path[0], path[1]),
+      runOn(path[path.length - 1], path[path.length - 2]),
+    ]) {
+      if (ext) along(deckTops, ext, -half, half, 0);
+    }
+    along(deckTops, road, -half, half, 0);
+    laneLines(road, carriage, c.lanes ?? 2, c.oneway ?? false, c.edgeLines ?? false);
     if (half - carriage > 0.25) {
       for (const side of [1, -1] as const) {
         const [o0, o1] = side > 0 ? [carriage, half] : [-half, -carriage];
-        along(walkways, path, o0, o1, 0.16);
-        face(walkways, path, side * carriage, 0, 0.16, side > 0 ? -1 : 1);
+        along(walkways, road, o0, o1, 0.16);
+        face(walkways, road, side * carriage, 0, 0.16, side > 0 ? -1 : 1);
       }
     }
     const n = miters(path);

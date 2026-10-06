@@ -1,15 +1,22 @@
+import type { TileLevel } from './engine/city-tile';
 import type { TilePayload } from './engine/tile-payload';
 
 export interface TileJob {
   key: string;
   url: string;
+  /** Detail level to build the tile at. */
+  level: TileLevel;
   /** Lower = sooner (distance to the camera target, metres). */
   priority: number;
 }
 
+/** One job per tile url and level. */
+export const jobId = (j: Pick<TileJob, 'url' | 'level'>) => `${j.url}|${j.level}`;
+
 export interface LoadedTile {
   key: string;
   url: string;
+  level: TileLevel;
   payload: TilePayload;
   timings: { fetchParseMs: number; meshMs: number };
 }
@@ -46,11 +53,12 @@ export class TileLoader {
         this.inFlight.delete(e.data.id);
         slot.busy = false;
         if (job) {
-          this.pending.delete(job.url);
+          this.pending.delete(jobId(job));
           if (e.data.payload)
             this.onLoaded({
               key: job.key,
               url: job.url,
+              level: job.level,
               payload: e.data.payload,
               timings: e.data.timings!,
             });
@@ -62,18 +70,19 @@ export class TileLoader {
     });
   }
 
-  /** True while the url is queued or being built. */
-  has(url: string): boolean {
-    return this.pending.has(url);
+  /** True while the job is queued or being built. */
+  has(job: Pick<TileJob, 'url' | 'level'>): boolean {
+    return this.pending.has(jobId(job));
   }
 
   enqueue(job: TileJob): void {
-    if (this.pending.has(job.url)) {
-      const queued = this.queue.find((j) => j.url === job.url);
+    const id = jobId(job);
+    if (this.pending.has(id)) {
+      const queued = this.queue.find((j) => jobId(j) === id);
       if (queued) queued.priority = job.priority;
       return;
     }
-    this.pending.add(job.url);
+    this.pending.add(id);
     this.queue.push(job);
   }
 
@@ -81,7 +90,7 @@ export class TileLoader {
   retain(keep: (job: TileJob) => boolean): void {
     this.queue = this.queue.filter((j) => {
       if (keep(j)) return true;
-      this.pending.delete(j.url);
+      this.pending.delete(jobId(j));
       return false;
     });
   }

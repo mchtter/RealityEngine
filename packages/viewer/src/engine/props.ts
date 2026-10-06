@@ -126,6 +126,20 @@ function createPropModules(): Record<PropKind | 'tree-pine', THREE.BufferGeometr
       cyl(0.1, 0.14, 9, 8, C('#8a8580'), 0, 4.5, 0),
       box(1.8, 0.1, 0.1, C('#5b5650'), 0, 8.4, 0),
     ]),
+    // Fibre distribution cabinet: two-door grey steel box on a concrete plinth,
+    // vents and the operator's band on the street-facing front (+z).
+    'street-cabinet': merge([
+      box(0.98, 0.12, 0.52, C('#8d8a84'), 0, 0.06, 0),
+      box(0.9, 1.18, 0.42, C('#b9bec2'), 0, 0.71, 0),
+      box(0.96, 0.05, 0.48, C('#9aa0a5'), 0, 1.325, 0),
+      box(0.012, 0.98, 0.006, darkMetal, 0, 0.66, 0.211),
+      box(0.3, 0.07, 0.006, C('#7d8387'), -0.21, 1.06, 0.211),
+      box(0.3, 0.07, 0.006, C('#7d8387'), 0.21, 1.06, 0.211),
+      box(0.3, 0.07, 0.006, C('#7d8387'), -0.21, 0.3, 0.211),
+      box(0.3, 0.07, 0.006, C('#7d8387'), 0.21, 0.3, 0.211),
+      box(0.9, 0.05, 0.006, C('#ff8a1f'), 0, 1.21, 0.211),
+      box(0.03, 0.08, 0.02, darkMetal, 0.06, 0.72, 0.22),
+    ]),
     // Plastered stove flue with a concrete cap and a small rain hood (reference renders).
     chimney: merge([
       box(0.78, 2.3, 0.78, C('#bcb4a8'), 0, 1.15, 0),
@@ -293,6 +307,7 @@ const FURNITURE: PropKind[] = [
   'bench',
   'waste-basket',
   'power-pole',
+  'street-cabinet',
 ];
 
 export type PropMode = 'showcase' | 'data';
@@ -384,9 +399,17 @@ export function buildPropGroup(
         ROOF_CLUTTER_KIND[p.kind] ? mats.roofClutter : mats.prop,
         p,
         variant.startsWith('tree') ||
-          ['bus-stop', 'street-lamp', 'car', 'booth', 'swing', 'slide', 'climber', 'gate'].includes(
-            p.kind,
-          ),
+          [
+            'bus-stop',
+            'street-lamp',
+            'street-cabinet',
+            'car',
+            'booth',
+            'swing',
+            'slide',
+            'climber',
+            'gate',
+          ].includes(p.kind),
       );
       if (p.kind === 'street-lamp') {
         push('lamp-glow', sharedGlow, mats.lampGlow, p, false);

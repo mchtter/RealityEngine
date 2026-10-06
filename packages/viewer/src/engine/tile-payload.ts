@@ -5,6 +5,7 @@ import type {
   TerrainCut,
   TerrainGrid,
   TileFrameInput,
+  UtilityKind,
 } from '@opentwin/city-core';
 import * as THREE from 'three/webgpu';
 import {
@@ -90,6 +91,10 @@ export interface TileSummary {
    * (tile coords); a tunnel road has its clear height.
    */
   decks: { path: [number, number, number][]; half: number; clear?: number }[];
+  /** No city data in the tile (drawn as the grey grid). */
+  empty: boolean;
+  /** Buried networks in the tile: runs and length (km) per network. */
+  utilities: Partial<Record<UtilityKind, { runs: number; km: number; cabinets?: number }>>;
 }
 
 export interface TilePayload {
@@ -104,6 +109,14 @@ export interface TilePayload {
   slots: { obs: string[]; syn: string[] };
 }
 
+/** No city data in the tile at all: the blank start of a city (grey grid ground). */
+export const isEmptyTile = (model: CityModel) =>
+  !model.roads.length &&
+  !model.buildings.length &&
+  !model.areas.length &&
+  !model.props.length &&
+  !model.utilities?.length;
+
 export function summarize(model: CityModel): TileSummary {
   return {
     name: model.name,
@@ -115,6 +128,8 @@ export function summarize(model: CityModel): TileSummary {
     terrain: model.terrain,
     ...(model.terrainCut ? { terrainCut: model.terrainCut } : {}),
     fixes: model.fixes,
+    utilities: utilityStats(model),
+    empty: isEmptyTile(model),
     decks: [
       ...(model.bridges ?? []).map((b) => ({ path: b.path, half: b.width / 2 })),
       ...(model.tunnels ?? []).map((t) => ({ path: t.path, half: t.width / 2, clear: t.height })),
@@ -136,6 +151,23 @@ export function summarize(model: CityModel): TileSummary {
       fixIds: b.fixIds,
     })),
   };
+}
+
+/** Runs, length (km) and street cabinets of each buried network in a tile. */
+function utilityStats(model: CityModel): TileSummary['utilities'] {
+  const out: TileSummary['utilities'] = {};
+  for (const p of model.props) {
+    if (p.kind !== 'street-cabinet' || !p.network) continue;
+    const s = (out[p.network] ??= { runs: 0, km: 0 });
+    s.cabinets = (s.cabinets ?? 0) + 1;
+  }
+  for (const u of model.utilities ?? []) {
+    const s = (out[u.kind] ??= { runs: 0, km: 0 });
+    s.runs++;
+    for (let k = 1; k < u.path.length; k++)
+      s.km += Math.hypot(u.path[k][0] - u.path[k - 1][0], u.path[k][1] - u.path[k - 1][1]) / 1000;
+  }
+  return out;
 }
 
 const roleOf = (o: THREE.Object3D): string => {
