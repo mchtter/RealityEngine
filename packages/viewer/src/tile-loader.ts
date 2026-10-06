@@ -1,5 +1,6 @@
 import type { TileLevel } from './engine/city-tile';
 import type { TilePayload } from './engine/tile-payload';
+import { sessionHeadersFor } from '@/lib/api/session-auth';
 
 export interface TileJob {
   key: string;
@@ -104,7 +105,8 @@ export class TileLoader {
       slot.busy = true;
       const id = ++this.seq;
       this.inFlight.set(id, job);
-      slot.worker.postMessage({ id, url: job.url });
+      // Tiles are the tenant's files: the worker fetches them with the session token.
+      slot.worker.postMessage({ id, url: job.url, headers: sessionHeadersFor(job.url) });
     }
   }
 

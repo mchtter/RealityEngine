@@ -6,11 +6,13 @@ import { buildTilePayload } from './engine/tile-build';
  * Downloads, decompresses, parses and meshes one compiled city tile off the
  * main thread; posts back transferable buffers the engine only has to wrap.
  */
-self.onmessage = async (event: MessageEvent<{ id: number; url: string }>) => {
-  const { id, url } = event.data;
+self.onmessage = async (
+  event: MessageEvent<{ id: number; url: string; headers?: Record<string, string> }>,
+) => {
+  const { id, url, headers } = event.data;
   try {
     const t0 = performance.now();
-    const res = await fetch(url);
+    const res = await fetch(url, { headers });
     if (!res.ok || !res.body) throw new Error(`${url}: HTTP ${res.status}`);
     const text = await new Response(res.body.pipeThrough(new DecompressionStream('gzip'))).text();
     const model = JSON.parse(text) as CityModel;
