@@ -218,6 +218,13 @@ export class CityTile {
     }
   }
 
+  /** Terrain and street surfaces drawn now (near or far detail): what a vehicle / marker stands on. */
+  visibleGround(): THREE.Mesh[] {
+    return [...this.groundNear, ...this.groundFar].filter(
+      (m) => m.visible && /^(terrain|surfaces)/.test(m.name),
+    );
+  }
+
   /** Networks in this tile, with runs and length. */
   get utilityStats(): TileSummary['utilities'] {
     return this.summary.utilities ?? {};

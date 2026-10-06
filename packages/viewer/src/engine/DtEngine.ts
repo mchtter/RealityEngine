@@ -37,6 +37,7 @@ import {
 } from './materials';
 import { SlotAllocator } from './slot-allocator';
 import { type BuildingInfo, type TilePayload, type TileSummary, instancesOf } from './tile-payload';
+import { VehicleLayer, type VehicleState } from './vehicles';
 
 export type DtViewMode = 'showcase' | 'data';
 export type DtQuality = 'high' | 'medium' | 'low';
@@ -282,6 +283,7 @@ export class DtEngine {
     backdrop.receiveShadow = false;
     backdrop.name = 'backdrop';
     this.scene.add(backdrop);
+    this.scene.add(this.vehicles.group);
     this.sea = backdrop;
 
     this.controls = new MapControls(this.camera, renderer.domElement);
@@ -407,6 +409,7 @@ export class DtEngine {
     this.emitUtilities();
     // Ground heights / building tops of states on this tile are known now.
     if (this.cityStates.length) this.rebuildCityStates();
+    if (this.vehicleList.length) this.setVehicles(this.vehicleList);
     if (!this.placed) {
       this.placed = true;
       const [ox, oy] = this.offsetOf(payload.summary);
@@ -780,6 +783,61 @@ export class DtEngine {
     for (const tile of this.tiles.values()) tile.setShowFixes(on);
   }
 
+  private readonly vehicles = new VehicleLayer();
+  private vehicleList: VehicleState[] = [];
+
+  private readonly downRay = new THREE.Raycaster();
+
+  /**
+   * Height of the drawn ground at a world point (street surface, sidewalk,
+   * terrain): a ray down onto the tile's ground meshes; the terrain model
+   * where none is hit. Streets lie on their own profile, up to a few metres
+   * off the terrain grid, so objects placed on them use this.
+   */
+  surfaceAt(x: number, y: number): number {
+    const meshes: THREE.Object3D[] = [];
+    for (const tile of this.tiles.values()) {
+      if (tile.heightAt(x, y) !== null) meshes.push(...tile.visibleGround());
+    }
+    this.downRay.set(new THREE.Vector3(x, 5000, -y), new THREE.Vector3(0, -1, 0));
+    const hit = this.downRay.intersectObjects(meshes, false)[0];
+    return hit ? hit.point.y : this.heightAt(x, y);
+  }
+
+  /** Live vehicles (eased to each new fix). */
+  setVehicles(list: VehicleState[]): void {
+    this.vehicleList = list;
+    this.vehicles.update(list, {
+      worldOf: (lon, lat) => this.worldOf(lon, lat),
+      heightAt: (x, y) => this.surfaceAt(x, y),
+    });
+  }
+
+  /** Vehicle the camera keeps following (until the user takes the camera). */
+  private followId: string | null = null;
+
+  /** Flies close to a vehicle and follows it. */
+  focusVehicle(id: string): void {
+    const at = this.vehicles.positionOf(id);
+    if (!at) return;
+    this.flyTo(at[0], at[1], 70);
+    this.followId = id;
+  }
+
+  /** Moves camera and target with the followed vehicle (same view, new place). */
+  private follow(dt: number): void {
+    if (!this.followId || this.fly) return;
+    const p = this.vehicles.scenePositionOf(this.followId);
+    if (!p) {
+      this.followId = null;
+      return;
+    }
+    const k = 1 - Math.exp(-dt * 3);
+    const delta = p.clone().sub(this.controls.target).multiplyScalar(k);
+    this.controls.target.add(delta);
+    this.camera.position.add(delta);
+  }
+
   private cityStates: CityObjectState[] = [];
   private cityStatesGroup: THREE.Group | null = null;
 
@@ -795,7 +853,7 @@ export class DtEngine {
     if (!this.cityStates.length || !this.world) return;
     this.cityStatesGroup = buildCityStates(this.cityStates, {
       worldOf: (lon, lat) => this.worldOf(lon, lat),
-      heightAt: (x, y) => this.heightAt(x, y),
+      heightAt: (x, y) => this.surfaceAt(x, y),
       buildingTop: (objectId) => {
         for (const tile of this.tiles.values()) {
           const b = tile.summary.buildings.find((i) => i.entity === objectId || i.ref === objectId);
@@ -1158,6 +1216,7 @@ export class DtEngine {
   }
 
   dispose(): void {
+    this.vehicles.dispose();
     this.clearHighlight();
     this.disposed = true;
     this.renderer.setAnimationLoop(null);
@@ -1184,8 +1243,11 @@ export class DtEngine {
   private readonly frame = () => {
     if (this.disposed) return;
     const now0 = performance.now();
-    const controlsOwnCamera = this.rig.update((now0 - this.lastFrame) / 1000);
+    const dt = (now0 - this.lastFrame) / 1000;
+    const controlsOwnCamera = this.rig.update(dt);
     this.lastFrame = now0;
+    this.vehicles.tick(Math.min(dt, 0.25));
+    this.follow(Math.min(dt, 0.25));
     if (this.fly && controlsOwnCamera) {
       this.fly.t = Math.min(1, this.fly.t + 1 / 70);
       const k = this.fly.t < 0.5 ? 4 * this.fly.t ** 3 : 1 - (-2 * this.fly.t + 2) ** 3 / 2;
@@ -1263,6 +1325,8 @@ export class DtEngine {
 
   private readonly onPointerDown = (e: PointerEvent) => {
     this.pointerDown = { x: e.clientX, y: e.clientY };
+    // Taking the camera ends following a vehicle.
+    this.followId = null;
   };
 
   private readonly onPointerUp = (e: PointerEvent) => {
