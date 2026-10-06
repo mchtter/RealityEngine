@@ -51,6 +51,13 @@ export interface SourceLine extends SourceBase {
   points: Vec2[];
 }
 
+/**
+ * Tag carrying the canonical city entity id of a source feature (set by the
+ * DT worker for records of the city model); objects built from it keep it as
+ * `entity`.
+ */
+export const ENTITY_TAG = 'city:entity';
+
 /** Natural lines that shape the terrain. */
 export const LANDFORM_LINES = new Set(['cliff', 'coastline']);
 

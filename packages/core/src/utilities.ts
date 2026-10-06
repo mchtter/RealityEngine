@@ -1,5 +1,5 @@
 import { closestOnSegment, dist } from './geo';
-import type { SourceLine, SourcePoint } from './osm';
+import { ENTITY_TAG, type SourceLine, type SourcePoint } from './osm';
 import { densify } from './roads';
 import { GridIndex } from './spatial';
 import type { Utility, UtilityKind, UtilityNode, Vec2, Vec3 } from './types';
@@ -137,6 +137,7 @@ export function buildUtilities(
     utilities.push({
       id: `u:${line.ref}`,
       ref: line.ref,
+      ...(line.tags[ENTITY_TAG] ? { entity: line.tags[ENTITY_TAG] } : {}),
       kind,
       service,
       diameter,
@@ -176,6 +177,7 @@ export function buildUtilities(
     nodes.push({
       id: `n:${pt.ref}`,
       ref: pt.ref,
+      ...(pt.tags[ENTITY_TAG] ? { entity: pt.tags[ENTITY_TAG] } : {}),
       kind,
       type,
       position: [pt.p[0], pt.p[1], z],

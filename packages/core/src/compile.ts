@@ -24,6 +24,7 @@ import {
 import { isGraded, transferGrades } from './grade';
 import { GroundModel, SURFACE_LIFT } from './ground-model';
 import {
+  ENTITY_TAG,
   LANDFORM_LINES,
   type SourceFeatures,
   type SourceRoad,
@@ -88,7 +89,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '60';
+export const COMPILER_VERSION = '61';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -262,6 +263,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     intersection(a.polygons, [regionPoly]).map((polygon, i) => ({
       id: `a:${a.ref}${i ? `-${i}` : ''}`,
       kind: a.kind,
+      ...(a.tags[ENTITY_TAG] ? { entity: a.tags[ENTITY_TAG] } : {}),
       polygon,
       provenance: 'observed' as const,
     })),

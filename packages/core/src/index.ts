@@ -45,3 +45,14 @@ export {
   utilityClashes,
   utilityKindOf,
 } from './utilities';
+export { ENTITY_TAG } from './osm';
+export {
+  SEGMENT_LENGTH,
+  type CityLocation,
+  type CityLocationKind,
+  type CitySide,
+  findSegment,
+  locate,
+  objectIdOf,
+  segmentOutline,
+} from './locate';

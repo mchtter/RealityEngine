@@ -11,7 +11,7 @@ import {
   scale,
   sub,
 } from './geo';
-import type { SourcePoint } from './osm';
+import { ENTITY_TAG, type SourcePoint } from './osm';
 import { Rng } from './random';
 import { isVehicular } from './roads';
 import { GridIndex, type PolygonIndex, type RoadIndex } from './spatial';
@@ -333,6 +333,7 @@ export function observedProps(points: SourcePoint[], ctx: PropContext): Prop[] {
     out.push({
       id: `p:${pt.ref}`,
       kind,
+      ...(pt.tags[ENTITY_TAG] ? { entity: pt.tags[ENTITY_TAG] } : {}),
       position: [p[0], p[1], at(ctx, p)],
       heading,
       scale: 1,

@@ -1,5 +1,5 @@
 import { add, closestOnSegment, dist, normalize, perp, polylineLength, scale, sub } from './geo';
-import type { SourcePoint, SourceRoad } from './osm';
+import { ENTITY_TAG, type SourcePoint, type SourceRoad } from './osm';
 import {
   bufferPolylinePaths,
   clean,
@@ -205,6 +205,7 @@ export function classifyRoads(source: SourceRoad[]): Road[] {
       id: `r:${r.ref}`,
       osmId: r.osmId,
       ref: r.ref,
+      ...(r.tags[ENTITY_TAG] ? { entity: r.tags[ENTITY_TAG] } : {}),
       name: r.tags.name,
       cls,
       grade,

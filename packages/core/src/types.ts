@@ -137,6 +137,8 @@ export type Grade = 'ground' | 'bridge' | 'tunnel';
 
 export interface Road {
   id: string;
+  /** Canonical city entity id (city_features.entity_id) when the object comes from the city model. */
+  entity?: string;
   /** Stable source identity ("osm:w123"). */
   ref: string;
   osmId?: number;
@@ -233,6 +235,8 @@ export type AreaKind =
 
 export interface Area {
   id: string;
+  /** Canonical city entity id (city_features.entity_id) when the object comes from the city model. */
+  entity?: string;
   kind: AreaKind;
   polygon: Polygon;
   provenance: Provenance;
@@ -317,6 +321,8 @@ export interface Building {
   osmId?: number;
   /** Stable source identity of observed buildings ("osm:w123", "maks:4711"). */
   ref?: string;
+  /** Canonical city entity id (city_features.entity_id) when the object comes from the city model. */
+  entity?: string;
   /** Source name ("osm", "maks", …) or "synthetic" for block infill. */
   source: string;
   /** Source table columns of observed buildings (MAKS …), by column name. */
@@ -396,6 +402,8 @@ export interface Fence {
 
 export interface Prop {
   id: string;
+  /** Canonical city entity id (city_features.entity_id) when the object comes from the city model. */
+  entity?: string;
   kind: PropKind;
   position: Vec3;
   /** Heading in radians (0 = +x, CCW). */
@@ -528,6 +536,8 @@ export type UtilityKind = 'gas' | 'water' | 'sewer' | 'power' | 'telecom' | 'hea
 /** A buried pipe / cable run. */
 export interface Utility {
   id: string;
+  /** Canonical city entity id (city_features.entity_id) when the object comes from the city model. */
+  entity?: string;
   /** Source feature. */
   ref: string;
   kind: UtilityKind;
@@ -546,6 +556,8 @@ export interface Utility {
 /** Access point of a buried network: a manhole / chamber or a valve. */
 export interface UtilityNode {
   id: string;
+  /** Canonical city entity id (city_features.entity_id) when the object comes from the city model. */
+  entity?: string;
   ref: string;
   kind: UtilityKind;
   type: 'manhole' | 'valve';

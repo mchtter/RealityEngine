@@ -1251,3 +1251,23 @@ export interface CitySearchResponse {
   query: string;
   hits: CitySearchHit[];
 }
+
+// ─── Locate ─────────────────────────────────────────────────────────────────
+
+/** GET /city/locate?lon=&lat= — the city object at a point, as the DT draws it. */
+export interface CityLocateResponse {
+  /** building, carriageway, sidewalk, path, prop, utility_node, area — null on open ground. */
+  kind: string | null;
+  /** Stable object id: canonical entity id, else source ref; street segments `<road>:<C|L|R>:<n>`. */
+  id?: string;
+  type?: string;
+  /** The road of a street segment. */
+  parent?: string;
+  name?: string;
+  /** Street segment: metres along the road. */
+  range?: [number, number];
+  /** Outline to highlight ([lon, lat] ring). */
+  outline?: [number, number][];
+  /** DT tile the answer comes from. */
+  tile: string | null;
+}

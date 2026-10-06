@@ -11,7 +11,7 @@ import {
   scale,
   sub,
 } from './geo';
-import type { SourceBuilding } from './osm';
+import { ENTITY_TAG, type SourceBuilding } from './osm';
 import {
   bufferPolyline,
   clean,
@@ -402,6 +402,7 @@ export function placeObservedBuildings(
       const attrs = sourceAttributes(src.tags);
       if (attrs) b.attrs = attrs;
       if (src.tags['ref:parcel']) b.parcelRef = src.tags['ref:parcel'];
+      if (src.tags[ENTITY_TAG]) b.entity = src.tags[ENTITY_TAG];
       for (const f of pending) {
         const fix = { ...f, height: b.topZ - b.baseZ, baseZ: b.baseZ };
         if (idx === 0) fixes.push(fix);
