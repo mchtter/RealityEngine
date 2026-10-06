@@ -60,6 +60,7 @@ export type BuildingInfo = Pick<
   | 'id'
   | 'source'
   | 'ref'
+  | 'entity'
   | 'attrs'
   | 'parcelRef'
   | 'osmId'
@@ -138,6 +139,7 @@ export function summarize(model: CityModel): TileSummary {
       id: b.id,
       source: b.source,
       ref: b.ref,
+      entity: b.entity,
       attrs: b.attrs,
       parcelRef: b.parcelRef,
       osmId: b.osmId,

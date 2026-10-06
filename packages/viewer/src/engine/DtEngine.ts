@@ -5,6 +5,7 @@ import {
   utmInverse,
   utmZoneOf,
 } from '@opentwin/city-core';
+import type { CityObjectState } from '@opentwin/shared';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { CSMShadowNode } from 'three/addons/csm/CSMShadowNode.js';
 import { SkyMesh } from 'three/addons/objects/SkyMesh.js';
@@ -24,6 +25,7 @@ import {
 } from 'three/tsl';
 import * as THREE from 'three/webgpu';
 import { CameraRig, type DtCameraMode } from './camera-modes';
+import { buildCityStates, disposeCityStates } from './city-states';
 import { CityTile, type DtInspect, type TileLevel } from './city-tile';
 import { toThree } from './geom';
 import {
@@ -403,6 +405,8 @@ export class DtEngine {
     this.scene.add(tile.group);
     this.placeBackdrop();
     this.emitUtilities();
+    // Ground heights / building tops of states on this tile are known now.
+    if (this.cityStates.length) this.rebuildCityStates();
     if (!this.placed) {
       this.placed = true;
       const [ox, oy] = this.offsetOf(payload.summary);
@@ -774,6 +778,49 @@ export class DtEngine {
   setShowFixes(on: boolean): void {
     this.showFixes = on;
     for (const tile of this.tiles.values()) tile.setShowFixes(on);
+  }
+
+  private cityStates: CityObjectState[] = [];
+  private cityStatesGroup: THREE.Group | null = null;
+
+  /** Shows the states of city objects (damaged, hazard …) as pulsing walls and beacons. */
+  setCityStates(states: CityObjectState[]): void {
+    this.cityStates = states;
+    this.rebuildCityStates();
+  }
+
+  private rebuildCityStates(): void {
+    if (this.cityStatesGroup) disposeCityStates(this.cityStatesGroup);
+    this.cityStatesGroup = null;
+    if (!this.cityStates.length || !this.world) return;
+    this.cityStatesGroup = buildCityStates(this.cityStates, {
+      worldOf: (lon, lat) => this.worldOf(lon, lat),
+      heightAt: (x, y) => this.heightAt(x, y),
+      buildingTop: (objectId) => {
+        for (const tile of this.tiles.values()) {
+          const b = tile.summary.buildings.find((i) => i.entity === objectId || i.ref === objectId);
+          if (b) return b.topZ;
+        }
+        return null;
+      },
+    });
+    this.scene.add(this.cityStatesGroup);
+  }
+
+  /** Flies to a state's object (its outline, else ~60 m around the point). */
+  focusCityState(state: CityObjectState): void {
+    const pts = state.outline?.length
+      ? state.outline
+      : [[state.lon, state.lat] as [number, number]];
+    const lons = pts.map((p) => p[0]);
+    const lats = pts.map((p) => p[1]);
+    const pad = 0.0003;
+    this.flyToBounds([
+      Math.min(...lons) - pad,
+      Math.min(...lats) - pad,
+      Math.max(...lons) + pad,
+      Math.max(...lats) + pad,
+    ]);
   }
 
   private underground = new Set<UtilityKind>();

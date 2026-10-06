@@ -1271,3 +1271,62 @@ export interface CityLocateResponse {
   /** DT tile the answer comes from. */
   tile: string | null;
 }
+
+// ─── Object states ──────────────────────────────────────────────────────────
+
+/** What is wrong with a city object (or a place): reported by field teams and plugins. */
+export const CITY_OBJECT_STATES = [
+  'damaged',
+  'hazard',
+  'closed',
+  'under_repair',
+  'inspected',
+] as const;
+export type CityObjectStateKind = (typeof CITY_OBJECT_STATES)[number];
+
+/** A state on a city object or a place (city_object_states). */
+export interface CityObjectState {
+  id: string;
+  /** Stable object id (entity id, source ref or street segment); null: a bare place. */
+  objectId: string | null;
+  objectKind: string | null;
+  objectName: string | null;
+  state: CityObjectStateKind;
+  /** 1 low … 4 urgent. */
+  severity: 1 | 2 | 3 | 4;
+  title: string;
+  note: string | null;
+  lon: number;
+  lat: number;
+  /** Outline of the object at report time ([lon, lat] ring). */
+  outline: [number, number][] | null;
+  /** 'platform' or the plugin that set it; the plugin's own record id. */
+  source: string;
+  externalRef: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+}
+
+/** POST /city/states — the object is found at lon / lat unless objectId is given. */
+export interface CityObjectStateInput {
+  lon: number;
+  lat: number;
+  state: CityObjectStateKind;
+  severity?: 1 | 2 | 3 | 4;
+  title: string;
+  note?: string;
+  /** Bind to this object instead of the one at the point. */
+  objectId?: string;
+  source?: string;
+  externalRef?: string;
+}
+
+/** PATCH /city/states/:id */
+export interface CityObjectStateUpdate {
+  state?: CityObjectStateKind;
+  severity?: 1 | 2 | 3 | 4;
+  note?: string;
+  /** true: resolved (no longer shown). */
+  resolved?: boolean;
+}
