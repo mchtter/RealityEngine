@@ -1223,3 +1223,31 @@ export interface CityCorrectionInput {
   attrs?: Record<string, unknown>;
   note?: string;
 }
+
+// ─── Search ─────────────────────────────────────────────────────────────────
+
+/** One city object found by GET /city/search. */
+export interface CitySearchHit {
+  /** Canonical entity id (`source: 'city'`) or the source feature ref (`osm:w123`). */
+  ref: string;
+  source: 'city' | 'osm';
+  /** Object class: building, road, address, area, tree, asset, utility_node, poi … */
+  class: string;
+  /** Finer type: the shop / amenity value, building use, asset kind … */
+  kind?: string;
+  /** Primary label (name, else the address, else the class). */
+  name: string;
+  /** Street and door number when known. */
+  address?: string;
+  lon: number;
+  lat: number;
+  /** [west, south, east, north] of the object. */
+  bbox: [number, number, number, number];
+  score: number;
+}
+
+/** GET /city/search?q=&lon=&lat=&limit= */
+export interface CitySearchResponse {
+  query: string;
+  hits: CitySearchHit[];
+}
