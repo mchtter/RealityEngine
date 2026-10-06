@@ -8,6 +8,8 @@
 // Design: docs/architecture/city-data-onboarding.md
 // =============================================================================
 
+import type { CityLocation, CityObjectStateKind, CitySearchHit } from '@opentwin/plugin-sdk';
+
 /** Themes of the canonical city model (one per delivered layer; see CITY_DELIVERY_SPEC). */
 export type CityTheme =
   | 'boundary'
@@ -1226,25 +1228,10 @@ export interface CityCorrectionInput {
 
 // ─── Search ─────────────────────────────────────────────────────────────────
 
-/** One city object found by GET /city/search. */
-export interface CitySearchHit {
-  /** Canonical entity id (`source: 'city'`) or the source feature ref (`osm:w123`). */
-  ref: string;
-  source: 'city' | 'osm';
-  /** Object class: building, road, address, area, tree, asset, utility_node, poi … */
-  class: string;
-  /** Finer type: the shop / amenity value, building use, asset kind … */
-  kind?: string;
-  /** Primary label (name, else the address, else the class). */
-  name: string;
-  /** Street and door number when known. */
-  address?: string;
-  lon: number;
-  lat: number;
-  /** [west, south, east, north] of the object. */
-  bbox: [number, number, number, number];
-  score: number;
-}
+/**
+ * City search hits, located objects and object states are plugin contracts too:
+ * declared once in `@opentwin/plugin-sdk` (types/city.ts), used here.
+ */
 
 /** GET /city/search?q=&lon=&lat=&limit= */
 export interface CitySearchResponse {
@@ -1255,22 +1242,7 @@ export interface CitySearchResponse {
 // ─── Locate ─────────────────────────────────────────────────────────────────
 
 /** GET /city/locate?lon=&lat= — the city object at a point, as the DT draws it. */
-export interface CityLocateResponse {
-  /** building, carriageway, sidewalk, path, prop, utility_node, area — null on open ground. */
-  kind: string | null;
-  /** Stable object id: canonical entity id, else source ref; street segments `<road>:<C|L|R>:<n>`. */
-  id?: string;
-  type?: string;
-  /** The road of a street segment. */
-  parent?: string;
-  name?: string;
-  /** Street segment: metres along the road. */
-  range?: [number, number];
-  /** Outline to highlight ([lon, lat] ring). */
-  outline?: [number, number][];
-  /** DT tile the answer comes from. */
-  tile: string | null;
-}
+export type CityLocateResponse = CityLocation;
 
 // ─── Object states ──────────────────────────────────────────────────────────
 
@@ -1281,52 +1253,4 @@ export const CITY_OBJECT_STATES = [
   'closed',
   'under_repair',
   'inspected',
-] as const;
-export type CityObjectStateKind = (typeof CITY_OBJECT_STATES)[number];
-
-/** A state on a city object or a place (city_object_states). */
-export interface CityObjectState {
-  id: string;
-  /** Stable object id (entity id, source ref or street segment); null: a bare place. */
-  objectId: string | null;
-  objectKind: string | null;
-  objectName: string | null;
-  state: CityObjectStateKind;
-  /** 1 low … 4 urgent. */
-  severity: 1 | 2 | 3 | 4;
-  title: string;
-  note: string | null;
-  lon: number;
-  lat: number;
-  /** Outline of the object at report time ([lon, lat] ring). */
-  outline: [number, number][] | null;
-  /** 'platform' or the plugin that set it; the plugin's own record id. */
-  source: string;
-  externalRef: string | null;
-  createdAt: string;
-  updatedAt: string;
-  resolvedAt: string | null;
-}
-
-/** POST /city/states — the object is found at lon / lat unless objectId is given. */
-export interface CityObjectStateInput {
-  lon: number;
-  lat: number;
-  state: CityObjectStateKind;
-  severity?: 1 | 2 | 3 | 4;
-  title: string;
-  note?: string;
-  /** Bind to this object instead of the one at the point. */
-  objectId?: string;
-  source?: string;
-  externalRef?: string;
-}
-
-/** PATCH /city/states/:id */
-export interface CityObjectStateUpdate {
-  state?: CityObjectStateKind;
-  severity?: 1 | 2 | 3 | 4;
-  note?: string;
-  /** true: resolved (no longer shown). */
-  resolved?: boolean;
-}
+] as const satisfies readonly CityObjectStateKind[];
