@@ -1241,6 +1241,34 @@ export interface CitySearchResponse {
 
 // ─── Locate ─────────────────────────────────────────────────────────────────
 
+/** The current record of a city object (GET /city/entities/:id → `current`). */
+export interface CityEntityCurrent {
+  entityId: string;
+  theme: CityTheme;
+  sourceId: string;
+  /** Name of the source (institution's layer / table). */
+  sourceName: string | null;
+  /** The source's layer when the source is a map layer: the viewer shows and selects in it. */
+  layerId: string | null;
+  /** The object's key in its source. */
+  sourceRef: string;
+  /** GeoJSON geometry (WGS84). */
+  geometry: { type: string; coordinates: unknown };
+  attrs: Record<string, unknown>;
+  /** The object's fields as the source has them. */
+  sourceAttrs: Record<string, unknown>;
+  qualityFlags: string[];
+  validFrom: string;
+}
+
+/** GET /city/entities/:id */
+export interface CityEntityDetail {
+  current: CityEntityCurrent | null;
+  versions: unknown[];
+  identifiers: { scheme: string; value: string }[];
+  corrections: unknown[];
+}
+
 /** GET /city/locate?lon=&lat= — the city object at a point, as the DT draws it. */
 export type CityLocateResponse = CityLocation;
 
