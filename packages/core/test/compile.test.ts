@@ -780,14 +780,23 @@ describe('simplifyRing', () => {
 
 const FIXTURE = resolve(__dirname, 'fixtures/zonguldak-merkez.json');
 
+let fixtureModel: ReturnType<typeof compileCity> | null = null;
+/**
+ * The Zonguldak fixture compiled once for the file: a compile takes 30–70 s on
+ * CI, and five tests used to repeat it (one ran past its time limit there).
+ * Tests only read the model.
+ */
+const compiledFixture = () =>
+  (fixtureModel ??= compileCity(JSON.parse(readFileSync(FIXTURE, 'utf8')) as CitySource));
+
 describe.skipIf(!existsSync(FIXTURE))('Zonguldak fixture', () => {
   it('keeps street layers off the carriageway (no sidewalk over a road)', () => {
-    const m = compileCity(JSON.parse(readFileSync(FIXTURE, 'utf8')) as CitySource);
+    const m = compiledFixture();
     expect(validateCity(m).counts['surface.over-carriageway'] ?? 0).toBe(0);
-  }, 60_000);
+  }, 180_000);
 
   it('keeps synthetic buildings off roads and observed buildings', () => {
-    const m = compileCity(JSON.parse(readFileSync(FIXTURE, 'utf8')) as CitySource);
+    const m = compiledFixture();
     // Bounding-box prefilter: checking each building against the whole network is quadratic.
     type Boxed = { poly: Polygon; box: [number, number, number, number] };
     const boxOf = (p: Polygon): [number, number, number, number] => [
@@ -822,10 +831,10 @@ describe.skipIf(!existsSync(FIXTURE))('Zonguldak fixture', () => {
       });
     expect(bad.map((b) => b.id)).toEqual([]);
     expect(m.stats.buildingsObserved).toBeGreaterThan(200);
-  }, 60_000);
+  }, 180_000);
 
   it('lets no ground prop intersect a building or another generated prop', () => {
-    const m = compileCity(JSON.parse(readFileSync(FIXTURE, 'utf8')) as CitySource);
+    const m = compiledFixture();
     const ground = m.props.filter((p) => !p.buildingId && PROP_RADIUS[p.kind] > 0);
     const radius = (p: (typeof ground)[number]) => PROP_RADIUS[p.kind] * p.scale;
     // Brute-force distance to footprints (bounding-box prefilter only).
@@ -871,7 +880,7 @@ describe.skipIf(!existsSync(FIXTURE))('Zonguldak fixture', () => {
     }
     expect(overlapping).toEqual([]);
     expect(m.stats.propsShrunk + m.stats.propsDropped).toBeGreaterThan(0);
-  }, 120_000);
+  }, 180_000);
 
   it('lays out a surface car park: stall lines, cars inside, a booth at the entrance', () => {
     const lot: [number, number][] = [
@@ -993,7 +1002,7 @@ describe.skipIf(!existsSync(FIXTURE))('Zonguldak fixture', () => {
   });
 
   it('builds car parks, garden walls, hard ground and public facades from the data', () => {
-    const m = compileCity(JSON.parse(readFileSync(FIXTURE, 'utf8')) as CitySource);
+    const m = compiledFixture();
     // Public buildings (schools, offices …) have no balconies.
     const pub = m.buildings.filter((b) => b.use === 'public');
     expect(pub.length).toBeGreaterThan(0);
@@ -1022,10 +1031,10 @@ describe.skipIf(!existsSync(FIXTURE))('Zonguldak fixture', () => {
     // Dense blocks get hard ground.
     const concrete = m.surfaces.find((sf) => sf.kind === 'concrete');
     expect(totalArea(concrete?.polygons ?? [])).toBeGreaterThan(1000);
-  }, 60_000);
+  }, 180_000);
 
   it('places no street furniture on a carriageway and no park tree in a street', () => {
-    const m = compileCity(JSON.parse(readFileSync(FIXTURE, 'utf8')) as CitySource);
+    const m = compiledFixture();
     // Signed distance of a point to a road band (negative = inside), brute force.
     const segs = m.roads
       .filter((r) => r.grade === 'ground')
@@ -1050,5 +1059,5 @@ describe.skipIf(!existsSync(FIXTURE))('Zonguldak fixture', () => {
       inside([p.position[0], p.position[1]], (r) => r.width / 2 + r.sidewalk),
     );
     expect(inStreet.map((p) => p.id)).toEqual([]);
-  }, 60_000);
+  }, 180_000);
 });
