@@ -1,6 +1,7 @@
-import { isParcelKeyColumn, normalizeJoinKey } from '@opentwin/shared';
+import { normalizeJoinKey } from '@opentwin/shared';
 import * as THREE from 'three/webgpu';
-import type { BuildingInfo } from './engine/tile-payload';
+import type { ScenarioPaintOf } from './engine/DtEngine';
+import { buildingJoinValue } from '@/lib/scenario/building-join';
 import type { ResolvedOverlay } from '@/store/scenario.store';
 
 /**
@@ -21,47 +22,48 @@ export function overlayKeyColors(expression: unknown): Map<string, THREE.Color> 
   return out;
 }
 
+/** Stable id of a resolved overlay (scenario + base layer). */
+export const overlayId = (o: Pick<ResolvedOverlay, 'scenarioId' | 'layerId'>) =>
+  `${o.scenarioId}:${o.layerId}`;
+
 /**
- * Colour lookup for DT buildings from the visible scenario overlays. The
- * overlay's join property decides which building identity it is compared to:
+ * Scenario paint for DT buildings from the visible scenario overlays — the
+ * same buildings and colours as the 2D map. The overlay's join property
+ * decides which building identity it is compared to:
  *  - a parcel key (tapukimlik, parselKodu …) → the building's canonical
  *    parcel id, so parcel scenarios paint the buildings standing on the parcel;
  *  - anything else → the building's source column of that name (KIMLIKNO,
  *    case-insensitive) or, when it has no such column, its source id.
+ * With an area filter, only keys inside the selected areas paint (as in 2D).
  * The first overlay that matches wins. Null when no overlay is visible.
  */
 export function scenarioColorOf(
   overlays: ResolvedOverlay[],
-): ((b: BuildingInfo) => THREE.Color | null) | null {
+  areaKeys?: Record<string, string[]> | null,
+): ScenarioPaintOf | null {
   const active = overlays
     .filter((o) => o.visible && o.layerKey)
-    .map((o) => ({
-      key: o.layerKey!.toLowerCase(),
-      parcel: isParcelKeyColumn(o.layerKey!),
-      colors: overlayKeyColors(o.expression),
-    }))
+    .map((o) => {
+      const inArea = areaKeys?.[o.layerId];
+      return {
+        id: overlayId(o),
+        layerKey: o.layerKey!,
+        colors: overlayKeyColors(o.expression),
+        inArea: inArea ? new Set(inArea.map((k) => normalizeJoinKey(k))) : null,
+      };
+    })
     .filter((o) => o.colors.size > 0);
   if (!active.length) return null;
+  const paint = (o: (typeof active)[number], raw: string | undefined) => {
+    if (raw === undefined) return null;
+    const key = normalizeJoinKey(raw);
+    if (o.inArea && !o.inArea.has(key)) return null;
+    const color = o.colors.get(key);
+    return color ? { color, key, overlay: o.id } : null;
+  };
   return (b) => {
     for (const o of active) {
-      if (o.parcel) {
-        const hit = b.parcelRef ? o.colors.get(normalizeJoinKey(b.parcelRef)) : undefined;
-        if (hit) return hit;
-        continue;
-      }
-      let value: string | undefined;
-      if (b.attrs) {
-        for (const [k, v] of Object.entries(b.attrs)) {
-          if (k.toLowerCase() === o.key) {
-            value = v;
-            break;
-          }
-        }
-      }
-      // Source id ("maks:4711" → "4711") only when the building has no such
-      // column: two different numbering schemes must not match by coincidence.
-      const key = value ?? b.ref?.split(':').slice(1).join(':');
-      const hit = key === undefined ? undefined : o.colors.get(normalizeJoinKey(key));
+      const hit = paint(o, buildingJoinValue(b, o.layerKey));
       if (hit) return hit;
     }
     return null;

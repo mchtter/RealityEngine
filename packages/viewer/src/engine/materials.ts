@@ -76,6 +76,8 @@ export const BUILDING_SLOT = 'bslot';
 /** Scenario colour texture: one RGBA texel per building slot (alpha 255 = data colour). */
 export const SCENARIO_TEXTURE_WIDTH = 1024;
 export const SCENARIO_TEXTURE_HEIGHT = 256;
+/** Alpha of a building's scenario texel — its scenario / selection state (read by the shell shaders). */
+export const SCENARIO_ALPHA = { none: 0, selected: 64, dataSelected: 192, data: 255 } as const;
 
 const instancedVariants = new WeakMap<THREE.Material, Map<boolean, THREE.Material>>();
 
@@ -257,31 +259,57 @@ export function createMaterials(): DtMaterials {
   scenario.minFilter = THREE.NearestFilter;
   scenario.needsUpdate = true;
   /** Saturation kept by buildings without scenario data (1 = their own colours). */
-  const SCENARIO_REST_SATURATION = 0.2;
-  /** How far buildings without scenario data are lifted towards white. */
-  const SCENARIO_REST_LIGHTEN = 0.4;
+  const SCENARIO_REST_SATURATION = 0.08;
+  /** How far buildings without scenario data are lifted towards white (a clay model). */
+  const SCENARIO_REST_LIGHTEN = 0.62;
+  /** Glow of buildings with scenario data, so they read at city scale. */
+  const SCENARIO_GLOW = 0.32;
+  /** Colour of the selected building's glow (a pulse of light, not a category colour). */
+  const SELECTED_GLOW = vec3(0.55, 0.85, 1.0);
   /**
-   * Replaces a shell colour with the building's scenario colour while a
-   * scenario is on. Matched buildings (alpha 1) take the data colour, with the
-   * original's light / dark pattern showing through; the rest keep their own
-   * texture and colour, washed out (20 % saturation) and lifted towards white.
+   * A building's texel in the scenario texture. Alpha carries its state:
+   * 255 scenario data, 192 data + selected, 64 selected only, 0 nothing
+   * (see SCENARIO_ALPHA).
    */
-  const scenarioTint = (original: ReturnType<typeof vec3>) => {
+  const scenarioTexel = () => {
     const slot = attribute<'float'>(BUILDING_SLOT, 'float');
-    const texel = vertexStage(
+    return vertexStage(
       textureLoad(
         scenario,
         ivec2(int(slot.mod(SCENARIO_TEXTURE_WIDTH)), int(floor(slot.div(SCENARIO_TEXTURE_WIDTH)))),
       ),
     );
+  };
+  const hasData = (a: ReturnType<typeof float>) => step(0.6, a);
+  const isSelected = (a: ReturnType<typeof float>) => step(0.15, a).mul(oneMinus(step(0.9, a)));
+  /**
+   * Replaces a shell colour with the building's scenario colour while a
+   * scenario is on. Matched buildings take the data colour, lightly shaded so
+   * the form still reads; the rest turn into a pale clay model (8 %
+   * saturation, lifted towards white) so the data stands out.
+   */
+  const scenarioTint = (original: ReturnType<typeof vec3>) => {
+    const texel = scenarioTexel();
     const lum = luminance(original);
-    const painted = texel.rgb.mul(lum.mul(0.9).add(0.55));
+    const painted = texel.rgb.mul(lum.mul(0.35).add(0.78));
     const rest = mix(
       mix(vec3(lum), original, SCENARIO_REST_SATURATION),
       vec3(1),
       SCENARIO_REST_LIGHTEN,
     );
-    return mix(original, mix(rest, painted, step(0.5, texel.a)), scenarioOn);
+    return mix(original, mix(rest, painted, hasData(texel.a)), scenarioOn);
+  };
+  /** Emissive of a shell: scenario colours glow softly, the selected building strongly. */
+  const scenarioGlow = () => {
+    const texel = scenarioTexel();
+    return (
+      texel.rgb
+        .mul(hasData(texel.a))
+        .mul(scenarioOn)
+        .mul(SCENARIO_GLOW)
+        // The selection pulses, so it never reads as a data colour.
+        .add(SELECTED_GLOW.mul(isSelected(texel.a)).mul(sin(time.mul(3.2)).mul(0.28).add(0.5)))
+    );
   };
 
   // ─── Walls ────────────────────────────────────────────────────────────────
@@ -393,11 +421,13 @@ export function createMaterials(): DtMaterials {
       .mul(night)
       .mul(step(0.62, lightId))
       .mul(win)
-      .mul(hash(lightId.mul(9.1)).mul(0.45).add(0.2));
+      .mul(hash(lightId.mul(9.1)).mul(0.45).add(0.2))
+      .add(scenarioGlow().mul(oneMinus(win)));
   }
 
   const trim = new THREE.MeshStandardNodeMaterial({ roughness: 0.8, metalness: 0 });
   trim.colorNode = scenarioTint(vertexColor().rgb);
+  trim.emissiveNode = scenarioGlow();
 
   // ─── Windows ──────────────────────────────────────────────────────────────
   const curtainTone = hash(instanceIndex.add(11));
@@ -500,11 +530,13 @@ export function createMaterials(): DtMaterials {
     roofTile.colorNode = scenarioTint(
       vertexColor().rgb.mul(vec3(tileShade.mul(tileTone).add(moss))),
     );
+    roofTile.emissiveNode = scenarioGlow();
   }
   const roofFlat = new THREE.MeshStandardNodeMaterial({ roughness: 0.95, metalness: 0 });
   roofFlat.colorNode = scenarioTint(
     vertexColor().rgb.mul(float(0.92).add(mx_noise_float(positionWorld.mul(2.5)).mul(0.08))),
   );
+  roofFlat.emissiveNode = scenarioGlow();
 
   // ─── Balconies ────────────────────────────────────────────────────────────
   const railGlass = new THREE.MeshStandardNodeMaterial({

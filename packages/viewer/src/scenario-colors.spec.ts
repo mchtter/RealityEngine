@@ -37,21 +37,39 @@ describe('overlayKeyColors', () => {
 describe('scenarioColorOf', () => {
   it('matches the join column case-insensitively, with numeric keys normalised', () => {
     const colorOf = scenarioColorOf([overlay()])!;
-    expect(colorOf(building({ attrs: { kimlikno: '1002.0' } }))!.getHexString()).toBe('00ff00');
+    expect(colorOf(building({ attrs: { kimlikno: '1002.0' } }))!.color.getHexString()).toBe(
+      '00ff00',
+    );
     expect(colorOf(building({ attrs: { KIMLIKNO: '9999' } }))).toBeNull();
   });
 
   it('falls back to the source id only when the building lacks the join column', () => {
     const colorOf = scenarioColorOf([overlay()])!;
-    expect(colorOf(building({ ref: 'maks:1001' }))!.getHexString()).toBe('ff0000');
+    expect(colorOf(building({ ref: 'maks:1001' }))!.color.getHexString()).toBe('ff0000');
     // Another numbering scheme must not match by coincidence.
     expect(colorOf(building({ ref: 'maks:1001', attrs: { KIMLIKNO: '5' } }))).toBeNull();
   });
 
   it('matches parcel-keyed overlays on the canonical parcel id, never on the building id', () => {
     const colorOf = scenarioColorOf([overlay({ layerKey: 'tapukimlik' })])!;
-    expect(colorOf(building({ parcelRef: '1001' }))!.getHexString()).toBe('ff0000');
+    expect(colorOf(building({ parcelRef: '1001' }))!.color.getHexString()).toBe('ff0000');
     expect(colorOf(building({ ref: 'maks:1002', attrs: { kimlikno: '1002' } }))).toBeNull();
+  });
+
+  it('reports the matched key and the overlay that painted, for the legend counts', () => {
+    const paint = scenarioColorOf([overlay()])!(building({ attrs: { KIMLIKNO: '1002' } }))!;
+    expect(paint.key).toBe('1002');
+    expect(paint.overlay).toBe('s:l');
+  });
+
+  it('paints only keys inside the selected areas when an area filter is on (as in 2D)', () => {
+    const colorOf = scenarioColorOf([overlay()], { l: ['1001.0'] })!;
+    expect(colorOf(building({ attrs: { KIMLIKNO: '1001' } }))!.color.getHexString()).toBe('ff0000');
+    expect(colorOf(building({ attrs: { KIMLIKNO: '1002' } }))).toBeNull();
+    // Another base layer's filter does not narrow this overlay.
+    expect(
+      scenarioColorOf([overlay()], { other: ['1001'] })!(building({ attrs: { KIMLIKNO: '1002' } })),
+    ).not.toBeNull();
   });
 
   it('is off when no overlay is visible', () => {

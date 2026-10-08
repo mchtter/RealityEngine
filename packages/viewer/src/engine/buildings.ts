@@ -1034,7 +1034,12 @@ export function buildBuildingLayer(
 
   return {
     group,
-    pickables: [{ mesh: wallMesh, owners: walls.triangleOwner }],
+    // Walls and roofs: a building is picked from the street and from above.
+    pickables: [
+      { mesh: wallMesh, owners: walls.triangleOwner },
+      ...(nonEmpty(tiles) ? [{ mesh: tileMesh, owners: tiles.triangleOwner }] : []),
+      ...(nonEmpty(flats) ? [{ mesh: flatMesh, owners: flats.triangleOwner }] : []),
+    ],
     buildings,
     details: [...detailCells.values()].flat(),
     detailCells,

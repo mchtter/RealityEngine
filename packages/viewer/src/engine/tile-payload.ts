@@ -54,8 +54,12 @@ export interface MeshPayload {
   pick: { ids: string[]; owners: Int32Array } | null;
 }
 
-/** The part of a building the UI needs (card, fixes) — not its geometry. */
-export type BuildingInfo = Pick<
+/** The part of a building the UI needs (card, fixes, focus) — not its geometry. */
+export type BuildingInfo = BuildingFacts & {
+  /** Footprint box in tile-local metres [minX, minY, maxX, maxY] (camera focus, lists). */
+  box: [number, number, number, number];
+};
+type BuildingFacts = Pick<
   Building,
   | 'id'
   | 'source'
@@ -118,6 +122,20 @@ export const isEmptyTile = (model: CityModel) =>
   !model.props.length &&
   !model.utilities?.length;
 
+function footprintBox(ring: [number, number][]): [number, number, number, number] {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [x, y] of ring) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return [minX, minY, maxX, maxY];
+}
+
 export function summarize(model: CityModel): TileSummary {
   return {
     name: model.name,
@@ -151,6 +169,7 @@ export function summarize(model: CityModel): TileSummary {
       floorZ: b.floorZ,
       shopfront: b.shopfront,
       fixIds: b.fixIds,
+      box: footprintBox(b.footprint.outer),
     })),
   };
 }

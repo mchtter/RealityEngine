@@ -30,6 +30,7 @@ import { CityTile, type DtInspect, type TileLevel } from './city-tile';
 import { toThree } from './geom';
 import {
   type DtMaterials,
+  SCENARIO_ALPHA,
   SCENARIO_TEXTURE_HEIGHT,
   SCENARIO_TEXTURE_WIDTH,
   createMaterials,
@@ -38,6 +39,74 @@ import {
 import { SlotAllocator } from './slot-allocator';
 import { type BuildingInfo, type TilePayload, type TileSummary, instancesOf } from './tile-payload';
 import { VehicleLayer, type VehicleState } from './vehicles';
+
+/** A building's scenario colour, the scenario key (join value) it matched and the overlay that painted it. */
+export interface ScenarioPaint {
+  color: THREE.Color;
+  key: string;
+  overlay: string;
+}
+export type ScenarioPaintOf = (b: BuildingInfo) => ScenarioPaint | null;
+
+/** Buildings painted / loaded, and the distinct scenario keys found among them (`overlay|key`). */
+export interface ScenarioSummary {
+  matched: number;
+  total: number;
+  keys: Set<string>;
+}
+
+/** Distinct keys found per overlay in a summary. */
+export function keysPerOverlay(summary: ScenarioSummary): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const k of summary.keys) {
+    const overlay = k.slice(0, k.indexOf('|'));
+    out[overlay] = (out[overlay] ?? 0) + 1;
+  }
+  return out;
+}
+type TileScenarioCount = ScenarioSummary;
+
+/** A building's source identity: shared by its split parts and its copies in neighbouring tiles. */
+export const buildingKey = (b: BuildingInfo): string =>
+  b.ref ?? (b.osmId !== undefined ? String(b.osmId) : b.id.replace(/-\d+$/, ''));
+
+/** [west, south, east, north] in degrees. */
+export type DtBox = [number, number, number, number];
+
+/** A building painted by the active scenario. */
+export interface ScenarioBuilding {
+  /** Source identity (buildingKey). */
+  id: string;
+  info: BuildingInfo;
+  paint: ScenarioPaint;
+  box: DtBox;
+}
+
+const unionBox = (a: DtBox, b: DtBox): DtBox => [
+  Math.min(a[0], b[0]),
+  Math.min(a[1], b[1]),
+  Math.max(a[2], b[2]),
+  Math.max(a[3], b[3]),
+];
+
+/** A focused building is framed at least this wide (degrees, ~90 m). */
+const FOCUS_MIN_SPAN = 0.0009;
+
+/** A box grown to at least `span` degrees around its centre. */
+export const padBox = ([w, s, e, n]: DtBox, span: number): DtBox => {
+  const dx = Math.max(0, (span - (e - w)) / 2);
+  const dy = Math.max(0, (span - (n - s)) / 2);
+  return [w - dx, s - dy, e + dx, n + dy];
+};
+
+const alphaOf = (data: boolean, selected: boolean): number =>
+  data
+    ? selected
+      ? SCENARIO_ALPHA.dataSelected
+      : SCENARIO_ALPHA.data
+    : selected
+      ? SCENARIO_ALPHA.selected
+      : SCENARIO_ALPHA.none;
 
 export type DtViewMode = 'showcase' | 'data';
 export type DtQuality = 'high' | 'medium' | 'low';
@@ -141,9 +210,13 @@ export class DtEngine {
     SCENARIO_TEXTURE_WIDTH * SCENARIO_TEXTURE_HEIGHT,
   );
   /** Colour of a building under the active scenario (null: no data); null = no scenario. */
-  private scenarioColor: ((b: BuildingInfo) => THREE.Color | null) | null = null;
+  private scenarioColor: ScenarioPaintOf | null = null;
+  /** The selected building (its source identity, shared by its split parts and tile copies). */
+  private selectedKey: string | null = null;
   /** Matched / total buildings per tile under the active scenario. */
-  private readonly scenarioCounts = new Map<string, { matched: number; total: number }>();
+  private readonly scenarioCounts = new Map<string, TileScenarioCount>();
+  /** Painted buildings of each loaded tile (scenario lists / navigation). */
+  private readonly scenarioHits = new Map<string, { info: BuildingInfo; paint: ScenarioPaint }[]>();
   /** Geo camera requested before the first tile fixed the world frame. */
   private pendingView: GeoView | null = null;
   private readonly resize: ResizeObserver;
@@ -398,7 +471,12 @@ export class DtEngine {
       },
       level,
     );
-    if (this.scenarioColor) this.scenarioCounts.set(key, this.paintScenario(tile));
+    // Always written: a reused slot must not keep a previous building's colour / selection.
+    const painted = this.paintScenario(tile);
+    if (this.scenarioColor) {
+      this.scenarioCounts.set(key, painted);
+      this.scenarioHits.set(key, painted.hits);
+    }
     if (this.mode !== 'showcase') tile.setMode(this.mode);
     if (this.showFixes) tile.setShowFixes(true);
     if (this.underground.size) tile.setUnderground(this.underground);
@@ -490,6 +568,7 @@ export class DtEngine {
     tile.dispose();
     this.tiles.delete(key);
     this.scenarioCounts.delete(key);
+    this.scenarioHits.delete(key);
     this.emitUtilities();
   }
 
@@ -718,61 +797,160 @@ export class DtEngine {
   }
 
   /**
-   * Colours building shells by a scenario: `colorOf` returns the building's
-   * data colour, or null when the scenario has no value for it (soft grey).
-   * Null switches scenario colouring off. Returns matched / total buildings.
+   * Colours building shells by a scenario: `paintOf` returns the building's
+   * data colour and the scenario key it matched, or null when the scenario has
+   * no value for it (pale clay). Null switches scenario colouring off.
    */
-  setScenario(colorOf: ((b: BuildingInfo) => THREE.Color | null) | null): {
-    matched: number;
-    total: number;
-  } {
-    this.scenarioColor = colorOf;
-    this.mats.scenarioOn.value = colorOf ? 1 : 0;
+  setScenario(paintOf: ScenarioPaintOf | null): ScenarioSummary {
+    this.scenarioColor = paintOf;
+    this.mats.scenarioOn.value = paintOf ? 1 : 0;
     this.scenarioCounts.clear();
-    if (colorOf) {
-      for (const [key, tile] of this.tiles) this.scenarioCounts.set(key, this.paintScenario(tile));
+    this.scenarioHits.clear();
+    for (const [key, tile] of this.tiles) {
+      const c = this.paintScenario(tile);
+      if (paintOf) {
+        this.scenarioCounts.set(key, c);
+        this.scenarioHits.set(key, c.hits);
+      }
     }
     return this.scenarioSummary();
   }
 
-  /** Matched / total buildings of the loaded tiles under the active scenario. */
-  scenarioSummary(): { matched: number; total: number } {
+  /** Buildings and scenario keys matched in the loaded tiles under the active scenario. */
+  scenarioSummary(): ScenarioSummary {
     let matched = 0;
     let total = 0;
+    const keys = new Set<string>();
     for (const c of this.scenarioCounts.values()) {
       matched += c.matched;
       total += c.total;
+      for (const k of c.keys) keys.add(k);
     }
-    return { matched, total };
+    return { matched, total, keys };
   }
 
-  /** Writes a tile's building colours into the scenario texture. */
-  private paintScenario(tile: CityTile): { matched: number; total: number } {
-    const colorOf = this.scenarioColor;
+  /**
+   * Marks the selected building (glow on its shells, all of its parts); null
+   * clears it. Works with or without a scenario.
+   */
+  setSelectedBuilding(building: BuildingInfo | null): void {
+    const key = building ? buildingKey(building) : null;
+    if (key === this.selectedKey) return;
+    this.selectedKey = key;
     const data = this.mats.scenario.image.data as Uint8Array;
-    let matched = 0;
-    let total = 0;
-    for (const layer of ['obs', 'syn'] as const) {
-      const base = tile.slotBases[layer];
-      if (base === null) continue;
-      tile.slots[layer].forEach((id, i) => {
-        const info = tile.building(id);
-        const c = info && colorOf ? colorOf(info) : null;
-        const k = (base + i) * 4;
-        total++;
-        if (c) {
-          matched++;
-          data[k] = Math.round(c.r * 255);
-          data[k + 1] = Math.round(c.g * 255);
-          data[k + 2] = Math.round(c.b * 255);
-          data[k + 3] = 255;
-        } else {
-          data[k] = data[k + 1] = data[k + 2] = data[k + 3] = 0;
-        }
+    for (const tile of this.tiles.values()) {
+      this.eachSlot(tile, (info, k) => {
+        const hasData = data[k + 3] >= 128;
+        const sel = key !== null && !!info && buildingKey(info) === key;
+        data[k + 3] = alphaOf(hasData, sel);
       });
     }
     this.mats.scenario.needsUpdate = true;
-    return { matched, total };
+  }
+
+  private eachSlot(tile: CityTile, fn: (info: BuildingInfo | undefined, texel: number) => void) {
+    for (const layer of ['obs', 'syn'] as const) {
+      const base = tile.slotBases[layer];
+      if (base === null) continue;
+      tile.slots[layer].forEach((id, i) => fn(tile.building(id), (base + i) * 4));
+    }
+  }
+
+  /** Writes a tile's building colours (and the selection) into the scenario texture. */
+  private paintScenario(tile: CityTile): TileScenarioCount & {
+    hits: { info: BuildingInfo; paint: ScenarioPaint }[];
+  } {
+    const paintOf = this.scenarioColor;
+    const data = this.mats.scenario.image.data as Uint8Array;
+    let matched = 0;
+    let total = 0;
+    const keys = new Set<string>();
+    const hits: { info: BuildingInfo; paint: ScenarioPaint }[] = [];
+    this.eachSlot(tile, (info, k) => {
+      const paint = info && paintOf ? paintOf(info) : null;
+      const sel = this.selectedKey !== null && !!info && buildingKey(info) === this.selectedKey;
+      total++;
+      if (paint) {
+        matched++;
+        keys.add(`${paint.overlay}|${paint.key}`);
+        if (info) hits.push({ info, paint });
+        data[k] = Math.round(paint.color.r * 255);
+        data[k + 1] = Math.round(paint.color.g * 255);
+        data[k + 2] = Math.round(paint.color.b * 255);
+      } else {
+        data[k] = data[k + 1] = data[k + 2] = 0;
+      }
+      data[k + 3] = alphaOf(!!paint, sel);
+    });
+    this.mats.scenario.needsUpdate = true;
+    return { matched, total, keys, hits };
+  }
+
+  /** Lon / lat box of a tile-local box. */
+  private lonLatBox(tile: CityTile, [x0, y0, x1, y1]: BuildingInfo['box']): DtBox | null {
+    if (!this.world) return null;
+    const [ox, oy] = this.offsetOf(tile.summary);
+    const a = utmInverse(
+      this.world.originE + ox + x0,
+      this.world.originN + oy + y0,
+      this.world.zone,
+    );
+    const b = utmInverse(
+      this.world.originE + ox + x1,
+      this.world.originN + oy + y1,
+      this.world.zone,
+    );
+    return [a.lon, a.lat, b.lon, b.lat];
+  }
+
+  /**
+   * The buildings the active scenario painted in the loaded tiles, one entry
+   * per source building (its split parts and copies in neighbouring tiles
+   * merged): identity, the scenario key / colour, and its lon / lat box.
+   */
+  scenarioBuildings(): ScenarioBuilding[] {
+    const out = new Map<string, ScenarioBuilding>();
+    for (const [tileKey, hits] of this.scenarioHits) {
+      const tile = this.tiles.get(tileKey);
+      if (!tile) continue;
+      for (const { info, paint } of hits) {
+        const box = this.lonLatBox(tile, info.box);
+        if (!box) continue;
+        const id = buildingKey(info);
+        const prev = out.get(id);
+        if (prev) prev.box = unionBox(prev.box, box);
+        else out.set(id, { id, info, paint, box });
+      }
+    }
+    return [...out.values()];
+  }
+
+  /**
+   * Lon / lat box of a building — all of its parts in every loaded tile —
+   * or null when it is not loaded.
+   */
+  buildingBox(building: BuildingInfo): DtBox | null {
+    const key = buildingKey(building);
+    let box: DtBox | null = null;
+    for (const tile of this.tiles.values()) {
+      for (const layer of ['obs', 'syn'] as const) {
+        for (const id of tile.slots[layer]) {
+          const info = tile.building(id);
+          if (!info || buildingKey(info) !== key) continue;
+          const b = this.lonLatBox(tile, info.box);
+          if (b) box = box ? unionBox(box, b) : b;
+        }
+      }
+    }
+    return box;
+  }
+
+  /** Flies to a building, framed with some of its surroundings. */
+  focusBuilding(building: BuildingInfo): boolean {
+    const box = this.buildingBox(building) ?? null;
+    if (!box) return false;
+    this.flyToBounds(padBox(box, FOCUS_MIN_SPAN));
+    return true;
   }
 
   private showFixes = false;
