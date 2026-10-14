@@ -899,6 +899,17 @@ function canopy(
     );
   }
   // Underside (lit from below by the sky, seen from the street).
+  soffit(b, under, slabColor, flats, owner);
+}
+
+/** The footprint as a face pointing down at height `under` (a slab's underside). */
+function soffit(
+  b: Building,
+  under: number,
+  slabColor: THREE.Color,
+  flats: MeshBuilder,
+  owner: number,
+): void {
   const { vertices, indices } = triangulate(b.footprint);
   const base = flats.vertexCount;
   for (let k = 0; k < vertices.length; k += 2)
@@ -1049,7 +1060,8 @@ export function buildBuildingLayer(
     const flat = b.roof.shape === 'flat';
     const wallTop = b.topZ + (flat ? b.roof.parapet : 0);
     const groundTop = b.floorZ + b.groundFloorHeight;
-    const bottom = b.baseZ - 0.6;
+    // A hall raised over tracks starts at its underside (it stands on columns).
+    const bottom = b.underside ?? b.baseZ - 0.6;
     const plinthFinish =
       b.archetype === 'mustakil' || b.archetype === 'eski' ? FINISH.stone : FINISH.plaster;
     // Public buildings: the ground floor in its own colour (palette.band), below a band.
@@ -1695,6 +1707,11 @@ export function buildBuildingLayer(
     if (b.form === 'mosque' || b.form === 'church')
       landmarks(b, ring, wallTop, wallColor, roofColor, walls, flats, tiles, owner);
     if (b.form === 'box') mallFront(b, ring, wallTop, walls, owner);
+    if (b.underside !== undefined) {
+      soffit(b, b.underside, baseColor, flats, owner);
+      for (const [cx, cy] of b.columns ?? [])
+        prism(walls, cx, cy, 0.45, 8, b.baseZ, b.underside, col('#b7b4ad'), owner);
+    }
     if (b.form === 'minaret' || b.form === 'telecom' || b.form === 'clock' || b.form === 'tower')
       towerTop(b, ring, wallTop, wallColor, walls, flats, owner);
     farWalls.appendFrom(walls, ...roofWallsFrom);

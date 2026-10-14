@@ -91,8 +91,30 @@ export function buildRails(model: CityModel, mats: DtMaterials): THREE.Group | n
   // On the street surface where a line runs in a street (a tram), which lies
   // above the raw terrain in town; on the ground (or a trench floor) elsewhere.
   const streets = new GroundModel(model);
-  const h = (x: number, y: number) =>
+  const groundAt = (x: number, y: number) =>
     ground.inTrench(x, y) || ground.inLid(x, y) ? ground.heightAt(x, y) : streets.streetAt(x, y);
+  // A line on a bridge rides its deck: heights from its profile (deck top),
+  // interpolated along the line at the nearest point.
+  let deckAt: ((x: number, y: number) => number) | null = null;
+  const h = (x: number, y: number) => (deckAt ? deckAt(x, y) : groundAt(x, y));
+  const profileHeights = (pts: P2[], zs: number[]) => (x: number, y: number) => {
+    let best = Infinity;
+    let z = zs[0];
+    for (let k = 1; k < pts.length; k++) {
+      const a = pts[k - 1];
+      const b = pts[k];
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const l = dx * dx + dy * dy || 1;
+      const t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / l));
+      const d = Math.hypot(a[0] + dx * t - x, a[1] + dy * t - y);
+      if (d < best) {
+        best = d;
+        z = zs[k - 1] + (zs[k] - zs[k - 1]) * t;
+      }
+    }
+    return z;
+  };
   const bed = new MeshBuilder();
   bed.defineAttribute('rb', 1);
   const ties = new MeshBuilder();
@@ -227,6 +249,10 @@ export function buildRails(model: CityModel, mats: DtMaterials): THREE.Group | n
   };
 
   for (const r of rails) {
+    // A line on a bridge without its deck (none built) is left out: laid on
+    // the ground it would run through the road beneath.
+    if (r.grade === 'bridge' && !r.profile) continue;
+    deckAt = r.grade === 'bridge' && r.profile ? profileHeights(r.points as P2[], r.profile) : null;
     const label =
       r.kind === 'tram'
         ? 'Tramvay hattı'
