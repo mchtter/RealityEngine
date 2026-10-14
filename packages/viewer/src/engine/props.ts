@@ -26,6 +26,37 @@ function cyl(
   return paint(g, c);
 }
 
+/** Cylinder without end caps: ends hidden inside another part (or a flush ring). */
+function tube(
+  r: number,
+  h: number,
+  seg: number,
+  c: THREE.Color,
+  x = 0,
+  y = 0,
+  z = 0,
+  rotZ = 0,
+): THREE.BufferGeometry {
+  const g = new THREE.CylinderGeometry(r, r, h, seg, 1, true);
+  g.deleteAttribute('uv');
+  if (rotZ) g.rotateZ(rotZ);
+  g.translate(x, y, z);
+  return paint(g, c);
+}
+
+/**
+ * Thin bar seen from the front and back only (4 triangles, a box has 12):
+ * balusters a few centimetres thick, whose side faces never read.
+ */
+function slat(w: number, h: number, c: THREE.Color, x = 0, y = 0, z = 0): THREE.BufferGeometry {
+  const front = new THREE.PlaneGeometry(w, h).translate(0, 0, 0.0125);
+  const back = new THREE.PlaneGeometry(w, h).rotateY(Math.PI).translate(0, 0, -0.0125);
+  const g = mergeGeometries([front, back]);
+  g.deleteAttribute('uv');
+  g.translate(x, y, z);
+  return paint(g, c);
+}
+
 function box(
   w: number,
   h: number,
@@ -41,6 +72,120 @@ function box(
   if (rotX) g.rotateX(rotX);
   g.translate(x, y, z);
   return paint(g, c);
+}
+
+/** Square bar of width w from point a to point b (lattice members, legs, braces). */
+function bar(
+  a: [number, number, number],
+  b: [number, number, number],
+  w: number,
+  c: THREE.Color,
+): THREE.BufferGeometry {
+  const d = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+  const len = d.length();
+  const g = new THREE.BoxGeometry(w, len, w);
+  g.deleteAttribute('uv');
+  g.applyQuaternion(
+    new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize()),
+  );
+  g.translate((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
+  return paint(g, c);
+}
+
+/**
+ * Four-legged lattice tower from a square base (half width b0) to a square
+ * top (half width b1) at height h: legs, a ring of horizontal braces and
+ * crossed diagonals on each face at every level.
+ */
+function lattice(b0: number, b1: number, h: number, levels: number, w: number, c: THREE.Color) {
+  const parts: THREE.BufferGeometry[] = [];
+  const half = (z: number) => b0 + (b1 - b0) * (z / h);
+  const corners = (z: number): [number, number, number][] => {
+    const r = half(z);
+    return [
+      [-r, z, -r],
+      [r, z, -r],
+      [r, z, r],
+      [-r, z, r],
+    ];
+  };
+  const c0 = corners(0);
+  const c1 = corners(h);
+  for (let k = 0; k < 4; k++) parts.push(bar(c0[k], c1[k], w * 1.6, c));
+  for (let l = 0; l < levels; l++) {
+    const za = (h * l) / levels;
+    const zb = (h * (l + 1)) / levels;
+    const lo = corners(za);
+    const hi = corners(zb);
+    for (let k = 0; k < 4; k++) {
+      const k2 = (k + 1) % 4;
+      parts.push(bar(hi[k], hi[k2], w, c));
+      parts.push(bar(lo[k], hi[k2], w * 0.7, c));
+      parts.push(bar(lo[k2], hi[k], w * 0.7, c));
+    }
+  }
+  return parts;
+}
+
+/** Flag on a pole's top (hoist at x = 0, flying along +x), both faces. */
+function flag(country: string | undefined, top: number): THREE.BufferGeometry[] {
+  const W = 4.2;
+  const H = 2.8;
+  const y0 = top - H - 0.3;
+  const out: THREE.BufferGeometry[] = [];
+  const plane = (w: number, h: number, x: number, y: number, z: number, c: THREE.Color) => {
+    for (const side of [1, -1]) {
+      const g = new THREE.PlaneGeometry(w, h);
+      if (side < 0) g.rotateY(Math.PI);
+      g.deleteAttribute('uv');
+      g.translate(x, y, z * side);
+      out.push(paint(g, c));
+    }
+  };
+  const disc = (r: number, x: number, y: number, z: number, c: THREE.Color, seg = 20) => {
+    for (const side of [1, -1]) {
+      const g = new THREE.CircleGeometry(r, seg);
+      if (side < 0) g.rotateY(Math.PI);
+      g.deleteAttribute('uv');
+      g.translate(x, y, z * side);
+      out.push(paint(g, c));
+    }
+  };
+  const star = (r: number, x: number, y: number, z: number, c: THREE.Color, turn = 0) => {
+    const shape = new THREE.Shape();
+    for (let k = 0; k < 10; k++) {
+      const a = turn + Math.PI / 2 + (k * Math.PI) / 5;
+      const rr = k % 2 ? r * 0.4 : r;
+      if (k === 0) shape.moveTo(Math.cos(a) * rr, Math.sin(a) * rr);
+      else shape.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+    }
+    for (const side of [1, -1]) {
+      const g = new THREE.ShapeGeometry(shape);
+      if (side < 0) g.rotateY(Math.PI);
+      g.deleteAttribute('uv');
+      g.translate(x, y, z * side);
+      out.push(paint(g, c));
+    }
+  };
+  const cy = y0 + H / 2;
+  if (country === 'EU') {
+    plane(W, H, W / 2, cy, 0.01, C('#1f3f9a'));
+    for (let k = 0; k < 12; k++) {
+      const a = (k / 12) * Math.PI * 2;
+      star(0.14, W / 2 + Math.cos(a) * 0.85, cy + Math.sin(a) * 0.85, 0.02, C('#f2c80f'));
+    }
+  } else if (country === 'FR') {
+    plane(W / 3, H, W / 6, cy, 0.01, C('#1f3f9a'));
+    plane(W / 3, H, W / 2, cy, 0.01, C('#f4f4f2'));
+    plane(W / 3, H, (5 * W) / 6, cy, 0.01, C('#d0303a'));
+  } else {
+    // Turkey: a white crescent and star on red (crescent as a red disc over a white one).
+    plane(W, H, W / 2, cy, 0.01, C('#d0202a'));
+    disc(H * 0.25, W * 0.375, cy, 0.02, C('#f4f4f2'));
+    disc(H * 0.2, W * 0.405, cy, 0.03, C('#d0202a'));
+    star(H * 0.125, W * 0.52, cy, 0.03, C('#f4f4f2'), -Math.PI / 2);
+  }
+  return out;
 }
 
 function blob(
@@ -66,7 +211,7 @@ const merge = (parts: THREE.BufferGeometry[]) =>
  * Low-poly street furniture and roof clutter. Local frame: +y up, +z is the
  * direction the prop faces (towards the road for lamps / stops).
  */
-function createPropModules(): Record<PropKind | 'tree-pine', THREE.BufferGeometry> {
+function createPropModules(): Record<PropVariant, THREE.BufferGeometry> {
   const leaf = C('#4f6b2c');
   const leafDark = C('#3d5623');
   const bark = C('#5b4636');
@@ -149,10 +294,11 @@ function createPropModules(): Record<PropKind | 'tree-pine', THREE.BufferGeometr
     ]),
     // Thermosiphon heater as on Turkish roofs: a white tank on top, the tilted
     // collector in an aluminium frame below it, galvanised A-frame stands.
+    // Tank: an open tube closed by its two end rings (10 sides read round on a roof).
     'solar-heater': merge([
-      cyl(0.25, 0.25, 1.7, 14, C('#e4e4e0'), 0, 1.28, -0.38, 0, Math.PI / 2),
-      cyl(0.26, 0.26, 0.05, 14, C('#9ea2a6'), -0.86, 1.28, -0.38, 0, Math.PI / 2),
-      cyl(0.26, 0.26, 0.05, 14, C('#9ea2a6'), 0.86, 1.28, -0.38, 0, Math.PI / 2),
+      tube(0.25, 1.7, 10, C('#e4e4e0'), 0, 1.28, -0.38, Math.PI / 2),
+      cyl(0.26, 0.26, 0.05, 10, C('#9ea2a6'), -0.86, 1.28, -0.38, 0, Math.PI / 2),
+      cyl(0.26, 0.26, 0.05, 10, C('#9ea2a6'), 0.86, 1.28, -0.38, 0, Math.PI / 2),
       box(1.78, 0.04, 1.2, C('#b4b8bc'), 0, 0.68, 0.22, -0.65),
       box(1.66, 0.05, 1.08, C('#1d2c44'), 0, 0.705, 0.235, -0.65),
       // Stands: front and back posts each side, and the feet on the roof.
@@ -163,8 +309,8 @@ function createPropModules(): Record<PropKind | 'tree-pine', THREE.BufferGeometr
       box(1.7, 0.05, 0.05, C('#8a8f94'), 0, 0.03, 0.62),
       box(1.7, 0.05, 0.05, C('#8a8f94'), 0, 0.03, -0.38),
       // Pipes from the collector up into the tank.
-      cyl(0.025, 0.025, 0.5, 6, C('#9ea2a6'), -0.7, 1.05, -0.12),
-      cyl(0.025, 0.025, 0.5, 6, C('#9ea2a6'), 0.7, 1.05, -0.12),
+      tube(0.025, 0.5, 4, C('#9ea2a6'), -0.7, 1.05, -0.12),
+      tube(0.025, 0.5, 4, C('#9ea2a6'), 0.7, 1.05, -0.12),
     ]),
     'satellite-dish': merge([
       cyl(0.42, 0.3, 0.1, 14, C('#e6e4df'), 0, 0.75, 0.05, Math.PI / 2 - 0.5),
@@ -264,8 +410,112 @@ function createPropModules(): Record<PropKind | 'tree-pine', THREE.BufferGeometr
       box(2.16, 0.06, 0.05, C('#25302a'), 0, 1.45, 0),
       box(0.04, 1.36, 0.05, C('#25302a'), 0, 0.8, 0),
       ...Array.from({ length: 14 }, (_, k) => -1.0 + (2.0 * (k + 0.5)) / 14).map((x) =>
-        box(0.025, 1.3, 0.025, C('#25302a'), x, 0.8, 0),
+        slat(0.025, 1.3, C('#25302a'), x, 0.8, 0),
       ),
+    ]),
+    // Marble grave (+z = head): kerb slab round a planted bed, headstone at the head.
+    grave: merge([
+      box(0.9, 0.24, 1.95, C('#e9e7e2'), 0, 0.12, 0),
+      box(0.66, 0.05, 1.6, C('#5d6a3a'), 0, 0.245, -0.05),
+      box(0.56, 0.86, 0.1, C('#efedea'), 0, 0.55, 0.9),
+    ]),
+    // Italian cypress: a short trunk and one tall narrow dark crown (~11 m).
+    cypress: merge([
+      cyl(0.1, 0.16, 1.6, 5, bark, 0, 0.8, 0),
+      blob(0.95, C('#2f4a2a'), 0, 6.1, 0, 5.2, 1),
+    ]),
+    // Tower crane: mast on a concrete base, jib and counter-jib, cab,
+    // counterweights, the A-frame and a hoist line down to the hook.
+    crane: merge([
+      box(6, 1, 6, C('#9a968f'), 0, 0.5, 0),
+      box(1.6, 40, 1.6, C('#e0b020'), 0, 21, 0),
+      box(1.3, 1.3, 50, C('#e0b020'), 0, 41.6, 13),
+      box(2.4, 2.4, 2.6, C('#d9d6cf'), 0, 39.6, 1.6),
+      box(2.6, 2.2, 3, C('#8d8a84'), 0, 40.8, -10),
+      box(0.6, 6, 0.6, C('#e0b020'), 0, 45.3, 0),
+      cyl(0.03, 0.03, 26, 4, darkMetal, 0, 28, 26),
+      box(0.6, 0.9, 0.6, C('#d23a2a'), 0, 14.6, 26),
+    ]),
+    // Market stall (+z = the aisle): poles, an awning (instance tint), the
+    // counter with produce. Painted parts white / light: the tint is the colour.
+    stall: merge([
+      cyl(0.04, 0.04, 2.5, 5, C('#cfd2d4'), -1.45, 1.25, 1.2),
+      cyl(0.04, 0.04, 2.5, 5, C('#cfd2d4'), 1.45, 1.25, 1.2),
+      cyl(0.04, 0.04, 2.2, 5, C('#cfd2d4'), -1.45, 1.1, -1.2),
+      cyl(0.04, 0.04, 2.2, 5, C('#cfd2d4'), 1.45, 1.1, -1.2),
+      box(3.1, 0.05, 2.8, C('#f4f4f2'), 0, 2.38, 0, 0.12),
+      box(2.8, 0.78, 0.95, C('#b9a58a'), 0, 0.39, 0.6),
+      box(2.6, 0.14, 0.8, C('#d98b2b'), 0, 0.85, 0.6),
+    ]),
+    // High-voltage lattice pylon (~38 m; +z along the line): three cross-arms
+    // each side with hanging insulators (the conductors attach 2 m below an
+    // arm's tip, see overhead.ts in the renderer) and the earth-wire peak.
+    pylon: merge([
+      ...lattice(4, 0.9, 34, 6, 0.16, C('#8d9296')),
+      ...[
+        [25, 5.5],
+        [29.5, 7],
+        [34, 5.5],
+      ].flatMap(([z, L]) => [
+        bar([-L, z, 0], [L, z, 0], 0.22, C('#8d9296')),
+        bar([-L, z, 0], [-1, z - 2.4, 0], 0.12, C('#8d9296')),
+        bar([L, z, 0], [1, z - 2.4, 0], 0.12, C('#8d9296')),
+        cyl(0.12, 0.12, 2, 6, C('#4b5a66'), -L + 0.2, z - 1, 0),
+        cyl(0.12, 0.12, 2, 6, C('#4b5a66'), L - 0.2, z - 1, 0),
+      ]),
+      bar([0, 34, 0], [0, 38, 0], 0.2, C('#8d9296')),
+    ]),
+    // Communication mast (~32 m): a slim lattice, panel antennas and a dish.
+    mast: merge([
+      ...lattice(0.9, 0.5, 30, 10, 0.07, C('#c7cacd')),
+      ...[0, 2.1, 4.2].map((a) =>
+        box(0.4, 1.6, 0.15, C('#f2f2f0'), Math.cos(a) * 0.75, 28, Math.sin(a) * 0.75),
+      ),
+      cyl(0.55, 0.45, 0.15, 12, C('#f2f2f0'), 0.6, 24, 0, Math.PI / 2),
+      bar([0, 30, 0], [0, 32, 0], 0.08, C('#c8302a')),
+    ]),
+    // Floodlight mast (~30 m): a tapered steel pole, a service platform and a
+    // frame of lamps facing the apron / pitch (+z).
+    floodlight: merge([
+      cyl(0.22, 0.45, 28, 10, C('#9aa0a5'), 0, 14, 0),
+      cyl(1.4, 1.4, 0.15, 12, C('#7d8287'), 0, 27.6, 0),
+      box(3.2, 1.8, 0.25, C('#6f7378'), 0, 29, 0.4),
+      ...[-1.05, 0, 1.05].flatMap((x) =>
+        [28.55, 29.45].map((y) => box(0.9, 0.7, 0.08, C('#f4f1df'), x, y, 0.56)),
+      ),
+    ]),
+    flagpole: merge([cyl(0.09, 0.16, 20, 8, C('#e8e8e6'), 0, 10, 0), ...flag(undefined, 20)]),
+    'flagpole-EU': merge([cyl(0.09, 0.16, 20, 8, C('#e8e8e6'), 0, 10, 0), ...flag('EU', 20)]),
+    'flagpole-FR': merge([cyl(0.09, 0.16, 20, 8, C('#e8e8e6'), 0, 10, 0), ...flag('FR', 20)]),
+    // Power transformer: tank with radiator banks, three bushings, conservator.
+    transformer: merge([
+      box(1.8, 0.4, 3.6, C('#9a968f'), 0, 0.2, 0),
+      box(2.6, 2.8, 3.2, C('#6f7a6c'), 0, 1.8, 0),
+      ...[-1.2, -0.4, 0.4, 1.2].flatMap((z) => [
+        box(0.5, 2.2, 0.08, C('#66705f'), 1.6, 1.7, z),
+        box(0.5, 2.2, 0.08, C('#66705f'), -1.6, 1.7, z),
+      ]),
+      ...[-0.9, 0, 0.9].map((z) => cyl(0.12, 0.18, 1.3, 8, C('#d9d7d0'), 0.5, 3.85, z)),
+      cyl(0.35, 0.35, 2.4, 10, C('#6f7a6c'), -0.7, 3.7, 0, Math.PI / 2),
+    ]),
+    // Substation gantry: a portal of two lattice columns and a beam with insulator strings.
+    gantry: merge([
+      ...lattice(0.6, 0.35, 11, 4, 0.08, C('#9aa0a5')).map((g) => g.translate(-5, 0, 0)),
+      ...lattice(0.6, 0.35, 11, 4, 0.08, C('#9aa0a5')).map((g) => g.translate(5, 0, 0)),
+      box(10.8, 0.6, 0.6, C('#9aa0a5'), 0, 11.2, 0),
+      ...[-3, 0, 3].map((x) => cyl(0.1, 0.1, 1.6, 6, C('#4b5a66'), x, 10.1, 0)),
+    ]),
+    // Power station stack (~45 m), red and white bands at the top, a platform.
+    stack: merge([
+      cyl(1.6, 2.3, 40, 16, C('#b8b5ae'), 0, 20, 0),
+      cyl(1.62, 1.66, 2.5, 16, C('#c8302a'), 0, 41.25, 0),
+      cyl(1.58, 1.62, 2.5, 16, C('#f2f2f0'), 0, 43.75, 0),
+      cyl(2.4, 2.4, 0.25, 16, C('#6f7378'), 0, 36, 0),
+    ]),
+    // 20 ft container (6.06 × 2.44 × 2.59 m, long side along z), doors at -z.
+    container: merge([
+      box(2.44, 2.59, 6.06, C('#f2f2f2'), 0, 1.295, 0),
+      box(2.3, 2.4, 0.04, C('#d0d0d0'), 0, 1.3, -3.05),
     ]),
   };
 }
@@ -331,8 +581,15 @@ function matrixOf(p: Prop): THREE.Matrix4 {
   return m4.compose(pos, q4, scl).clone();
 }
 
-const variantOf = (p: Prop): PropKind | 'tree-pine' =>
-  p.kind === 'tree' && new Rng(p.id).chance(0.3) ? 'tree-pine' : p.kind;
+/** Model variants: pines among the trees, flags by country. */
+type PropVariant = PropKind | 'tree-pine' | 'flagpole-EU' | 'flagpole-FR';
+
+const variantOf = (p: Prop): PropVariant =>
+  p.kind === 'tree' && new Rng(p.id).chance(0.3)
+    ? 'tree-pine'
+    : p.kind === 'flagpole' && (p.flag === 'EU' || p.flag === 'FR')
+      ? `flagpole-${p.flag}`
+      : p.kind;
 
 /**
  * Instanced meshes for a set of props. In the data view, street furniture
@@ -409,6 +666,17 @@ export function buildPropGroup(
             'slide',
             'climber',
             'gate',
+            'cypress',
+            'crane',
+            'stall',
+            'container',
+            'pylon',
+            'mast',
+            'floodlight',
+            'flagpole',
+            'transformer',
+            'gantry',
+            'stack',
           ].includes(p.kind),
       );
       if (p.kind === 'street-lamp') {
@@ -444,6 +712,26 @@ export function buildPropGroup(
           ),
         );
       }
+      if (key === 'real-container')
+        mesh.setColorAt(
+          i,
+          C(
+            new Rng(p.id).pick([
+              '#b33a2b',
+              '#2b5f9e',
+              '#2f7d4a',
+              '#c98a2b',
+              '#6f7378',
+              '#e3e1dc',
+              '#7a2f6e',
+            ]),
+          ),
+        );
+      if (key === 'real-stall')
+        mesh.setColorAt(
+          i,
+          C(new Rng(p.id).pick(['#c0392b', '#2e6fb3', '#e3b321', '#2f8f4e', '#eeeeea'])),
+        );
       if (key.startsWith('real-tree')) {
         const tint = new THREE.Color().setHSL(
           0.22 + rng.range(-0.04, 0.05),

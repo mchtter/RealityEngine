@@ -42,18 +42,28 @@ type P3 = [number, number, number];
  * street (role `ground:near`). Tubes carry `ua` (metres along the run) for
  * the flow animation of the utility material.
  */
-export function buildUtilities(model: CityModel, mats: DtMaterials): THREE.Group | null {
-  const runs = model.utilities ?? [];
+export function buildUtilities(
+  model: CityModel,
+  mats: DtMaterials,
+  parts: { networks?: boolean; covers?: boolean } = { networks: true, covers: true },
+): THREE.Group | null {
+  const runs = parts.networks ? (model.utilities ?? []) : [];
   const nodes = model.utilityNodes ?? [];
   if (!runs.length && !nodes.length && !model.props.some((p) => p.network)) return null;
   const group = new THREE.Group();
   group.name = 'utilities';
-  const cabinets = model.props.filter((p) => p.kind === 'street-cabinet' && p.network);
-  const kinds = new Set<UtilityKind>([
-    ...runs.map((u) => u.kind),
-    ...nodes.map((n) => n.kind),
-    ...cabinets.map((c) => c.network!),
-  ]);
+  const cabinets = parts.networks
+    ? model.props.filter((p) => p.kind === 'street-cabinet' && p.network)
+    : [];
+  const kinds = new Set<UtilityKind>(
+    parts.networks
+      ? [
+          ...runs.map((u) => u.kind),
+          ...nodes.map((n) => n.kind),
+          ...cabinets.map((c) => c.network!),
+        ]
+      : [],
+  );
   for (const kind of kinds) {
     const mb = new MeshBuilder();
     mb.defineAttribute('ua', 1);
@@ -105,9 +115,11 @@ export function buildUtilities(model: CityModel, mats: DtMaterials): THREE.Group
     mesh.userData.role = `util:${kind}`;
     group.add(mesh);
   }
-  const covers = buildCovers(nodes, mats);
-  if (covers) group.add(covers);
-  return group;
+  if (parts.covers) {
+    const covers = buildCovers(nodes, mats);
+    if (covers) group.add(covers);
+  }
+  return group.children.length ? group : null;
 }
 
 const MATERIAL_LABEL: Record<string, string> = {

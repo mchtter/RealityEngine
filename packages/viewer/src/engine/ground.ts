@@ -14,6 +14,7 @@ import {
   offsetPolygons,
   pointInRing,
   rectPolygon,
+  simplifyRing,
   subtractPolygons,
   TWIN_MEDIAN,
   barrierStops,
@@ -22,7 +23,7 @@ import {
   unionPolygons,
 } from '@opentwin/city-core';
 import * as THREE from 'three/webgpu';
-import { MeshBuilder, drapeOnTerrain, drapePolygon, drapeRingWall, toThree } from './geom';
+import { MeshBuilder, drapeCells, drapeOnTerrain, drapeRingWall, toThree } from './geom';
 import type { DtMaterials } from './materials';
 
 /** Ground cell size (m) — the frustum culling unit of terrain and road surfaces. */
@@ -39,6 +40,13 @@ const SURF: Record<SurfaceKind, number> = {
   concrete: 7,
   parking: 8,
   playground: 9,
+  pitch: 10,
+  track: 11,
+  cemetery: 12,
+  earth: 13,
+  quarry: 14,
+  gravel: 15,
+  airfield: 16,
 };
 const SURF_KERB = 6;
 
@@ -61,6 +69,8 @@ const PATH_MARKING_LIFT = LIFT.path + 0.04;
  * surfaces cut to that same mesh. Must divide the tile's 250 grid cells.
  */
 const FAR_STEP = 10;
+/** Outline tolerance of far surfaces (metres). */
+const FAR_SIMPLIFY = 0.5;
 /** Extra lift of far surfaces: depth precision is coarser far away. */
 const FAR_LIFT = 0.25;
 /** Markings are re-sampled this often so they follow terrain creases along the road. */
@@ -121,12 +131,35 @@ function cellsUnder(t: TerrainGrid, holes: Polygon[]): Set<number> {
     const i1 = Math.min(t.cols - 2, Math.floor((b[2] - t.minX) / t.cellSize));
     const j0 = Math.max(0, Math.floor((b[1] - t.minY) / t.cellSize));
     const j1 = Math.min(t.rows - 2, Math.floor((b[3] - t.minY) / t.cellSize));
+    // Cells along the outline (and their neighbours) are clipped exactly; any
+    // other cell lies wholly inside or outside, which its centre tells. Clipping
+    // every cell of a long underpass's box was a third of a far tile's meshing
+    // (2026-10-12).
+    const edge = new Set<number>();
+    for (const ring of [h.outer, ...h.holes]) {
+      for (let k = 0; k < ring.length; k++) {
+        const p = ring[k];
+        const q = ring[(k + 1) % ring.length];
+        const n = Math.max(1, Math.ceil(Math.hypot(q[0] - p[0], q[1] - p[1]) / (t.cellSize / 4)));
+        for (let s = 0; s <= n; s++) {
+          const ci = Math.floor((p[0] + ((q[0] - p[0]) * s) / n - t.minX) / t.cellSize);
+          const cj = Math.floor((p[1] + ((q[1] - p[1]) * s) / n - t.minY) / t.cellSize);
+          for (let dj = -1; dj <= 1; dj++)
+            for (let di = -1; di <= 1; di++) edge.add((cj + dj) * t.cols + (ci + di));
+        }
+      }
+    }
     for (let j = j0; j <= j1; j++) {
       for (let i = i0; i <= i1; i++) {
         const idx = j * t.cols + i;
         if (out.has(idx)) continue;
         const x = t.minX + i * t.cellSize;
         const y = t.minY + j * t.cellSize;
+        if (!edge.has(idx)) {
+          const c: [number, number] = [x + t.cellSize / 2, y + t.cellSize / 2];
+          if (pointInRing(c, h.outer) && !h.holes.some((r) => pointInRing(c, r))) out.add(idx);
+          continue;
+        }
         const cell = rectPolygon(x, y, x + t.cellSize, y + t.cellSize);
         if (clipPolygons([h], [cell]).length) out.add(idx);
       }
@@ -151,6 +184,8 @@ function terrainMesh(
   skip?: Set<number>,
   /** Where the skirt must not hang down (over a tunnel tube it would cut across it). */
   noSkirt?: (x: number, y: number) => boolean,
+  /** Cells whose four corners all lie below this are left out (under the sea: the sea is the layer there). */
+  dropBelow = -Infinity,
 ): THREE.Mesh {
   const [i0, j0, i1, j1] = range ?? [0, 0, t.cols - 1, t.rows - 1];
   const cols = Math.floor((i1 - i0) / step) + 1;
@@ -178,6 +213,13 @@ function terrainMesh(
   for (let j = 0; j < rows - 1; j++) {
     for (let i = 0; i < cols - 1; i++) {
       if (step === 1 && skip?.has(gj(j) * t.cols + gi(i))) continue;
+      if (
+        height(i, j) < dropBelow &&
+        height(i + 1, j) < dropBelow &&
+        height(i, j + 1) < dropBelow &&
+        height(i + 1, j + 1) < dropBelow
+      )
+        continue;
       const a = j * cols + i;
       const b = a + 1;
       const c = a + cols + 1;
@@ -273,15 +315,58 @@ function underStreet(t: TerrainGrid, surface: RoadSurface): TerrainGrid {
 }
 
 /** Sea: a plane at sea level over the tile. */
-export function seaPlane(
-  model: Pick<CityModel, 'bounds' | 'terrain'>,
-  mats: DtMaterials,
-): THREE.Mesh {
-  const b = model.bounds;
-  // The tile's own extent (the terrain covers it where it is above the sea).
-  const sea = new THREE.Mesh(new THREE.PlaneGeometry(b.maxX - b.minX, b.maxY - b.minY), mats.water);
-  sea.rotation.x = -Math.PI / 2;
-  sea.position.set((b.minX + b.maxX) / 2, model.terrain.seaLevel, -(b.minY + b.maxY) / 2);
+/**
+ * The sea, only where the ground goes below it: terrain cells with a corner
+ * under the sea level, each row's run of them one quad. (A plane over the
+ * whole tile lay a few centimetres under shore streets and parks: three
+ * layers at one point, and z-fighting.) Where the shore crosses a cell the
+ * terrain rises through the water at its own slope — no coplanar layers.
+ */
+export function seaMesh(model: Pick<CityModel, 'terrain'>, mats: DtMaterials): THREE.Mesh | null {
+  const t = model.terrain;
+  const at = (i: number, j: number) => t.heights[j * t.cols + i];
+  const wet = (i: number, j: number) =>
+    at(i, j) < t.seaLevel ||
+    at(i + 1, j) < t.seaLevel ||
+    at(i, j + 1) < t.seaLevel ||
+    at(i + 1, j + 1) < t.seaLevel;
+  const mb = new MeshBuilder();
+  const y = t.seaLevel;
+  const quad = (x0: number, y0: number, x1: number, y1: number) =>
+    mb.quad(
+      [
+        [x0, y0, y],
+        [x1, y0, y],
+        [x1, y1, y],
+        [x0, y1, y],
+      ],
+      [0, 0, 1],
+      undefined,
+      [
+        [x0, y0],
+        [x1, y0],
+        [x1, y1],
+        [x0, y1],
+      ],
+    );
+  for (let j = 0; j < t.rows - 1; j++) {
+    let run = -1;
+    for (let i = 0; i <= t.cols - 1; i++) {
+      const isWet = i < t.cols - 1 && wet(i, j);
+      if (isWet && run < 0) run = i;
+      if (!isWet && run >= 0) {
+        quad(
+          t.minX + run * t.cellSize,
+          t.minY + j * t.cellSize,
+          t.minX + i * t.cellSize,
+          t.minY + (j + 1) * t.cellSize,
+        );
+        run = -1;
+      }
+    }
+  }
+  if (!mb.indices.length) return null;
+  const sea = new THREE.Mesh(mb.build(), mats.water);
   sea.receiveShadow = true;
   sea.name = 'sea';
   return sea;
@@ -381,7 +466,7 @@ export function buildGround(
   model: CityModel,
   mats: DtMaterials,
   /** empty: no city data in the tile — the terrain is drawn as the grey grid. */
-  opts: { sea?: boolean; empty?: boolean } = {},
+  opts: { sea?: boolean; empty?: boolean; far?: boolean } = {},
 ): THREE.Group {
   const terrainMat = opts.empty ? mats.terrainGrid : mats.terrain;
   const group = new THREE.Group();
@@ -430,10 +515,13 @@ export function buildGround(
     }
     return false;
   };
-  const far = terrainMesh(t, terrainMat, FAR_STEP, 6, undefined, undefined, noSkirt);
+  // Under the sea the sea is the one layer: submerged cells are left out.
+  const submerged = t.seaLevel - 0.05;
+  const far = terrainMesh(t, terrainMat, FAR_STEP, 6, undefined, undefined, noSkirt, submerged);
   far.userData.role = 'ground:far';
   group.add(far);
-  if (opts.sea !== false) group.add(seaPlane(model, mats));
+  const sea = opts.sea !== false ? seaMesh(model, mats) : null;
+  if (sea) group.add(sea);
 
   // Underpasses and tunnel mouths: the terrain is left out inside their
   // footprints; the cells around them are drawn carved along the wall line,
@@ -467,6 +555,19 @@ export function buildGround(
     );
 
   const markRuns = model.markings.map((m) => ({ m, mid: m.points[m.points.length >> 1] }));
+  // Surfaces of the far ground, simplified once before any clipping: kerb-line
+  // detail under FAR_SIMPLIFY does not read from this far, and clipping the
+  // full street polygon to the chunk was a third of a far tile's meshing
+  // (2026-10-12). The clip also cleans up a ring the simplification crossed.
+  let farCache: { kind: SurfaceKind; polygons: Polygon[] }[] | null = null;
+  const farSurfaces = () =>
+    (farCache ??= model.surfaces.map((surface) => ({
+      kind: surface.kind,
+      polygons: surface.polygons.map((poly) => ({
+        outer: simplifyRing(poly.outer, FAR_SIMPLIFY),
+        holes: poly.holes.map((h) => simplifyRing(h, FAR_SIMPLIFY)),
+      })),
+    })));
   for (let j0 = 0; j0 < t.rows - 1; j0 += per) {
     for (let i0 = 0; i0 < t.cols - 1; i0 += per) {
       const i1 = Math.min(i0 + per, t.cols - 1);
@@ -479,9 +580,6 @@ export function buildGround(
       const chunk = new THREE.Group();
       chunk.name = `ground-${i0}-${j0}`;
 
-      const terrain = terrainMesh(shown, terrainMat, 1, 6, [i0, j0, i1, j1], carved, noSkirt);
-      terrain.userData.role = 'ground:near';
-      chunk.add(terrain);
       const cellsHere: Polygon[] = [];
       for (const idx of carved) {
         const ci = idx % t.cols;
@@ -491,7 +589,7 @@ export function buildGround(
         const y = t.minY + cj * t.cellSize;
         cellsHere.push(rectPolygon(x, y, x + t.cellSize, y + t.cellSize));
       }
-      if (cellsHere.length) {
+      if (cellsHere.length && !opts.far) {
         const patch = new MeshBuilder();
         const area = unionPolygons(cellsHere);
         for (const poly of subtractPolygons(area, holes)) drapeShaded(patch, poly, shown);
@@ -513,9 +611,22 @@ export function buildGround(
         (Math.abs(a[1] - b[1]) < 0.02 &&
           (Math.abs(a[1] - y0) < 0.02 || Math.abs(a[1] - y1) < 0.02));
       // All surfaces and kerbs of the chunk in one mesh: one draw call (`ground` material).
+      const covered = new Set<number>();
+      const coverCell = (ci: number, cj: number) => covered.add(cj * t.cols + ci);
       const overlay = new MeshBuilder();
       overlay.defineAttribute('surf', 1);
       // Not in a trench (it draws its own road), over a tube mouth on the lid.
+      // Surfaces arrive clipped to the tile by the compiler: a chunk spanning the
+      // whole grid clips only polygons reaching past it. Clipping the full street
+      // polygon (70 k vertices, 3.8 k holes on a dense tile) to the grid it
+      // already lay in cost ~230 ms a build, near and far (2026-10-12).
+      const toChunk = (polys: Polygon[]): Polygon[] => {
+        if (!polys.length) return [];
+        const inside = polys.every((poly) =>
+          poly.outer.every((q) => q[0] >= x0 && q[0] <= x1 && q[1] >= y0 && q[1] <= y1),
+        );
+        return inside ? polys : clipPolygons(polys, cell);
+      };
       const nearCut = carved.size > 0 && clipPolygons(holes, cell).length > 0;
       const onGrids = (polys: Polygon[]): [Polygon[], TerrainGrid][] =>
         nearCut
@@ -526,15 +637,20 @@ export function buildGround(
           : [[polys, t]];
       /** Street corridor surfaces drape on the street surface (off the lids). */
       const STREET = new Set<SurfaceKind>(['asphalt', 'sidewalk', 'island', 'paving']);
-      for (const surface of model.surfaces) {
-        const clipped = surface.polygons.length ? clipPolygons(surface.polygons, cell) : [];
+      for (const surface of opts.far ? [] : model.surfaces) {
+        const clipped = toChunk(surface.polygons);
         if (!clipped.length) continue;
         for (const [polys, grid] of onGrids(clipped)) {
           for (const poly of polys) {
             overlay.setAttribute('surf', [SURF[surface.kind]]);
             const onStreet = STREET.has(surface.kind) && grid === t;
-            if (onStreet) drapePolygon(overlay, poly, streetAt, LIFT[surface.kind], 6);
-            else drapeOnTerrain(overlay, poly, grid, LIFT[surface.kind]);
+            // Street surfaces follow the street profile, the others the terrain;
+            // both as one cell-first layer on the terrain grid.
+            // Cells a surface covers whole need no terrain under them (one layer).
+            const full = grid === t ? coverCell : undefined;
+            if (onStreet)
+              drapeCells(overlay, poly, t, streetAt, LIFT[surface.kind], 1, undefined, full);
+            else drapeOnTerrain(overlay, poly, grid, LIFT[surface.kind], 1, full);
             if (surface.kind === 'sidewalk' || surface.kind === 'island') {
               overlay.setAttribute('surf', [SURF_KERB]);
               for (const ring of [poly.outer, ...poly.holes]) {
@@ -554,6 +670,24 @@ export function buildGround(
           }
         }
       }
+      // Terrain only where no surface covers a cell whole: the surface is the
+      // ground there (one thin layer, like a photogrammetry mesh); edge cells
+      // keep their terrain under the surface's edge.
+      if (!opts.far) {
+        const skip = covered.size ? new Set([...carved, ...covered]) : carved;
+        const terrain = terrainMesh(
+          shown,
+          terrainMat,
+          1,
+          6,
+          [i0, j0, i1, j1],
+          skip,
+          noSkirt,
+          submerged,
+        );
+        terrain.userData.role = 'ground:near';
+        chunk.add(terrain);
+      }
       if (overlay.indices.length) {
         const mesh = new THREE.Mesh(overlay.build(), mats.ground);
         mesh.receiveShadow = true;
@@ -564,8 +698,8 @@ export function buildGround(
       // Far tiles: the same surfaces on the coarse terrain mesh (no kerbs) — far fewer triangles.
       const coarse = new MeshBuilder();
       coarse.defineAttribute('surf', 1);
-      for (const surface of model.surfaces) {
-        const polys = surface.polygons.length ? clipPolygons(surface.polygons, cell) : [];
+      for (const surface of farSurfaces()) {
+        const polys = toChunk(surface.polygons);
         for (const poly of polys) {
           coarse.setAttribute('surf', [SURF[surface.kind]]);
           drapeOnTerrain(coarse, poly, model.terrain, LIFT[surface.kind] + FAR_LIFT, FAR_STEP);
@@ -580,7 +714,8 @@ export function buildGround(
 
       // Lane markings and zebra crossings of this chunk.
       const marks = new MeshBuilder();
-      for (const { m, mid } of markRuns) {
+      const yellow = new MeshBuilder();
+      for (const { m, mid } of opts.far ? [] : markRuns) {
         if (!inChunk(mid)) continue;
         // Markings stop at a trench (it paints its own lanes).
         const all = m.points as [number, number][];
@@ -599,6 +734,14 @@ export function buildGround(
               ribbon(marks, terrainAt, d, 0.1, PATH_MARKING_LIFT);
           } else if (m.kind === 'path-edge') {
             ribbon(marks, terrainAt, pts, 0.1, PATH_MARKING_LIFT);
+          } else if (m.kind === 'taxiway-center') {
+            ribbon(yellow, groundAt, pts, 0.3, MARKING_LIFT);
+          } else if (m.kind === 'runway-center') {
+            for (const d of dashes(pts, 30, 20)) ribbon(marks, groundAt, d, 0.9, MARKING_LIFT);
+          } else if (m.kind === 'runway-edge') {
+            ribbon(marks, groundAt, pts, 0.9, MARKING_LIFT);
+          } else if (m.kind === 'runway-bar') {
+            ribbon(marks, groundAt, pts, 1.8, MARKING_LIFT);
           } else if (m.kind === 'center-dashed' || m.kind === 'lane-dashed') {
             for (const d of dashes(pts, 3, 5)) ribbon(marks, groundAt, d, 0.13, MARKING_LIFT);
           } else {
@@ -606,7 +749,7 @@ export function buildGround(
           }
         }
       }
-      for (const c of model.crossings) {
+      for (const c of opts.far ? [] : model.crossings) {
         if (!inChunk(c.center)) continue;
         // Stripes run along the road, laid out across it.
         const n: [number, number] = [-c.dir[1], c.dir[0]];
@@ -618,6 +761,13 @@ export function buildGround(
           const e: [number, number] = [center[0] + c.dir[0] * 1.5, center[1] + c.dir[1] * 1.5];
           ribbon(marks, groundAt, [a, e], 0.5, MARKING_LIFT);
         }
+      }
+      if (yellow.indices.length) {
+        const yellowMesh = new THREE.Mesh(yellow.build({ uv: false }), mats.markingYellow);
+        yellowMesh.receiveShadow = true;
+        yellowMesh.name = 'markings-yellow';
+        yellowMesh.userData.role = 'ground:near';
+        chunk.add(yellowMesh);
       }
       if (marks.indices.length) {
         const markMesh = new THREE.Mesh(marks.build({ uv: false }), mats.marking);
@@ -634,6 +784,8 @@ export function buildGround(
   // barriers with a steel handrail, a slab edge and a narrower box girder
   // underneath, standing on piers (column(s) + cap beam) down to the ground.
   const structure = new MeshBuilder();
+  /** Steel handrails and their posts: near detail (most of a bridge's triangles). */
+  const railings = new MeshBuilder();
   const deckTops = new MeshBuilder();
   const walkways = new MeshBuilder();
   const deckMarks = new MeshBuilder();
@@ -811,21 +963,61 @@ export function buildGround(
       (a[1] + b[1]) / 2 + ((b[0] - a[0]) / l) * o,
     ];
   };
-  /** Pieces of a (dense) path whose line at lateral offset o lies outside `skip`. */
+  /**
+   * Pieces of a (dense) path whose line at lateral offset o lies outside
+   * `skip`. A piece entering or leaving `skip` is cut where it crosses the
+   * boundary (bisected), not at a sample: cut at the samples, a wall ran up to
+   * a step into the tube it meets.
+   */
   const runsOutside = (path: V[], o: number, skip: Owned): V[][] => {
     if (skip === NONE) return [path];
+    const at = (a: V, b: V, t: number): V => [
+      a[0] + (b[0] - a[0]) * t,
+      a[1] + (b[1] - a[1]) * t,
+      a[2] + (b[2] - a[2]) * t,
+    ];
+    const inside = (a: V, b: V, t: number) => {
+      const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      const p = at(a, b, t);
+      return skip.inside(p[0] - ((b[1] - a[1]) / l) * o, p[1] + ((b[0] - a[0]) / l) * o);
+    };
+    /** Where the offset line crosses the boundary between t=0 (state s0) and t=1. */
+    const crossing = (a: V, b: V, s0: boolean) => {
+      let lo = 0;
+      let hi = 1;
+      for (let i = 0; i < 12; i++) {
+        const mid = (lo + hi) / 2;
+        if (inside(a, b, mid) === s0) lo = mid;
+        else hi = mid;
+      }
+      return at(a, b, (lo + hi) / 2);
+    };
     const runs: V[][] = [];
     let run: V[] = [];
+    const close = () => {
+      if (run.length >= 2) runs.push(run);
+      run = [];
+    };
     for (let k = 1; k < path.length; k++) {
-      if (skip.inside(...offsetAt([path[k - 1], path[k]], o))) {
-        if (run.length >= 2) runs.push(run);
-        run = [];
-        continue;
+      const a = path[k - 1];
+      const b = path[k];
+      const ia = inside(a, b, 0);
+      const ib = inside(a, b, 1);
+      if (ia && ib) {
+        close();
+      } else if (!ia && !ib) {
+        if (!run.length) run.push(a);
+        run.push(b);
+      } else if (ib) {
+        if (!run.length) run.push(a);
+        run.push(crossing(a, b, false));
+        close();
+      } else {
+        close();
+        run.push(crossing(a, b, true), b);
       }
-      if (!run.length) run.push(path[k - 1]);
-      run.push(path[k]);
     }
-    if (run.length >= 2) runs.push(run);
+    close();
     return runs;
   };
   /**
@@ -839,14 +1031,16 @@ export function buildGround(
     o1: number,
     z: number,
     clip: Polygon[],
+    /** −1: facing down (a tunnel roof's soffit). */
+    nz: 1 | -1 = 1,
   ) => {
     if (!clip.length) {
-      along(mb, path, o0, o1, z);
+      along(mb, path, o0, o1, z, nz);
       return;
     }
     const test = owned(clip);
     const n = miters(path);
-    const up = toThree(0, 0, 1);
+    const up = toThree(0, 0, nz);
     for (let k = 1; k < path.length; k++) {
       const a = path[k - 1];
       const b = path[k];
@@ -858,7 +1052,7 @@ export function buildGround(
       const touched =
         quad.some((q) => test.inside(q[0], q[1])) || test.inside(...offsetAt([a, b], 0));
       if (!touched) {
-        along(mb, [a, b], o0, o1, z);
+        along(mb, [a, b], o0, o1, z, nz);
         continue;
       }
       const dx = b[0] - a[0];
@@ -882,8 +1076,8 @@ export function buildGround(
           const [pa, pb, pc] = [p(i), p(j), p(m)];
           const area = (pb[0] - pa[0]) * (pc[1] - pa[1]) - (pc[0] - pa[0]) * (pb[1] - pa[1]);
           if (Math.abs(area) < 1e-9) continue;
-          // Upward facing: counter-clockwise from above.
-          if (area > 0) mb.triangle(ids[i], ids[j], ids[m]);
+          // Facing `nz`: counter-clockwise seen from that side.
+          if (area > 0 === nz > 0) mb.triangle(ids[i], ids[j], ids[m]);
           else mb.triangle(ids[i], ids[m], ids[j]);
         }
       }
@@ -1016,7 +1210,7 @@ export function buildGround(
     features.push(id);
     for (const mb of structureBuilders) mb.setOwner(features.length - 1);
   };
-  structureBuilders.push(structure, deckTops, walkways, deckMarks);
+  structureBuilders.push(structure, railings, deckTops, walkways, deckMarks);
   bridges.forEach((br, idx) => {
     own(`bridge|${br.roadId}|${br.width.toFixed(1)} m · ${br.lanes ?? 2} şerit`);
     const path = br.path as V[];
@@ -1087,10 +1281,10 @@ export function buildGround(
         face(structure, run, inner, 0, 0.85, -side as 1 | -1);
         along(structure, run, Math.min(inner, outer), Math.max(inner, outer), 0.85);
         // Handrail: a closed rail (seen from the road as well as from outside) on posts.
-        face(structure, run, rail + 0.04 * side, 1.12, 1.2, side);
-        face(structure, run, rail - 0.04 * side, 1.12, 1.2, -side as 1 | -1);
-        along(structure, run, rail - 0.04, rail + 0.04, 1.2);
-        along(structure, run, rail + 0.04, rail - 0.04, 1.12, -1);
+        face(railings, run, rail + 0.04 * side, 1.12, 1.2, side);
+        face(railings, run, rail - 0.04 * side, 1.12, 1.2, -side as 1 | -1);
+        along(railings, run, rail - 0.04, rail + 0.04, 1.2);
+        along(railings, run, rail + 0.04, rail - 0.04, 1.12, -1);
         for (let k = 0; k < run.length; k += 2) {
           const q = run[k];
           const r = run[Math.min(run.length - 1, k + 1)];
@@ -1099,7 +1293,7 @@ export function buildGround(
           const dy = r[1] - pr[1];
           const l = Math.hypot(dx, dy) || 1;
           boxAt(
-            structure,
+            railings,
             [q[0] + (-dy / l) * rail, q[1] + (dx / l) * rail],
             [dx / l, dy / l],
             0.03,
@@ -1169,12 +1363,14 @@ export function buildGround(
       );
     }
   });
-  const addMesh = (mb: MeshBuilder, mat: unknown, name: string, shadow: boolean) => {
+  /** `near`: detail that does not read from GROUND_DETAIL_RANGE away (CityTile hides it there). */
+  const addMesh = (mb: MeshBuilder, mat: unknown, name: string, shadow: boolean, near = false) => {
     if (!mb.vertexCount) return;
     const m = new THREE.Mesh(mb.build(), mat as THREE.Material);
     m.castShadow = shadow;
     m.receiveShadow = true;
     m.name = name;
+    if (near) m.userData.role = 'ground:near';
     m.userData.pick = { ids: features, owners: mb.triangleOwner };
     group.add(m);
   };
@@ -1459,25 +1655,55 @@ export function buildGround(
   // Tunnel tubes: road with markings, raised walkways, panelled walls with a
   // dark coating above, ceiling, two rows of lights, jet fans, lane signals,
   // emergency-exit signs and SOS cabinets.
-  for (const tn of model.tunnels ?? []) {
+  // Tubes that meet (a branch, a merge) open into one another: each tube's
+  // walls and walkways stop where they would stand inside another tube (one
+  // tube's wall used to cut through the other's interior, drawn from one side
+  // only), and where two overlap the wider owns the roadway and the roof.
+  const tunnels = [...(model.tunnels ?? [])].sort(
+    (a, b) => b.width - a.width || (a.id < b.id ? -1 : 1),
+  );
+  const tubePrints = tunnels.map((tn) =>
+    bufferPolyline(
+      tn.path.map((q) => [q[0], q[1]] as [number, number]),
+      tn.width / 2,
+      false,
+    ),
+  );
+  tunnels.forEach((tn, idx) => {
     own(`tunnel|${tn.roadId}|${tn.name ?? ''}`);
     const path = tn.path as V[];
+    const dense = densifyPath(path, 1);
     const half = tn.width / 2;
     const carriage = tn.carriageway / 2;
     const h = tn.height;
-    along(deckTops, path, -carriage, carriage, 0.02);
+    const others = tubePrints.filter((_, k) => k !== idx).flat();
+    // Runs are cut on a 1 m sampling of the path, then thinned back to the
+    // path's own vertices (the samples between lie on its straight lines).
+    const cm = (q: V) => `${Math.round(q[0] * 100)},${Math.round(q[1] * 100)}`;
+    const corners = new Set(path.map(cm));
+    const thin = (run: V[]) =>
+      run.filter((q, k) => k === 0 || k === run.length - 1 || corners.has(cm(q)));
+    const outside = (o: number) => runsOutside(dense, o, inOther).map(thin);
+    // Inside another tube (a little in from its walls, so meeting walls close up).
+    const inOther = owned(offsetPolygons(others, -0.3));
+    const wider = tubePrints.slice(0, idx).flat();
+    alongClipped(deckTops, path, -carriage, carriage, 0.02, wider);
     laneLines(path, carriage, tn.lanes, tn.oneway, tn.edgeLines);
     for (const side of [1, -1] as const) {
       // Walkway: kerb face and top.
       const kerb = side * carriage;
       const edge = side * half;
-      face(walkways, path, kerb, 0, 0.3, side > 0 ? -1 : 1);
-      along(walkways, path, Math.min(kerb, edge), Math.max(kerb, edge), 0.3);
+      for (const run of outside((kerb + edge) / 2)) {
+        face(walkways, run, kerb, 0, 0.3, side > 0 ? -1 : 1);
+        along(walkways, run, Math.min(kerb, edge), Math.max(kerb, edge), 0.3);
+      }
       // Walls: light panels to 3.5 m, dark coating above, facing into the tube.
-      face(tubeWalls, path, edge, 0.3, 3.5, side > 0 ? -1 : 1, PANEL);
-      face(tubeWalls, path, edge, 3.5, h, side > 0 ? -1 : 1, COATING);
+      for (const run of outside(edge)) {
+        face(tubeWalls, run, edge, 0.3, 3.5, side > 0 ? -1 : 1, PANEL);
+        face(tubeWalls, run, edge, 3.5, h, side > 0 ? -1 : 1, COATING);
+      }
     }
-    along(concrete, path, half, -half, h, -1);
+    alongClipped(concrete, path, half, -half, h, wider, -1);
 
     // Fittings along the tube, by arc length.
     const samples = (step: number, offset: number) => {
@@ -1606,24 +1832,26 @@ export function buildGround(
         );
       }
     }
-  }
+  });
 
   addMesh(structure, mats.curb, 'bridges', true);
+  addMesh(railings, mats.curb, 'bridge-railings', true, true);
   addMesh(concrete, mats.retaining, 'cuttings', true);
   addMesh(deckTops, mats.asphalt, 'bridge-decks', false);
-  addMesh(walkways, mats.sidewalk, 'bridge-walkways', false);
-  addMesh(deckMarks, mats.marking, 'bridge-markings', false);
-  const colored = (mb: MeshBuilder, mat: unknown, name: string, shadow: boolean) => {
+  addMesh(walkways, mats.sidewalk, 'bridge-walkways', false, true);
+  addMesh(deckMarks, mats.marking, 'bridge-markings', false, true);
+  const colored = (mb: MeshBuilder, mat: unknown, name: string, shadow: boolean, near = false) => {
     if (!mb.vertexCount) return;
     const m = new THREE.Mesh(mb.build({ color: true }), mat as THREE.Material);
     m.castShadow = shadow;
     m.receiveShadow = true;
     m.name = name;
+    if (near) m.userData.role = 'ground:near';
     m.userData.pick = { ids: features, owners: mb.triangleOwner };
     group.add(m);
   };
   colored(tubeWalls, mats.tunnelWall, 'tunnel-walls', true);
-  colored(glow, mats.tunnelGlow, 'tunnel-lights', false);
-  colored(fixtures, mats.tunnelFixture, 'tunnel-fittings', false);
+  colored(glow, mats.tunnelGlow, 'tunnel-lights', false, true);
+  colored(fixtures, mats.tunnelFixture, 'tunnel-fittings', false, true);
   return group;
 }

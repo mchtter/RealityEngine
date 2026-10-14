@@ -21,6 +21,10 @@ const EYE = 1.7;
 const WALK = 6;
 const LOOK = 0.0032;
 const DEG = Math.PI / 180;
+/** How fast (1/s) the orbit target settles onto the ground under it. */
+const TARGET_FOLLOW = 6;
+/** Least height (m) of the orbit camera above the ground below it. */
+const ORBIT_CLEARANCE = 2;
 
 const MOVE_KEYS: Record<string, [number, number]> = {
   KeyW: [0, 1],
@@ -40,6 +44,8 @@ const isTyping = (e: KeyboardEvent) => {
 
 export class CameraRig {
   mode: DtCameraMode = 'orbit';
+  /** Keys the camera leaves alone (W / E / R switch the transform gizmo while it is shown). */
+  blockedKeys: ReadonlySet<string> = new Set();
   private readonly keys = new Set<string>();
   private yaw = 0;
   private pitch = 0;
@@ -59,6 +65,8 @@ export class CameraRig {
     /** Surface under feet at `foot` height: terrain, bridge deck or tunnel road. */
     private readonly standAt: (x: number, y: number, foot: number) => number = (x, y) =>
       heightAt(x, y),
+    /** Ground height where a loaded tile has it; null elsewhere (the orbit then holds). */
+    private readonly groundAt: (x: number, y: number) => number | null = (x, y) => heightAt(x, y),
   ) {
     this.baseLimits = {
       min: controls.minDistance,
@@ -192,7 +200,27 @@ export class CameraRig {
         this.isoTurn -= a;
         this.rotateAround(a);
       }
-      if (moving || zoom) this.changed();
+      // Keep the orbit on the city, not under it: the target rides the ground
+      // (eased, so panning over hills does not jump) and the camera stays above
+      // it. Panning moves the target in a flat plane, which used to leave it at
+      // the height where the pan started — under the hills, with the camera.
+      const ground = this.groundAt(t.x, -t.z);
+      const dy = ground === null ? 0 : ground - t.y;
+      let followed = false;
+      if (Math.abs(dy) > 0.05) {
+        const shift = dy * Math.min(1, step * TARGET_FOLLOW);
+        t.y += shift;
+        this.camera.position.y += shift;
+        followed = true;
+      }
+      const p = this.camera.position;
+      const below = this.groundAt(p.x, -p.z);
+      const under = below === null ? 0 : below + ORBIT_CLEARANCE - p.y;
+      if (under > 0) {
+        p.y += under;
+        followed = true;
+      }
+      if (moving || zoom || followed) this.changed();
       return true;
     }
 
@@ -317,7 +345,7 @@ export class CameraRig {
   }
 
   private readonly onKeyDown = (e: KeyboardEvent) => {
-    if (isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (isTyping(e) || e.metaKey || e.ctrlKey || e.altKey || this.blockedKeys.has(e.code)) return;
     if (this.mode === 'isometric' && !e.repeat && (e.code === 'KeyQ' || e.code === 'KeyE')) {
       this.isoTurn += (e.code === 'KeyE' ? 1 : -1) * (Math.PI / 2);
     }

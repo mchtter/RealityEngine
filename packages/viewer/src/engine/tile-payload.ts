@@ -112,6 +112,11 @@ export interface TilePayload {
    * (observed / synthetic shells are separate meshes with their own indices).
    */
   slots: { obs: string[]; syn: string[] };
+  /**
+   * Ground picture of the tile (landcover.ts: GROUND_SIZE² RGBA, sRGB, row 0
+   * at the south edge) the terrain is textured with; absent on an empty tile.
+   */
+  ground?: Uint8Array;
 }
 
 /** No city data in the tile at all: the blank start of a city (grey grid ground). */

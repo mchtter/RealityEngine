@@ -29,6 +29,7 @@ import {
   normalView,
   normalWorld,
   oneMinus,
+  positionGeometry,
   positionLocal,
   select,
   positionView,
@@ -38,17 +39,21 @@ import {
   sin,
   smoothstep,
   step,
+  texture,
   textureLoad,
   time,
   transformNormal,
   uniform,
   uv,
+  vec2,
   vec3,
   vec4,
   vertexColor,
   vertexStage,
 } from 'three/tsl';
 import * as THREE from 'three/webgpu';
+import { GROUND_GRID } from './ground-atlas';
+import { GROUND_INNER, GROUND_PAD, GROUND_SIZE } from './landcover';
 
 /**
  * Per-instance data of instanced meshes, as geometry attributes: the instance
@@ -166,6 +171,12 @@ export interface DtMaterials {
   ground: THREE.MeshStandardNodeMaterial;
   yard: THREE.MeshStandardNodeMaterial;
   marking: THREE.MeshStandardNodeMaterial;
+  /** Taxiway centrelines (yellow). */
+  markingYellow: THREE.MeshStandardNodeMaterial;
+  /** Rail bed (ballast / tram concrete), sleepers, rails. */
+  railBed: THREE.MeshStandardNodeMaterial;
+  railTies: THREE.MeshStandardNodeMaterial;
+  railSteel: THREE.MeshStandardNodeMaterial;
   terrain: THREE.MeshStandardNodeMaterial;
   /** Ground of an area without city data: a grey editor grid. */
   terrainGrid: THREE.MeshStandardNodeMaterial;
@@ -208,6 +219,10 @@ export interface DtMaterials {
   utilityCover: THREE.MeshStandardNodeMaterial;
   /** Opacity of the ground in the underground view (1 = solid; see setUnderground). */
   groundFade: THREE.UniformNode<'float', number>;
+  /** The ground atlas (ground-atlas.ts) the terrain samples; set by the engine. */
+  groundAtlas: THREE.TextureNode;
+  /** Albedo of plain open land in the region (terrain without a ground picture: the backdrop). */
+  openLand: THREE.UniformNode<'color', THREE.Color>;
   dispose(): void;
 }
 
@@ -250,6 +265,8 @@ export function createMaterials(): DtMaterials {
   // One texture for every loaded tile keeps a single shader build per material.
   const scenarioOn = uniform(0);
   const groundFade = uniform(1);
+  const groundAtlas = texture(new THREE.Texture());
+  const openLand = uniform(new THREE.Color(0.45, 0.4, 0.33));
   const scenario = new THREE.DataTexture(
     new Uint8Array(SCENARIO_TEXTURE_WIDTH * SCENARIO_TEXTURE_HEIGHT * 4),
     SCENARIO_TEXTURE_WIDTH,
@@ -388,14 +405,18 @@ export function createMaterials(): DtMaterials {
     const fl = attribute<'vec3'>('floorInfo', 'vec3');
     const rel = v.sub(fl.x);
     const local = rel.sub(fl.y.mul(floor(rel.div(fl.y))));
-    const inX = step(abs(u.sub(bay.x)), bay.y.mul(0.5)).mul(step(0.01, bay.y));
+    // bay.x < 0 (far LOD walls: one quad per edge): a window every −bay.x metres.
+    const period = max(bay.x.negate(), 0.01);
+    const repeated = step(bay.x, -0.001);
+    const bayCentre = mix(bay.x, floor(u.div(period)).add(0.5).mul(period), repeated);
+    const inX = step(abs(u.sub(bayCentre)), bay.y.mul(0.5)).mul(step(0.01, bay.y));
     const inY = step(0.9, local)
       .mul(step(local, bay.z.add(0.9)))
       .mul(step(fl.x, v))
       .mul(step(v, fl.z));
     const win = inX.mul(inY);
     const lightId = hash(
-      bay.x
+      bayCentre
         .mul(3.7)
         .add(floor(rel.div(fl.y)).mul(17.3))
         .add(fl.x.mul(1.31)),
@@ -764,9 +785,73 @@ export function createMaterials(): DtMaterials {
   }
   decal(playground, -1);
 
+  // Sports turf (a stadium pitch, a halı saha): even, well-kept green.
+  const pitch = new THREE.MeshStandardNodeMaterial({ roughness: 0.9, metalness: 0 });
+  pitch.colorNode = vec3(0.13, 0.32, 0.1).mul(
+    float(0.92).add(mx_noise_float(wp.mul(0.8)).mul(0.08)),
+  );
+  decal(pitch, -1);
+  // Running track: red-brown tartan.
+  const track = new THREE.MeshStandardNodeMaterial({ roughness: 0.85, metalness: 0 });
+  track.colorNode = vec3(0.5, 0.17, 0.11).mul(float(0.94).add(mx_noise_float(wp.mul(3)).mul(0.06)));
+  decal(track, -1);
+
+  // Cemetery ground: dark brown earth between the graves, mostly, with
+  // patches of green (grass, ivy under the trees) and the odd pale gravel path.
+  const cemetery = new THREE.MeshStandardNodeMaterial({ roughness: 0.97, metalness: 0 });
+  {
+    const green = smoothstep(0.5, 0.72, mx_noise_float(wp.mul(0.09)).mul(0.5).add(0.5)).mul(
+      smoothstep(0.35, 0.65, mx_noise_float(wp.mul(0.6).add(7)).mul(0.5).add(0.5)),
+    );
+    const clods = float(0.84).add(mx_noise_float(wp.mul(3.5)).mul(0.16));
+    const soil = mix(
+      vec3(0.3, 0.22, 0.15),
+      vec3(0.37, 0.28, 0.19),
+      mx_noise_float(wp.mul(0.25)).mul(0.5).add(0.5),
+    );
+    const grass = vec3(0.24, 0.31, 0.15).mul(float(0.88).add(mx_noise_float(wp.mul(5)).mul(0.12)));
+    cemetery.colorNode = mix(soil.mul(clods), grass, green.mul(0.85));
+  }
+  decal(cemetery, -1);
+  // Building site: bare worked soil, darker where it is damp or freshly dug,
+  // wheel ruts here and there.
+  const earth = new THREE.MeshStandardNodeMaterial({ roughness: 0.98, metalness: 0 });
+  {
+    const damp = smoothstep(0.45, 0.75, mx_noise_float(wp.mul(0.08)).mul(0.5).add(0.5));
+    const clods = float(0.86).add(mx_noise_float(wp.mul(3)).mul(0.14));
+    const rut = step(0.93, fract(wp.x.add(mx_noise_float(wp.mul(0.05)).mul(6)).div(2.6))).mul(
+      smoothstep(0.55, 0.7, mx_noise_float(wp.mul(0.03).add(5)).mul(0.5).add(0.5)),
+    );
+    const soil = mix(vec3(0.55, 0.45, 0.33), vec3(0.4, 0.32, 0.24), damp).mul(clods);
+    earth.colorNode = mix(soil, soil.mul(0.72), rut);
+  }
+  decal(earth, -1);
+  // Quarry floor: broken pale limestone and dust, rubble in heaps.
+  const quarry = new THREE.MeshStandardNodeMaterial({ roughness: 0.96, metalness: 0 });
+  {
+    const heap = smoothstep(0.5, 0.8, mx_noise_float(wp.mul(0.06)).mul(0.5).add(0.5));
+    const rubble = float(0.84).add(mx_noise_float(wp.mul(2.4)).mul(0.16));
+    quarry.colorNode = mix(vec3(0.76, 0.73, 0.66), vec3(0.62, 0.58, 0.5), heap).mul(rubble);
+  }
+  decal(quarry, -1);
+  // Substation yard: crushed grey stone.
+  const gravel = new THREE.MeshStandardNodeMaterial({ roughness: 0.97, metalness: 0 });
+  gravel.colorNode = vec3(0.57, 0.57, 0.55).mul(
+    float(0.86).add(mx_noise_float(wp.mul(5)).mul(0.14)),
+  );
+  decal(gravel, -1);
+  // Runway / taxiway: dark grooved asphalt, rubber deposits darker in the middle.
+  const airfield = new THREE.MeshStandardNodeMaterial({ roughness: 0.92, metalness: 0 });
+  {
+    const patch = mx_noise_float(wp.mul(0.05)).mul(0.5).add(0.5);
+    const grain = float(0.9).add(mx_noise_float(wp.mul(4)).mul(0.1));
+    airfield.colorNode = mix(vec3(0.3, 0.31, 0.32), vec3(0.22, 0.23, 0.24), patch).mul(grain);
+  }
+  decal(airfield, -1);
+
   // One draw per ground chunk: surface kind comes from the `surf` vertex attribute
   // (0 asphalt, 1 paving, 2 sidewalk, 3 path, 4 island, 5 yard, 6 kerb,
-  // 7 concrete, 8 car park, 9 playground).
+  // 7 concrete, 8 car park, 9 playground, 10 pitch, 11 track, 12 cemetery, 13 earth, 14 quarry, 15 gravel, 16 airfield).
   const ground = new THREE.MeshStandardNodeMaterial({ roughness: 0.9, metalness: 0 });
   {
     const surf = attribute<'float'>('surf', 'float');
@@ -782,6 +867,13 @@ export function createMaterials(): DtMaterials {
       concrete,
       parkingLot,
       playground,
+      pitch,
+      track,
+      cemetery,
+      earth,
+      quarry,
+      gravel,
+      airfield,
     ];
     const c = kinds
       .map((m, k) => vec3(m.colorNode as never).mul(isKind(k)))
@@ -797,31 +889,66 @@ export function createMaterials(): DtMaterials {
     float(0.85).add(mx_noise_float(wp.mul(4)).mul(0.15)),
   );
   decal(marking, -4);
+  // Taxiway centrelines: airfield yellow.
+  const markingYellow = new THREE.MeshStandardNodeMaterial({ roughness: 0.6, metalness: 0 });
+  markingYellow.colorNode = vec3(0.86, 0.64, 0.1).mul(
+    float(0.85).add(mx_noise_float(wp.mul(4)).mul(0.15)),
+  );
+  decal(markingYellow, -4);
+
+  // Rail bed: ballast, grey-brown crushed stone; a tram's bed is concrete
+  // (the `rb` attribute: 0 ballast, 1 concrete).
+  const railBed = new THREE.MeshStandardNodeMaterial({ roughness: 0.98, metalness: 0 });
+  {
+    const rb = attribute<'float'>('rb', 'float');
+    const stone = vec3(0.47, 0.44, 0.4).mul(float(0.8).add(mx_noise_float(wp.mul(7)).mul(0.2)));
+    const slab = vec3(0.6, 0.59, 0.56).mul(float(0.9).add(mx_noise_float(wp.mul(0.8)).mul(0.1)));
+    railBed.colorNode = mix(stone, slab, rb);
+  }
+  decal(railBed, -1);
+  // Sleepers: concrete ties every 0.6 m along the track (uv.x in metres along),
+  // the ballast showing between them.
+  const railTies = new THREE.MeshStandardNodeMaterial({ roughness: 0.95, metalness: 0 });
+  {
+    const along = uv().x;
+    const tie = step(fract(along.div(0.6)), float(0.42));
+    const stone = vec3(0.42, 0.39, 0.35).mul(float(0.8).add(mx_noise_float(wp.mul(7)).mul(0.2)));
+    railTies.colorNode = mix(stone, vec3(0.62, 0.61, 0.58), tie);
+  }
+  decal(railTies, -2);
+  // Thin rail heads and webs: drawn from both sides.
+  const railSteel = new THREE.MeshStandardNodeMaterial({
+    roughness: 0.35,
+    metalness: 0.7,
+    side: THREE.DoubleSide,
+  });
+  railSteel.colorNode = vec3(0.45, 0.42, 0.4);
 
   // Terrain: grass / dry grass / bare soil by noise, rock on steep slopes, sand at the shore.
   const terrain = new THREE.MeshStandardNodeMaterial({ roughness: 0.97, metalness: 0 });
   {
-    // Black Sea hillside meadow: green grass in several hues, olive and straw
-    // patches, bare soil spots, clumps and blades — five noise scales so no
-    // repetition shows from street level to the overview.
-    const macro = mx_noise_float(wp.mul(0.004)).mul(0.5).add(0.5);
+    // Ground colour baked per vertex, parcel by parcel as on satellite imagery
+    // (landcover.ts); the shader adds only its fine grain — tufts, stones,
+    // wheel tracks — at street scale. No large noise patches: the parcels are
+    // the patches.
     const n1 = mx_noise_float(wp.mul(0.03)).mul(0.5).add(0.5);
     const n2 = mx_noise_float(wp.mul(0.25)).mul(0.5).add(0.5);
     const n3 = mx_noise_float(wp.mul(2.2));
     const n4 = mx_noise_float(wp.mul(9));
-    const lush = mix(vec3(0.17, 0.26, 0.08), vec3(0.27, 0.34, 0.12), n2);
-    const olive = vec3(0.36, 0.36, 0.17);
-    const straw = vec3(0.55, 0.49, 0.3);
-    const soil = vec3(0.36, 0.29, 0.21);
-    let g = mix(lush, olive, smoothstep(0.35, 0.8, macro).mul(0.7));
-    g = mix(g, straw, smoothstep(0.62, 0.88, n1).mul(0.75));
-    g = mix(
-      g,
-      soil,
-      smoothstep(0.78, 0.93, n2)
-        .mul(smoothstep(0.4, 0.7, n1))
-        .mul(0.8),
-    );
+    // The tile's ground picture in the atlas (tiles are 1000 m, inside the
+    // slot's padding); −1: plain open land.
+    const gslot = attribute<'float'>('gslot', 'float');
+    const inTile = clamp(
+      vec2(positionGeometry.x, positionGeometry.z.negate()).div(1000),
+      0.5 / GROUND_INNER,
+      1 - 0.5 / GROUND_INNER,
+    )
+      .mul(GROUND_INNER)
+      .add(GROUND_PAD)
+      .div(GROUND_SIZE);
+    const slotAt = vec2(gslot.mod(GROUND_GRID), floor(gslot.div(GROUND_GRID)));
+    const picture = groundAtlas.sample(slotAt.add(inTile).div(GROUND_GRID)).rgb;
+    let g = select(gslot.lessThan(0), vec3(openLand), picture).mul(n2.sub(0.5).mul(0.08).add(1));
     const slope = oneMinus(normalWorld.y);
     g = mix(g, vec3(0.45, 0.43, 0.4), smoothstep(0.35, 0.6, slope));
     // Cliff faces (sharpened coasts, mapped cliffs): bedded limestone /
@@ -834,9 +961,20 @@ export function createMaterials(): DtMaterials {
     // Sand only on the waterline (low-lying city ground near the sea is not a beach).
     const shore = smoothstep(1.0, 0.3, wp.y);
     g = mix(g, vec3(0.62, 0.57, 0.45), shore);
-    terrain.colorNode = g.mul(n3.mul(0.1).add(n4.mul(0.06)).add(1));
+    // Ground footprint of a pixel (m): a noise octave finer than about two
+    // pixels only shimmers as the camera moves (the "crackle" on the terrain
+    // at a grazing view, 2026-10-12), so it fades out instead.
+    const footprint = fwidth(wp.x).add(fwidth(wp.y)).add(fwidth(wp.z));
+    const octave = (freq: number) => oneMinus(smoothstep(0.25, 0.6, footprint.mul(freq)));
+    const k3 = octave(2.2);
+    const k4 = octave(9);
+    terrain.colorNode = g.mul(n3.mul(0.1).mul(k3).add(n4.mul(0.06).mul(k4)).add(1));
     // Grass clumps and tussocks catch the low sun.
-    terrain.normalNode = bumpedNormal(n2.mul(0.6).add(n3.mul(0.3)).add(n4.mul(0.15)), 0.9, 120);
+    terrain.normalNode = bumpedNormal(
+      n2.mul(0.6).mul(octave(0.25)).add(n3.mul(0.3).mul(k3)).add(n4.mul(0.15).mul(k4)),
+      0.9,
+      120,
+    );
   }
 
   // Empty ground (an area without city data yet): a neutral grey grid, the
@@ -1138,6 +1276,9 @@ export function createMaterials(): DtMaterials {
     terrainGrid,
     ground,
     marking,
+    markingYellow,
+    railBed,
+    railTies,
     yard,
     asphalt,
     sidewalk,
@@ -1173,6 +1314,10 @@ export function createMaterials(): DtMaterials {
     yard,
     ground,
     marking,
+    markingYellow,
+    railBed,
+    railTies,
+    railSteel,
     terrain,
     terrainGrid,
     water,
@@ -1222,6 +1367,10 @@ export function createMaterials(): DtMaterials {
     yard,
     ground,
     marking,
+    markingYellow,
+    railBed,
+    railTies,
+    railSteel,
     terrain,
     terrainGrid,
     water,
@@ -1242,6 +1391,8 @@ export function createMaterials(): DtMaterials {
     utility,
     utilityCover,
     groundFade,
+    groundAtlas,
+    openLand,
     dispose: () => {
       all.forEach((m) => {
         disposeVariants(m);

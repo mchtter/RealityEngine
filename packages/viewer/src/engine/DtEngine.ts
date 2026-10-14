@@ -1,24 +1,30 @@
 import {
+  type GeoTerrainGrid,
   type LonLat,
   type UtilityKind,
   utmForward,
   utmInverse,
   utmZoneOf,
 } from '@opentwin/city-core';
-import type { CityObjectState } from '@opentwin/shared';
+import type { CityObjectState, CityPlacement } from '@opentwin/shared';
 import { MapControls } from 'three/addons/controls/MapControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { CSMShadowNode } from 'three/addons/csm/CSMShadowNode.js';
 import { SkyMesh } from 'three/addons/objects/SkyMesh.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import {
+  exp,
   float,
+  fog,
   mix,
   mrt,
   normalView,
   output,
   pass,
+  positionWorld,
+  rangeFogFactor,
   renderOutput,
   uniform,
   vibrance,
@@ -26,8 +32,11 @@ import {
 import * as THREE from 'three/webgpu';
 import { CameraRig, type DtCameraMode } from './camera-modes';
 import { buildCityStates, disposeCityStates } from './city-states';
-import { CityTile, type DtInspect, type TileLevel } from './city-tile';
+import { CityTile, type DtInspect, FAR_SHADOW_LAYER, type TileLevel } from './city-tile';
 import { toThree } from './geom';
+import { GroundAtlas } from './ground-atlas';
+import { HorizonLayer } from './horizon';
+import { openLandAlbedo } from './landcover';
 import {
   type DtMaterials,
   SCENARIO_ALPHA,
@@ -36,8 +45,15 @@ import {
   createMaterials,
   setUnderground as fadeGround,
 } from './materials';
+import { PlacementLayer } from './placements';
 import { SlotAllocator } from './slot-allocator';
-import { type BuildingInfo, type TilePayload, type TileSummary, instancesOf } from './tile-payload';
+import {
+  type BuildingInfo,
+  type MeshPayload,
+  type TilePayload,
+  type TileSummary,
+  instancesOf,
+} from './tile-payload';
 import { VehicleLayer, type VehicleState } from './vehicles';
 
 /** A building's scenario colour, the scenario key (join value) it matched and the overlay that painted it. */
@@ -69,6 +85,12 @@ type TileScenarioCount = ScenarioSummary;
 /** A building's source identity: shared by its split parts and its copies in neighbouring tiles. */
 export const buildingKey = (b: BuildingInfo): string =>
   b.ref ?? (b.osmId !== undefined ? String(b.osmId) : b.id.replace(/-\d+$/, ''));
+
+/** Shadow cascade reach of near views (m); it grows with the camera distance up to the max. */
+const CSM_NEAR_REACH = 700;
+const CSM_MAX_REACH = 6000;
+/** The far cascade reaches at least this far (the fog's least end, plus a margin). */
+const CSM_COVER_MIN = 5600;
 
 /** [west, south, east, north] in degrees. */
 export type DtBox = [number, number, number, number];
@@ -133,7 +155,33 @@ export interface DtEngineEvents {
   onStats?: (stats: DtEngineStats) => void;
   /** Buried networks in the loaded tiles changed (runs and km per network). */
   onUtilities?: (stats: TileSummary['utilities']) => void;
+  /** A placed model was clicked (null: a click elsewhere). */
+  onSelectPlacement?: (id: string | null) => void;
 }
+
+/** What the transform gizmo does to a placed model (W / E / R, as in Unreal). */
+export type PlacementGizmoMode = 'translate' | 'rotate' | 'scale';
+
+/** Where a model ended up after a gizmo drag (CityPlacementInput fields). */
+export interface PlacementTransform {
+  lon: number;
+  lat: number;
+  heading: number;
+  scale: number;
+  /** Null while the model stands on the terrain (moved only on the ground). */
+  altitude: number | null;
+}
+
+/** Keys the gizmo takes from the camera while it is shown. */
+const GIZMO_KEYS: ReadonlySet<string> = new Set(['KeyW', 'KeyE', 'KeyR']);
+
+const isTypingIn = (e: KeyboardEvent) => {
+  const t = e.target as HTMLElement | null;
+  return !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+};
+
+/** Sky box side (m): its corners (√3 / 2 of it) stay inside the 70 km far plane. */
+const SKY_SIZE = 60000;
 
 const DEG = Math.PI / 180;
 /** Background and haze of the underground view. */
@@ -188,8 +236,12 @@ export class DtEngine {
    * camera (2026-10-04). `localStorage.dtShadows = 'box'` keeps the old box.
    */
   private csm: CSMShadowNode | null = null;
+  /** Reach of the sharp (first) shadow cascade, metres. */
+  private csmNear = CSM_NEAR_REACH;
   private readonly hemi = new THREE.HemisphereLight(0xbfd6ff, 0x5b5a48, 1.1);
   private readonly sky = new SkyMesh();
+  /** Behind everything (never black): the haze colour. */
+  private readonly skyFallback = new THREE.Color(0xb9c9d8);
   /** Sky copy rendered into a PMREM environment map for image-based lighting. */
   private readonly envSky = new SkyMesh();
   private readonly envScene = new THREE.Scene();
@@ -197,6 +249,20 @@ export class DtEngine {
   private envTarget: THREE.RenderTarget | null = null;
   private envTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly mats: DtMaterials;
+  private readonly fogUniforms = {
+    near: uniform(1300),
+    far: uniform(5200),
+    color: uniform(new THREE.Color(0xb9c9d8)),
+    /** Ground height at the camera target: the fog thins above it. */
+    ground: uniform(0),
+  };
+  /** Land and sea beyond the loaded tiles (horizon.ts), once its grid arrived. */
+  private horizon: HorizonLayer | null = null;
+  /** Geographic centre of the horizon grid. */
+  private horizonAt: LonLat | null = null;
+
+  /** Ground pictures of the loaded tiles (ground-atlas.ts). */
+  private readonly groundAtlas: GroundAtlas;
   private readonly pipeline: THREE.RenderPipeline;
   private glow: ReturnType<typeof bloom> | null = null;
   private readonly tiles = new Map<string, CityTile>();
@@ -288,12 +354,19 @@ export class DtEngine {
       42,
       container.clientWidth / container.clientHeight,
       1,
-      14000,
+      // Out to the horizon's mountains (±50 km).
+      70000,
     );
     this.mats = createMaterials();
+    this.groundAtlas = new GroundAtlas(renderer);
+    this.mats.groundAtlas.value = this.groundAtlas.texture;
 
     // Sky, light, fog.
-    this.sky.scale.setScalar(12000);
+    // A box round the camera (it follows it each frame), its corners inside the
+    // far plane: a 12 km box at the world origin was left behind once the
+    // camera went 6 km out, and the sky turned black (2026-10-13).
+    this.sky.scale.setScalar(SKY_SIZE);
+    this.sky.frustumCulled = false;
     this.sky.turbidity.value = 2.6;
     this.sky.rayleigh.value = 1.1;
     this.sky.mieCoefficient.value = 0.004;
@@ -303,6 +376,7 @@ export class DtEngine {
     // The dome is far beyond the fog's far distance: fogged, it renders flat grey.
     (this.sky.material as THREE.NodeMaterial).fog = false;
     this.scene.add(this.sky);
+    this.scene.background = this.skyFallback;
     this.envSky.scale.setScalar(50);
     this.envSky.turbidity.value = 2.6;
     this.envSky.rayleigh.value = 1.1;
@@ -313,6 +387,20 @@ export class DtEngine {
     this.pmrem = new THREE.PMREMGenerator(renderer);
     this.scene.environmentIntensity = 0.22;
     this.scene.fog = new THREE.Fog(0xb9c9d8, 1300, 5200);
+    // The fog drawn is a node over `scene.fog`'s values (still set by the
+    // camera and the time of day): the same range fog, thinning with height
+    // above the ground in view, so far mountains read through the haze that
+    // hides the end of the loaded tiles at street level.
+    this.scene.fogNode = fog(
+      this.fogUniforms.color,
+      rangeFogFactor(this.fogUniforms.near, this.fogUniforms.far).mul(
+        mix(
+          float(0.35),
+          float(1),
+          exp(positionWorld.y.sub(this.fogUniforms.ground).max(0).div(-350)),
+        ),
+      ),
+    );
 
     this.sun.castShadow = true;
     let shadowMode = 'csm';
@@ -322,15 +410,19 @@ export class DtEngine {
       // Storage blocked: default.
     }
     if (shadowMode !== 'box') {
-      // One cascade: the shadow pass costs what the old single box did (two
-      // drew ~3 M more triangles a frame); fitted to the view and fading out
-      // at its far end, so no hard line follows the camera.
+      // Two cascades: a sharp one around the focus (`csmNear` metres) and one
+      // out to where the haze swallows the city. Surfaces past the last cascade
+      // come out dark, so it must reach the fog's end; one cascade stretched
+      // that far lost the street-level shadows (measured 2026-10-09).
       const csm = new CSMShadowNode(this.sun, {
-        cascades: 1,
-        maxFar: 700,
-        mode: 'practical',
+        cascades: 2,
+        maxFar: CSM_COVER_MIN,
+        mode: 'custom',
         lightMargin: 300,
       });
+      csm.customSplitsCallback = (_n, _near, far, breaks) => {
+        breaks.push(Math.min(0.9, this.csmNear / far), 1);
+      };
       csm.fade = true;
       (this.sun.shadow as THREE.DirectionalLightShadow & { shadowNode: unknown }).shadowNode = csm;
       this.csm = csm;
@@ -354,9 +446,18 @@ export class DtEngine {
     const backdrop = new THREE.Mesh(new THREE.PlaneGeometry(60000, 60000), this.mats.terrain);
     backdrop.rotation.x = -Math.PI / 2;
     backdrop.receiveShadow = false;
+    // Plain open land of the region (no ground picture; coloured with the climate).
+    backdrop.geometry.setAttribute(
+      'gslot',
+      new THREE.BufferAttribute(
+        new Float32Array(backdrop.geometry.attributes.position.count).fill(-1),
+        1,
+      ),
+    );
     backdrop.name = 'backdrop';
     this.scene.add(backdrop);
     this.scene.add(this.vehicles.group);
+    this.scene.add(this.placements.group);
     this.sea = backdrop;
 
     this.controls = new MapControls(this.camera, renderer.domElement);
@@ -376,7 +477,25 @@ export class DtEngine {
       (x, y) => this.heightAt(x, y),
       () => this.controls.dispatchEvent({ type: 'change' }),
       (x, y, foot) => this.standHeightAt(x, y, foot),
+      (x, y) => this.groundAt(x, y),
     );
+
+    // Transform gizmo for the selected placed model (shown only to editors).
+    this.gizmo = new TransformControls(this.camera, renderer.domElement);
+    this.gizmo.setSpace('world');
+    this.gizmo.setSize(1.4);
+    this.gizmo.addEventListener('dragging-changed', (e) => {
+      this.controls.enabled = !e.value;
+    });
+    this.gizmo.addEventListener('mouseDown', () => {
+      const o = this.gizmo.object;
+      if (o) this.gizmoStart = { y: o.position.y, scale: o.scale.x };
+    });
+    this.gizmo.addEventListener('objectChange', () => this.constrainGizmo());
+    this.gizmo.addEventListener('mouseUp', () => this.commitGizmo());
+    this.scene.add(this.gizmo.getHelper());
+    window.addEventListener('keydown', this.onGizmoKey);
+    window.addEventListener('keyup', this.onGizmoKeyUp);
 
     // Post-processing: AO + bloom (night lights) + FXAA.
     this.pipeline = new THREE.RenderPipeline(renderer);
@@ -450,6 +569,7 @@ export class DtEngine {
     if (frame) {
       if (!this.world) {
         this.world = { zone: frame.zone, originE: frame.originE, originN: frame.originN };
+        this.updateClimate();
       } else if (this.tiles.size === 0) {
         // Floating origin: after a long jump every old tile is gone; re-anchor the
         // world at this tile so coordinates stay small (float32 on the GPU).
@@ -470,7 +590,9 @@ export class DtEngine {
         syn: this.slotAllocator.alloc(payload.slots.syn.length),
       },
       level,
+      payload.ground ? this.groundAtlas.add(payload.ground) : -1,
     );
+    this.horizon?.setTile(key, 'loaded');
     // Always written: a reused slot must not keep a previous building's colour / selection.
     const painted = this.paintScenario(tile);
     if (this.scenarioColor) {
@@ -487,6 +609,7 @@ export class DtEngine {
     this.emitUtilities();
     // Ground heights / building tops of states on this tile are known now.
     if (this.cityStates.length) this.rebuildCityStates();
+    if (this.placementList.length) this.rebuildPlacements();
     if (this.vehicleList.length) this.setVehicles(this.vehicleList);
     if (!this.placed) {
       this.placed = true;
@@ -508,18 +631,68 @@ export class DtEngine {
     return true;
   }
 
+  /**
+   * Whether the horizon should be (re)loaded for a view at `at`: none yet, or
+   * the camera has gone more than 25 km from its centre (it reaches ±50 km).
+   */
+  needsHorizon(at: LonLat): boolean {
+    if (!this.world) return false;
+    if (!this.horizon || !this.horizonAt) return true;
+    const dLat = (at.lat - this.horizonAt.lat) * 111;
+    const dLon = (at.lon - this.horizonAt.lon) * 111 * Math.cos((at.lat * Math.PI) / 180);
+    return Math.hypot(dLat, dLon) > 25;
+  }
+
+  /** Tiles being compiled on the server or meshed here (hatched on the horizon). */
+  private pendingTiles = new Set<string>();
+
+  /** Marks the tiles in `keys` as on their way (the others in view drop the mark). */
+  setPendingTiles(keys: Iterable<string>): void {
+    const next = new Set(keys);
+    for (const key of this.pendingTiles)
+      if (!next.has(key) && !this.tiles.has(key)) this.horizon?.setTile(key, 'none');
+    for (const key of next) if (!this.tiles.has(key)) this.horizon?.setTile(key, 'pending');
+    this.pendingTiles = next;
+  }
+
+  /** The land beyond the loaded tiles, from a coarse DEM grid around `at`. */
+  setHorizon(grid: GeoTerrainGrid, at: LonLat): void {
+    if (!this.world) return;
+    this.horizon?.mesh.removeFromParent();
+    this.horizon?.dispose();
+    this.horizon = new HorizonLayer(grid, this.world, this.mats.openLand);
+    this.horizonAt = at;
+    for (const key of this.pendingTiles) this.horizon.setTile(key, 'pending');
+    for (const key of this.tiles.keys()) this.horizon.setTile(key, 'loaded');
+    this.scene.add(this.horizon.mesh);
+  }
+
+  /** The backdrop beyond the loaded tiles in the region's open-land colour (climate.ts). */
+  private updateClimate(): void {
+    if (!this.world) return;
+    const at = utmInverse(this.world.originE, this.world.originN, this.world.zone);
+    this.mats.openLand.value.setRGB(...openLandAlbedo(at.lon, at.lat));
+  }
+
   /** Moves the world origin to `frame`, keeping the camera where it is on the ground. */
   private rebase(frame: { zone: number; originE: number; originN: number }): void {
+    // The horizon mesh is in the old origin's coordinates: dropped, loaded again.
+    this.horizon?.mesh.removeFromParent();
+    this.horizon?.dispose();
+    this.horizon = null;
+    this.horizonAt = null;
     const world = this.world!;
     if (frame.zone !== world.zone) {
       // Another UTM zone: camera position has no meaning there; the next view sets it.
       this.world = { zone: frame.zone, originE: frame.originE, originN: frame.originN };
       this.placed = false;
+      this.updateClimate();
       return;
     }
     const dx = frame.originE - world.originE;
     const dy = frame.originN - world.originN;
     this.world = { zone: frame.zone, originE: frame.originE, originN: frame.originN };
+    this.updateClimate();
     const shift = new THREE.Vector3(...toThree(dx, dy, 0));
     this.camera.position.sub(shift);
     this.controls.target.sub(shift);
@@ -565,6 +738,8 @@ export class DtEngine {
       const base = tile.slotBases[layer];
       if (base !== null) this.slotAllocator.release(base, tile.slots[layer].length);
     }
+    this.groundAtlas.release(tile.groundSlot);
+    this.horizon?.setTile(key, this.pendingTiles.has(key) ? 'pending' : 'none');
     tile.dispose();
     this.tiles.delete(key);
     this.scenarioCounts.delete(key);
@@ -589,6 +764,15 @@ export class DtEngine {
     if (tube) return tube.h;
     const below = hs.filter((s) => s.h <= foot + 1.2).map((s) => s.h);
     return below.length ? Math.max(...below) : Math.min(...hs.map((s) => s.h));
+  }
+
+  /** Ground height at a world point where a loaded tile has it (null elsewhere). */
+  groundAt(x: number, y: number): number | null {
+    for (const tile of this.tiles.values()) {
+      const h = tile.heightAt(x, y);
+      if (h !== null) return h;
+    }
+    return null;
   }
 
   /** Ground height at a world point (0 outside loaded tiles). */
@@ -961,6 +1145,253 @@ export class DtEngine {
     for (const tile of this.tiles.values()) tile.setShowFixes(on);
   }
 
+  // ─── Placed models (prefabs, uploaded GLB) and facility interiors ─────────
+
+  private readonly placements = new PlacementLayer();
+  private placementList: CityPlacement[] = [];
+  private loadModel: (assetId: string) => Promise<ArrayBuffer> | null = () => null;
+
+  /** Placed models to draw; `loadModel` fetches an uploaded model's bytes (the host's session). */
+  setPlacements(
+    list: CityPlacement[],
+    loadModel: (assetId: string) => Promise<ArrayBuffer> | null = this.loadModel,
+  ): void {
+    this.placementList = list;
+    this.loadModel = loadModel;
+    this.rebuildPlacements();
+  }
+
+  private rebuildPlacements(): void {
+    // Not under a drag (a tile arriving rebuilt the models): it would snap back.
+    if (this.gizmo.dragging) {
+      this.gizmoRebuild = true;
+      return;
+    }
+    this.placements.update(this.placementList, {
+      worldOf: (lon, lat) => this.worldOf(lon, lat),
+      heightAt: (x, y) => this.heightAt(x, y),
+      loadModel: (id) => this.loadModel(id),
+    });
+    this.syncGizmo();
+  }
+
+  setSelectedPlacement(id: string | null): void {
+    this.placements.setSelected(id);
+    this.syncGizmo();
+  }
+
+  /** Shows a placement's facility interior floor by floor (null: closes it). */
+  setPlacementInside(id: string | null, explode = 8): void {
+    this.placements.setInside(id, explode);
+    this.syncGizmo();
+  }
+
+  // ─── Transform gizmo ──────────────────────────────────────────────────────
+
+  private readonly gizmo: TransformControls;
+  /** Placement the gizmo is for (null: hidden). */
+  private gizmoId: string | null = null;
+  /** The model's height and scale when the current drag began. */
+  private gizmoStart: { y: number; scale: number } | null = null;
+  /** Lifted off the ground with the up handle in this session: its altitude is kept. */
+  private gizmoLifted = false;
+  /** Models changed under a drag: rebuilt when it ends. */
+  private gizmoRebuild = false;
+  /** Pointer went down on a gizmo handle (that click selects nothing). */
+  private downOnGizmo = false;
+  private readonly gizmoTransformCbs = new Set<(id: string, t: PlacementTransform) => void>();
+  private readonly gizmoModeCbs = new Set<(mode: PlacementGizmoMode) => void>();
+
+  /**
+   * Shows the transform gizmo on a placed model (null: hides it). While it is
+   * shown W / E / R switch move / rotate / scale (the camera leaves those
+   * keys), Shift snaps (1 m, 15°, 0.1) and Esc lets go of the model.
+   */
+  setPlacementGizmo(id: string | null): void {
+    if (id !== this.gizmoId) this.gizmoLifted = false;
+    this.gizmoId = id;
+    this.rig.blockedKeys = id ? GIZMO_KEYS : new Set();
+    this.syncGizmo();
+  }
+
+  setGizmoMode(mode: PlacementGizmoMode): void {
+    this.gizmo.setMode(mode);
+    // Turning only about the vertical (a heading); moving and scaling on all axes.
+    this.gizmo.showX = mode !== 'rotate';
+    this.gizmo.showZ = mode !== 'rotate';
+    for (const cb of this.gizmoModeCbs) cb(mode);
+  }
+
+  get gizmoMode(): PlacementGizmoMode {
+    return this.gizmo.mode as PlacementGizmoMode;
+  }
+
+  /** Called with the model's new place, heading and scale whenever a gizmo drag ends. */
+  onPlacementTransform(cb: (id: string, t: PlacementTransform) => void): () => void {
+    this.gizmoTransformCbs.add(cb);
+    return () => this.gizmoTransformCbs.delete(cb);
+  }
+
+  /** Called when the gizmo mode changes (keys or setGizmoMode). */
+  onGizmoMode(cb: (mode: PlacementGizmoMode) => void): () => void {
+    this.gizmoModeCbs.add(cb);
+    return () => this.gizmoModeCbs.delete(cb);
+  }
+
+  /** Attaches the gizmo to the placement's current scene object (models are rebuilt often). */
+  private syncGizmo(): void {
+    if (this.gizmo.dragging) return;
+    const root = this.gizmoId ? this.placements.rootOf(this.gizmoId) : null;
+    if (root) {
+      if (this.gizmo.object !== root) this.gizmo.attach(root);
+    } else if (this.gizmo.object) {
+      this.gizmo.detach();
+    }
+  }
+
+  /** Keeps a drag to what a placement can express: ground or a set altitude, a heading, one scale. */
+  private constrainGizmo(): void {
+    const o = this.gizmo.object;
+    const p = this.placementList.find((x) => x.id === this.gizmoId);
+    if (!o || !p) return;
+    if (this.gizmo.mode === 'translate') {
+      if (this.gizmo.axis === 'Y') this.gizmoLifted = true;
+      else if (!this.gizmoLifted && p.altitude === null)
+        o.position.y = this.heightAt(o.position.x, -o.position.z);
+      else if (this.gizmoStart) o.position.y = this.gizmoStart.y;
+    } else if (this.gizmo.mode === 'rotate') {
+      // The view-axis ring would tilt the model: keep only its turn about the vertical.
+      const f = new THREE.Vector3(0, 0, 1).applyQuaternion(o.quaternion);
+      o.rotation.set(0, Math.atan2(f.x, f.z), 0);
+    } else {
+      // One scale: the axis pulled furthest from where the drag began.
+      const s0 = this.gizmoStart?.scale ?? 1;
+      const s = [o.scale.x, o.scale.y, o.scale.z].reduce((a, b) =>
+        Math.abs(b - s0) > Math.abs(a - s0) ? b : a,
+      );
+      o.scale.setScalar(THREE.MathUtils.clamp(s, 0.05, 20));
+    }
+  }
+
+  private commitGizmo(): void {
+    const o = this.gizmo.object;
+    const id = this.gizmoId;
+    const p = this.placementList.find((x) => x.id === id);
+    if (this.gizmoRebuild) {
+      this.gizmoRebuild = false;
+      queueMicrotask(() => this.rebuildPlacements());
+    }
+    if (!o || !id || !p || !this.world) return;
+    const at = utmInverse(
+      this.world.originE + o.position.x,
+      this.world.originN - o.position.z,
+      this.world.zone,
+    );
+    const heading = (((-o.rotation.y / DEG) % 360) + 360) % 360;
+    const t: PlacementTransform = {
+      lon: at.lon,
+      lat: at.lat,
+      heading: Math.round(heading * 10) / 10,
+      scale: Math.round(o.scale.x * 1000) / 1000,
+      altitude:
+        this.gizmoLifted || p.altitude !== null ? Math.round(o.position.y * 100) / 100 : null,
+    };
+    // Until the new list arrives, a rebuild draws the model where it was left.
+    this.placementList = this.placementList.map((x) => (x.id === id ? { ...x, ...t } : x));
+    for (const cb of this.gizmoTransformCbs) cb(id, t);
+  }
+
+  private setGizmoSnap(on: boolean): void {
+    this.gizmo.setTranslationSnap(on ? 1 : null);
+    this.gizmo.setRotationSnap(on ? 15 * DEG : null);
+    this.gizmo.setScaleSnap(on ? 0.1 : null);
+  }
+
+  private readonly onGizmoKey = (e: KeyboardEvent) => {
+    if (!this.gizmoId || isTypingIn(e) || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'Shift') this.setGizmoSnap(true);
+    if (e.repeat) return;
+    if (e.code === 'KeyW') this.setGizmoMode('translate');
+    else if (e.code === 'KeyE') this.setGizmoMode('rotate');
+    else if (e.code === 'KeyR') this.setGizmoMode('scale');
+    else if (e.code === 'Escape') this.events.onSelectPlacement?.(null);
+  };
+
+  private readonly onGizmoKeyUp = (e: KeyboardEvent) => {
+    if (e.key === 'Shift') this.setGizmoSnap(false);
+  };
+
+  /** Flies to a placed model. */
+  focusPlacement(id: string): boolean {
+    const box = this.placements.boxOf(id);
+    if (!box || box.isEmpty() || !this.world) return false;
+    const a = utmInverse(
+      this.world.originE + box.min.x,
+      this.world.originN - box.max.z,
+      this.world.zone,
+    );
+    const b = utmInverse(
+      this.world.originE + box.max.x,
+      this.world.originN - box.min.z,
+      this.world.zone,
+    );
+    this.flyToBounds(padBox([a.lon, a.lat, b.lon, b.lat], FOCUS_MIN_SPAN));
+    return true;
+  }
+
+  /** The canvas the scene is drawn on (drop target of the model library). */
+  get canvas(): HTMLCanvasElement {
+    return this.renderer.domElement;
+  }
+
+  /** Geographic point on the ground under a canvas point (CSS pixels); null off the city. */
+  lonLatAt(clientX: number, clientY: number): LonLat | null {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(
+      new THREE.Vector2(
+        ((clientX - rect.left) / rect.width) * 2 - 1,
+        -((clientY - rect.top) / rect.height) * 2 + 1,
+      ),
+      this.camera,
+    );
+    return this.groundPointAt(ray);
+  }
+
+  /** The next click on the city answers with its geographic point instead of selecting. */
+  private pointRequest: ((at: LonLat | null) => void) | null = null;
+
+  /** Waits for a click on the ground (placing a model); resolves null when cancelled. */
+  pickPoint(): Promise<LonLat | null> {
+    this.pointRequest?.(null);
+    return new Promise((resolve) => {
+      this.pointRequest = resolve;
+    });
+  }
+
+  cancelPickPoint(): void {
+    this.pointRequest?.(null);
+    this.pointRequest = null;
+  }
+
+  private groundPointAt(ray: THREE.Raycaster): LonLat | null {
+    if (!this.world) return null;
+    const meshes: THREE.Object3D[] = [];
+    for (const tile of this.tiles.values()) meshes.push(...tile.visibleGround());
+    const hit = ray.intersectObjects(meshes, false)[0];
+    let p: THREE.Vector3 | null = hit?.point ?? null;
+    if (!p) {
+      const t = this.controls.target;
+      p = ray.ray.intersectPlane(
+        new THREE.Plane(new THREE.Vector3(0, 1, 0), -t.y),
+        new THREE.Vector3(),
+      );
+    }
+    return p
+      ? utmInverse(this.world.originE + p.x, this.world.originN - p.z, this.world.zone)
+      : null;
+  }
+
   private readonly vehicles = new VehicleLayer();
   private vehicleList: VehicleState[] = [];
 
@@ -1066,6 +1497,21 @@ export class DtEngine {
    * Underground view: the given buried networks show under a faded,
    * see-through ground with buildings as holograms; none = the normal city.
    */
+  /** Loaded full-detail tiles whose networks are not built yet. */
+  tilesNeedingUtilities(): string[] {
+    return [...this.tiles.entries()]
+      .filter(([, t]) => t.level === 'full' && t.needsUtilities)
+      .map(([k]) => k);
+  }
+
+  /** Buried networks of a loaded tile (built when the underground view opened). */
+  addTileUtilities(key: string, meshes: MeshPayload[]): void {
+    const tile = this.tiles.get(key);
+    if (!tile) return;
+    tile.addUtilities(meshes, this.geometryCache);
+    tile.setUnderground(this.underground);
+  }
+
   setUnderground(kinds: UtilityKind[]): void {
     this.underground = new Set(kinds);
     fadeGround(this.mats, this.underground.size > 0);
@@ -1079,7 +1525,7 @@ export class DtEngine {
   private applyUndergroundLook(): void {
     const on = this.underground.size > 0;
     this.sky.visible = !on;
-    this.scene.background = on ? UNDERGROUND_BG : null;
+    this.scene.background = on ? UNDERGROUND_BG : this.skyFallback;
     if (on) (this.scene.fog as THREE.Fog).color.copy(UNDERGROUND_BG);
   }
 
@@ -1237,6 +1683,18 @@ export class DtEngine {
   }
 
   /** Development aid: triangle budget of visible meshes per kind (instances × triangles). */
+  /** Orbit camera and target against the ground under them (debugging). */
+  debugOrbit(): { target: number; groundAtTarget: number; camera: number; groundAtCamera: number } {
+    const t = this.controls.target;
+    const p = this.camera.position;
+    return {
+      target: t.y,
+      groundAtTarget: this.heightAt(t.x, -t.z),
+      camera: p.y,
+      groundAtCamera: this.heightAt(p.x, -p.z),
+    };
+  }
+
   debugSummary(): Record<string, { meshes: number; instances: number; triangles: number }> {
     const out: Record<string, { meshes: number; instances: number; triangles: number }> = {};
     this.scene.traverseVisible((o) => {
@@ -1395,6 +1853,9 @@ export class DtEngine {
 
   dispose(): void {
     this.vehicles.dispose();
+    this.placements.dispose();
+    this.groundAtlas.dispose();
+    this.horizon?.dispose();
     this.clearHighlight();
     this.disposed = true;
     this.renderer.setAnimationLoop(null);
@@ -1402,6 +1863,11 @@ export class DtEngine {
     this.resize.disconnect();
     this.renderer.domElement.removeEventListener('pointerdown', this.onPointerDown);
     this.renderer.domElement.removeEventListener('pointerup', this.onPointerUp);
+    window.removeEventListener('keydown', this.onGizmoKey);
+    window.removeEventListener('keyup', this.onGizmoKeyUp);
+    this.gizmo.detach();
+    this.gizmo.getHelper().removeFromParent();
+    this.gizmo.dispose();
     this.rig.dispose();
     this.controls.dispose();
     for (const tile of this.tiles.values()) tile.dispose();
@@ -1425,6 +1891,7 @@ export class DtEngine {
     const controlsOwnCamera = this.rig.update(dt);
     this.lastFrame = now0;
     this.vehicles.tick(Math.min(dt, 0.25));
+    this.placements.tick(Math.min(dt, 0.25), this.camera.position);
     this.follow(Math.min(dt, 0.25));
     if (this.fly && controlsOwnCamera) {
       this.fly.t = Math.min(1, this.fly.t + 1 / 70);
@@ -1450,6 +1917,7 @@ export class DtEngine {
       this.camera.updateProjectionMatrix();
     }
 
+    this.sky.position.copy(this.camera.position);
     // Shadow frustum follows the camera target.
     const target = this.controls.target;
     this.sun.target.position.copy(target);
@@ -1459,6 +1927,41 @@ export class DtEngine {
     const fog = this.scene.fog as THREE.Fog;
     fog.near = Math.max(1300, dist * 1.2);
     fog.far = Math.max(5200, dist * 2.5 + 2000);
+    this.fogUniforms.near.value = fog.near;
+    this.fogUniforms.far.value = fog.far;
+    this.fogUniforms.color.value.copy(fog.color);
+    this.fogUniforms.ground.value = target.y;
+    // The cascades must reach what the camera sees: three's CSM leaves surfaces
+    // beyond its far end dark, so buildings seen from afar turned brown-black
+    // (2026-10-08: from 1.5 km with maxFar 700 dark, 4000 lit; 2026-10-09: the
+    // top of a 400 m view still dark past 880 m). The far cascade reaches the
+    // fog's end; the sharp one keeps 700 m near the focus and grows with distance.
+    // (Only once the cascade is set up: it gets its camera on the first shadow pass.)
+    if (this.csm && (this.csm as unknown as { camera: unknown }).camera) {
+      // The far cascade draws only what casts a shadow that reads from afar
+      // (building shells, bridge bodies): trees, props and detail cost it 2–4 M
+      // triangles a frame for sub-pixel shadows.
+      const far = this.csm.lights[1]?.shadow?.camera;
+      if (far && far.layers.mask !== 1 << FAR_SHADOW_LAYER) {
+        far.layers.set(FAR_SHADOW_LAYER);
+        // A render collects the lights its camera's layers see: without them on
+        // this layer the far cascade's pass left the frame without its sun and
+        // sky light (everything ~40 levels darker, measured 2026-10-09).
+        this.scene.traverse((o) => {
+          if ((o as THREE.Light).isLight) o.layers.enable(FAR_SHADOW_LAYER);
+        });
+      }
+      const near = THREE.MathUtils.clamp(dist * 2.2, CSM_NEAR_REACH, CSM_MAX_REACH);
+      const cover = Math.max(CSM_COVER_MIN, fog.far * 1.08);
+      if (
+        Math.abs(near - this.csmNear) > this.csmNear * 0.15 ||
+        Math.abs(cover - this.csm.maxFar) > this.csm.maxFar * 0.1
+      ) {
+        this.csmNear = near;
+        this.csm.maxFar = cover;
+        this.csm.updateFrustums();
+      }
+    }
     // Shadows only matter near the focus; a smaller box keeps the shadow pass cheap and sharp.
     const extent = THREE.MathUtils.clamp(dist * 1.1, 120, 450);
     const cam = this.sun.shadow.camera;
@@ -1503,6 +2006,8 @@ export class DtEngine {
 
   private readonly onPointerDown = (e: PointerEvent) => {
     this.pointerDown = { x: e.clientX, y: e.clientY };
+    // The gizmo handles its own pointer first (listening since before this one).
+    this.downOnGizmo = !!this.gizmo.object && this.gizmo.axis !== null;
     // Taking the camera ends following a vehicle.
     this.followId = null;
   };
@@ -1511,6 +2016,7 @@ export class DtEngine {
     const start = this.pointerDown;
     this.pointerDown = null;
     if (!start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 4) return;
+    if (this.downOnGizmo) return;
     if (this.inspectMode) {
       this.events.onInspect?.(this.inspectAt(e.clientX, e.clientY));
       return;
@@ -1522,11 +2028,24 @@ export class DtEngine {
     );
     const ray = new THREE.Raycaster();
     ray.setFromCamera(ndc, this.camera);
+    if (this.pointRequest) {
+      const resolve = this.pointRequest;
+      this.pointRequest = null;
+      resolve(this.groundPointAt(ray));
+      return;
+    }
     let best: { d: number; b: BuildingInfo } | null = null;
     for (const tile of this.tiles.values()) {
       const hit = tile.pick(ray);
       if (hit && (!best || hit.d < best.d)) best = hit;
     }
+    const placed = this.placements.pick(ray);
+    if (placed && (!best || placed.d < best.d)) {
+      this.events.onSelect?.(null);
+      this.events.onSelectPlacement?.(placed.id);
+      return;
+    }
+    this.events.onSelectPlacement?.(null);
     this.events.onSelect?.(best?.b ?? null);
   };
 }

@@ -3,12 +3,34 @@ import * as THREE from 'three/webgpu';
 import { toThree } from './geom';
 import { BUILDING_SLOT, type DtMaterials } from './materials';
 import type { PropMode } from './props';
-import { type BuildingInfo, type TilePayload, type TileSummary, buildMesh } from './tile-payload';
+import {
+  type BuildingInfo,
+  type MeshPayload,
+  type TilePayload,
+  type TileSummary,
+  buildMesh,
+} from './tile-payload';
+
+/**
+ * Layer of the meshes the far shadow cascade draws (building shells, bridge
+ * bodies); everything else casts in the near cascade only.
+ */
+export const FAR_SHADOW_LAYER = 1;
+const FAR_CASTER = /^tile:(obs|syn)Shell(Near|Far)?$/;
 
 /** 3D window / balcony / roof detail of a sub-tile is drawn within this distance (+ its radius). */
 const DETAIL_RANGE = 150;
 /** Street furniture is drawn for tiles closer than this (metres, ground distance). */
 const FURNITURE_RANGE = 700;
+/**
+ * Bay-by-bay walls and cornices give way to the one-quad walls beyond this —
+ * about where the 3D window / balcony cells end (DETAIL_RANGE + cell radius).
+ */
+const WALL_DETAIL_RANGE = 500;
+/** Small street furniture (gates, benches, playgrounds…): a few pixels beyond this. */
+const SMALL_FURNITURE_RANGE = 350;
+const SMALL_FURNITURE =
+  /-(gate|bench|waste-basket|street-cabinet|barrier-arm|swing|slide|seesaw|climber|grave|stall)$/;
 /** Beyond this the tile uses its coarse terrain and drops kerbs / lane markings. */
 const GROUND_DETAIL_RANGE = 900;
 
@@ -31,7 +53,7 @@ const SUB_ROLE = /^sub:(\d+):(obsShell|obsDetail|synShell|synDetail|obsProps|syn
  */
 export type TileLevel = 'full' | 'far';
 const NEAR_ONLY =
-  /^(ground:near|fix|tile:(obs|syn)Trim|props:.*|sub:\d+:(obsDetail|synDetail|obsProps|synProps))$/;
+  /^(ground:near|fix|tile:(obs|syn)(Trim|ShellNear)|props:.*|sub:\d+:(obsDetail|synDetail|obsProps|synProps))$/;
 
 /**
  * One compiled city tile in the scene, assembled from buffers the tile
@@ -45,7 +67,10 @@ export class CityTile {
   private readonly propsData: THREE.Mesh[] = [];
   private readonly groundNear: THREE.Mesh[] = [];
   private readonly groundFar: THREE.Mesh[] = [];
-  /** Cornices: shown with ground detail (near tiles); synthetic ones hidden in the data view. */
+  /** Bay-by-bay walls (near) and their one-quad-per-edge LOD (far). */
+  private readonly wallsNear: THREE.Mesh[] = [];
+  private readonly wallsFar: THREE.Mesh[] = [];
+  /** Cornices: shown within WALL_DETAIL_RANGE; synthetic ones hidden in the data view. */
   private readonly trims: { mesh: THREE.Mesh; synthetic: boolean }[] = [];
   private readonly subTiles: SubTile[];
   private readonly synShells: { mesh: THREE.Mesh; material: THREE.Material }[] = [];
@@ -74,6 +99,8 @@ export class CityTile {
     /** Start of this tile's building slot ranges in the scenario texture (null: none free). */
     readonly slotBases: { obs: number | null; syn: number | null },
     readonly level: TileLevel = 'full',
+    /** Slot of the tile's ground picture in the ground atlas (−1: none). */
+    readonly groundSlot = -1,
   ) {
     this.slots = payload.slots;
     this.summary = payload.summary;
@@ -92,8 +119,20 @@ export class CityTile {
     for (const p of payload.meshes) {
       if (level === 'far' && NEAR_ONLY.test(p.role)) continue;
       const mesh = buildMesh(p, mats, geometryCache);
+      if (p.material === 'terrain') {
+        // Which atlas slot the terrain samples its ground colour from.
+        const n = mesh.geometry.getAttribute('position').count;
+        mesh.geometry.setAttribute(
+          'gslot',
+          new THREE.BufferAttribute(new Float32Array(n).fill(groundSlot), 1),
+        );
+      }
+      if (FAR_CASTER.test(p.role) || p.name === 'bridges') mesh.layers.enable(FAR_SHADOW_LAYER);
       this.group.add(mesh);
-      const layer = /^tile:(obs|syn)(Shell|Trim)$/.exec(p.role)?.[1] as 'obs' | 'syn' | undefined;
+      const layer = /^tile:(obs|syn)(Shell(Near|Far)?|Trim)$/.exec(p.role)?.[1] as
+        | 'obs'
+        | 'syn'
+        | undefined;
       if (layer) this.globalSlots(mesh, slotBases[layer]);
       if (p.pick) this.pickables.push({ mesh, ids: p.pick.ids, owners: p.pick.owners });
       if (p.role === 'fix') {
@@ -111,6 +150,15 @@ export class CityTile {
         mesh.visible = false;
         this.utilities.set(kind, [...(this.utilities.get(kind) ?? []), mesh]);
         this.utilityMeshes.add(mesh);
+      } else if (/^tile:(obs|syn)Shell(Near|Far)$/.test(p.role)) {
+        const list = p.role.startsWith('tile:obs') ? this.obsShells : this.synShells;
+        list.push({ mesh, material: mesh.material as THREE.Material });
+        if (p.role.endsWith('Near')) this.wallsNear.push(mesh);
+        else {
+          // Far tiles carry no near walls.
+          mesh.visible = level === 'far';
+          this.wallsFar.push(mesh);
+        }
       } else if (p.role === 'tile:obsShell') {
         this.obsShells.push({ mesh, material: mesh.material as THREE.Material });
       } else if (p.role === 'tile:synShell') {
@@ -172,14 +220,24 @@ export class CityTile {
     const dz = Math.max(-b.maxY - this.local.z, 0, this.local.z + b.minY);
     const tileDistance = Math.hypot(dx, dz);
     const furniture = tileDistance < FURNITURE_RANGE;
-    const groundDetail = tileDistance < GROUND_DETAIL_RANGE;
+    const small = tileDistance < SMALL_FURNITURE_RANGE;
+    const inRange = (m: THREE.Mesh) => (SMALL_FURNITURE.test(m.name) ? small : furniture);
+    // A far-level tile has no near ground (or detail) at any distance: shown
+    // close up (loaded far first, its full version still on the way) it keeps
+    // its far ground, else the buildings stood on nothing.
+    const groundDetail = this.level === 'full' && tileDistance < GROUND_DETAIL_RANGE;
+    const wallDetail = tileDistance < WALL_DETAIL_RANGE;
     const under = this.under;
     for (const m of this.groundNear) m.visible = groundDetail;
     for (const m of this.groundFar) m.visible = !groundDetail;
+    if (this.level === 'full') {
+      for (const m of this.wallsNear) m.visible = wallDetail;
+      for (const m of this.wallsFar) m.visible = !wallDetail;
+    }
     for (const t of this.trims)
-      t.mesh.visible = groundDetail && !under && !(t.synthetic && this.data);
-    for (const m of this.propsShowcase) m.visible = furniture && !this.data && !under;
-    for (const m of this.propsData) m.visible = furniture && this.data && !under;
+      t.mesh.visible = wallDetail && !under && !(t.synthetic && this.data);
+    for (const m of this.propsShowcase) m.visible = inRange(m) && !this.data && !under;
+    for (const m of this.propsData) m.visible = inRange(m) && this.data && !under;
     for (const t of this.subTiles) {
       const near = this.local.distanceTo(t.center) < DETAIL_RANGE + t.radius && !under;
       for (const m of t.obsDetail) m.visible = near;
@@ -193,6 +251,28 @@ export class CityTile {
     this.data = mode === 'data';
     this.applyShells();
     for (const m of this.fix) m.visible = this.data || this.cuts;
+  }
+
+  /** The buried networks arrived (built apart from the tile, for the underground view). */
+  hasUtilityMeshes = false;
+
+  addUtilities(meshes: MeshPayload[], geometryCache: Map<string, THREE.BufferGeometry>): void {
+    if (this.hasUtilityMeshes) return;
+    this.hasUtilityMeshes = true;
+    for (const p of meshes) {
+      if (!p.role.startsWith('util:')) continue;
+      const mesh = buildMesh(p, this.mats, geometryCache);
+      mesh.visible = false;
+      this.group.add(mesh);
+      const kind = p.role.slice(5) as UtilityKind;
+      this.utilities.set(kind, [...(this.utilities.get(kind) ?? []), mesh]);
+      this.utilityMeshes.add(mesh);
+    }
+  }
+
+  /** The tile has networks whose meshes are not built yet. */
+  get needsUtilities(): boolean {
+    return !this.hasUtilityMeshes && Object.keys(this.summary.utilities ?? {}).length > 0;
   }
 
   /**

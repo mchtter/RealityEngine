@@ -252,6 +252,12 @@ export interface BuildingLayer {
   /** Cornices of the whole layer (drawn near the camera only). */
   trim: THREE.Mesh | null;
   shells: THREE.Mesh[];
+  /**
+   * Distance LOD of the walls: one quad per footprint edge (plus the roof's
+   * gable / party walls) with the shader repeating the windows, in place of the
+   * bay-by-bay walls in `shells[0]`.
+   */
+  farWalls: THREE.Mesh;
 }
 
 interface Edge {
@@ -295,6 +301,630 @@ function insetRing(ring: V2[], d: number): V2[] {
   });
 }
 
+// ─── Landmarks: domes, minarets, bell towers ─────────────────────────────────
+
+/** Upright prism of `sides` faces round (cx, cy), from z0 to z1 (walls: blank bays). */
+function prism(
+  mb: MeshBuilder,
+  cx: number,
+  cy: number,
+  radius: number,
+  sides: number,
+  z0: number,
+  z1: number,
+  c: THREE.Color,
+  owner: number,
+  turn = 0,
+): void {
+  for (let k = 0; k < sides; k++) {
+    const a0 = turn + (k / sides) * Math.PI * 2;
+    const a1 = turn + ((k + 1) / sides) * Math.PI * 2;
+    const p0: V2 = [cx + Math.cos(a0) * radius, cy + Math.sin(a0) * radius];
+    const p1: V2 = [cx + Math.cos(a1) * radius, cy + Math.sin(a1) * radius];
+    const am = (a0 + a1) / 2;
+    const w = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
+    mb.quad(
+      [
+        [p0[0], p0[1], z0],
+        [p1[0], p1[1], z0],
+        [p1[0], p1[1], z1],
+        [p0[0], p0[1], z1],
+      ],
+      [Math.cos(am), Math.sin(am), 0],
+      c,
+      [
+        [k * w, z0],
+        [(k + 1) * w, z0],
+        [(k + 1) * w, z1],
+        [k * w, z1],
+      ],
+      0,
+      owner,
+    );
+  }
+}
+
+/**
+ * Surface of revolution round (cx, cy): `profile` gives [radius, z] from the
+ * rim up (a dome's quarter circle, a cone's two points); smooth normals.
+ */
+function revolve(
+  mb: MeshBuilder,
+  cx: number,
+  cy: number,
+  profile: [number, number][],
+  sides: number,
+  c: THREE.Color,
+  owner: number,
+): void {
+  const rows: number[][] = [];
+  for (let j = 0; j < profile.length; j++) {
+    const [r, z] = profile[j];
+    // Normal of the profile at this point (perpendicular to its slope, outward / up).
+    const [ra, za] = profile[Math.max(0, j - 1)];
+    const [rb, zb] = profile[Math.min(profile.length - 1, j + 1)];
+    const dr = rb - ra;
+    const dz = zb - za;
+    const len = Math.hypot(dr, dz) || 1;
+    const nr = dz / len;
+    const nz = -dr / len;
+    const row: number[] = [];
+    for (let k = 0; k <= sides; k++) {
+      const a = (k / sides) * Math.PI * 2;
+      const n = toThree(Math.cos(a) * nr, Math.sin(a) * nr, nz);
+      row.push(
+        mb.vertex(
+          toThree(cx + Math.cos(a) * r, cy + Math.sin(a) * r, z),
+          n,
+          c,
+          k / sides,
+          j / Math.max(1, profile.length - 1),
+        ),
+      );
+    }
+    rows.push(row);
+  }
+  for (let j = 0; j + 1 < rows.length; j++)
+    for (let k = 0; k < sides; k++) {
+      mb.triangle(rows[j][k], rows[j][k + 1], rows[j + 1][k + 1], owner);
+      mb.triangle(rows[j][k], rows[j + 1][k + 1], rows[j + 1][k], owner);
+    }
+}
+
+/**
+ * A mosque's dome on a low drum over the prayer hall, and its minaret(s) —
+ * slim shafts with a balcony (şerefe) and a lead cone — at the hall's
+ * corners; a church's bell tower with a tiled pyramid at the end of its nave.
+ * Sizes follow the footprint's oriented box.
+ */
+function landmarks(
+  b: Building,
+  ring: V2[],
+  wallTop: number,
+  wallColor: THREE.Color,
+  roofColor: THREE.Color,
+  walls: MeshBuilder,
+  flats: MeshBuilder,
+  tiles: MeshBuilder,
+  owner: number,
+): void {
+  const ob = orientedBox(ring);
+  const [cx, cy] = ob.center;
+  const ax = ob.axis;
+  const nx: V2 = [-ax[1], ax[0]];
+  const at = (u: number, v: number): V2 => [cx + ax[0] * u + nx[0] * v, cy + ax[1] * u + nx[1] * v];
+  walls.setAttribute('bay', [0, 0, 0]);
+  if (b.form === 'mosque') {
+    const lead = col('#7a8086');
+    const r = Math.min(16, Math.max(2.5, Math.min(ob.halfWidth, ob.halfLength) * 0.72));
+    const drumTop = wallTop + Math.max(0.8, r * 0.22);
+    prism(walls, cx, cy, r, 16, wallTop - 0.3, drumTop, wallColor, owner);
+    const dome: [number, number][] = Array.from({ length: 9 }, (_, j) => {
+      const t = (j / 8) * (Math.PI / 2);
+      return [Math.max(0.001, Math.cos(t) * r), drumTop + Math.sin(t) * r * 0.95];
+    });
+    revolve(flats, cx, cy, dome, 16, lead, owner);
+    // Finial (alem): a short spike.
+    revolve(
+      flats,
+      cx,
+      cy,
+      [
+        [0.18, drumTop + r * 0.95],
+        [0.001, drumTop + r * 0.95 + 1.4],
+      ],
+      6,
+      col('#b89a4a'),
+      owner,
+    );
+    // Minarets: one at a small mosque, two at a large one, at the hall's front corners.
+    const mr = b.area > 600 ? 1.5 : 1.15;
+    const height = Math.min(62, Math.max(wallTop - b.floorZ + 14, r * 2.4 + 16));
+    const top = b.floorZ + height;
+    // Not where the data maps the minarets as buildings of their own (b.minarets 0).
+    const count = b.minarets ?? (b.area > 1200 ? 2 : 1);
+    const corners: V2[] = [
+      at(ob.halfLength - mr, ob.halfWidth - mr),
+      at(ob.halfLength - mr, -(ob.halfWidth - mr)),
+    ].slice(0, count);
+    for (const [mx, my] of corners) {
+      prism(walls, mx, my, mr, 12, b.baseZ, top, col('#f1eee8'), owner);
+      // Şerefe (balcony) three quarters up: a wider ring with a floor on top.
+      const sz = b.floorZ + height * 0.78;
+      prism(walls, mx, my, mr + 0.55, 12, sz - 0.45, sz, col('#e3ded5'), owner);
+      revolve(
+        flats,
+        mx,
+        my,
+        [
+          [mr + 0.55, sz],
+          [mr, sz],
+        ],
+        12,
+        col('#d9d3c8'),
+        owner,
+      );
+      // Lead cone.
+      revolve(
+        flats,
+        mx,
+        my,
+        [
+          [mr * 1.05, top],
+          [0.001, top + mr * 3.4],
+        ],
+        12,
+        lead,
+        owner,
+      );
+    }
+    return;
+  }
+  // Church: a square bell tower at the nave's front end, its pyramid roof tiled.
+  const s = Math.min(7, Math.max(3.5, Math.min(ob.halfWidth * 1.2, 6)));
+  const [tx, ty] = at(ob.halfLength - s / 2, 0);
+  const top = wallTop + 8 + s;
+  const turn = Math.atan2(ax[1], ax[0]) + Math.PI / 4;
+  prism(walls, tx, ty, s / Math.SQRT2, 4, b.baseZ, top, wallColor, owner, turn);
+  const apex = top + s * 1.3;
+  for (let k = 0; k < 4; k++) {
+    const a0 = turn + (k / 4) * Math.PI * 2;
+    const a1 = turn + ((k + 1) / 4) * Math.PI * 2;
+    const R = (s / Math.SQRT2) * 1.08;
+    const p0: [number, number, number] = [tx + Math.cos(a0) * R, ty + Math.sin(a0) * R, top];
+    const p1: [number, number, number] = [tx + Math.cos(a1) * R, ty + Math.sin(a1) * R, top];
+    const am = (a0 + a1) / 2;
+    const slope = Math.atan2(apex - top, R * Math.cos(Math.PI / 4));
+    const n = toThree(
+      Math.cos(am) * Math.sin(slope),
+      Math.sin(am) * Math.sin(slope),
+      Math.cos(slope),
+    );
+    const w = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
+    const ids = [
+      tiles.vertex(toThree(...p0), n, roofColor, 0, 0),
+      tiles.vertex(toThree(...p1), n, roofColor, w, 0),
+      tiles.vertex(toThree(tx, ty, apex), n, roofColor, w / 2, Math.hypot(apex - top, R)),
+    ];
+    tiles.triangle(ids[0], ids[1], ids[2], owner);
+  }
+}
+
+/**
+ * A mall reads as one from afar: on its front a glazed entrance hall (full
+ * height, standing out a metre, a light frame) and a coloured sign band
+ * along the top of the front wall.
+ */
+function mallFront(
+  b: Building,
+  ring: V2[],
+  wallTop: number,
+  walls: MeshBuilder,
+  owner: number,
+): void {
+  const f = b.facades.find((x) => x.front);
+  if (!f) return;
+  const a = ring[f.edge];
+  const c = ring[(f.edge + 1) % ring.length];
+  const len = Math.hypot(c[0] - a[0], c[1] - a[1]);
+  if (len < 20) return;
+  const t: V2 = [(c[0] - a[0]) / len, (c[1] - a[1]) / len];
+  // Outward normal: the side of the edge away from the footprint's centre.
+  const ob = orientedBox(ring);
+  let o: V2 = [t[1], -t[0]];
+  const mid: V2 = [(a[0] + c[0]) / 2, (a[1] + c[1]) / 2];
+  if ((ob.center[0] - mid[0]) * o[0] + (ob.center[1] - mid[1]) * o[1] > 0) o = [-o[0], -o[1]];
+  const rng = new Rng(b.seed + 23);
+  const sign = col(rng.pick(['#c0392b', '#1f5fa8', '#2f8f4e', '#d68910', '#6c3483', '#17202a']));
+  const glass = col('#5d7a8c');
+  const frame = col('#e9ecee');
+  walls.setAttribute('bay', [0, 0, 0]);
+  const at = (u: number, d: number, z: number): [number, number, number] => [
+    a[0] + t[0] * u + o[0] * d,
+    a[1] + t[1] * u + o[1] * d,
+    z,
+  ];
+  const n: [number, number, number] = [o[0], o[1], 0];
+  // Quads wound to face their normal (the front edge may run either way round).
+  const face = (
+    pts: [number, number, number][],
+    nn: [number, number, number],
+    c: THREE.Color,
+    uvs: [number, number][],
+  ) => {
+    const e1 = [pts[1][0] - pts[0][0], pts[1][1] - pts[0][1], pts[1][2] - pts[0][2]];
+    const e2 = [pts[3][0] - pts[0][0], pts[3][1] - pts[0][1], pts[3][2] - pts[0][2]];
+    const cx = e1[1] * e2[2] - e1[2] * e2[1];
+    const cy = e1[2] * e2[0] - e1[0] * e2[2];
+    const cz = e1[0] * e2[1] - e1[1] * e2[0];
+    const ok = cx * nn[0] + cy * nn[1] + cz * nn[2] >= 0;
+    walls.quad(ok ? pts : [pts[1], pts[0], pts[3], pts[2]], nn, c, uvs, 0, owner);
+  };
+  const uv: [number, number][] = [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, 1],
+  ];
+  // Sign band, 1.6 m, just under the parapet, a few centimetres proud.
+  const z1 = wallTop - 0.2;
+  face(
+    [at(0, 0.06, z1 - 1.6), at(len, 0.06, z1 - 1.6), at(len, 0.06, z1), at(0, 0.06, z1)],
+    n,
+    sign,
+    uv,
+  );
+  // Entrance hall: a glass box in the middle of the front, 1 m proud.
+  const w = Math.min(18, len * 0.22);
+  const u0 = len / 2 - w / 2;
+  const u1 = len / 2 + w / 2;
+  const z0 = b.floorZ;
+  const zt = wallTop + 1.2;
+  const d = 1;
+  face([at(u0, d, z0), at(u1, d, z0), at(u1, d, zt), at(u0, d, zt)], n, glass, uv);
+  const side = (u: number, s: number) =>
+    face(
+      s > 0
+        ? [at(u, 0, z0), at(u, d, z0), at(u, d, zt), at(u, 0, zt)]
+        : [at(u, d, z0), at(u, 0, z0), at(u, 0, zt), at(u, d, zt)],
+      [t[0] * s, t[1] * s, 0],
+      frame,
+      uv,
+    );
+  side(u1, 1);
+  side(u0, -1);
+  face([at(u0, 0, zt), at(u1, 0, zt), at(u1, d, zt), at(u0, d, zt)], [0, 0, 1], frame, uv);
+  // Mullions every 2.4 m across the glass.
+  for (let u = u0 + 2.4; u < u1 - 0.5; u += 2.4)
+    face(
+      [
+        at(u - 0.08, d + 0.02, z0),
+        at(u + 0.08, d + 0.02, z0),
+        at(u + 0.08, d + 0.02, zt),
+        at(u - 0.08, d + 0.02, zt),
+      ],
+      n,
+      frame,
+      uv,
+    );
+}
+
+/**
+ * Towers from the data, sized by their footprint:
+ * - minaret: a round shaft to the top, a balcony (şerefe) three quarters up,
+ *   a lead cone and its finial;
+ * - transmitter: a mast on its low base, tapering, with antenna rings and
+ *   red-and-white bands at the top;
+ * - clock tower: clock faces on the four sides under a lead cap;
+ * - other towers: battlements on the parapet (built with the walls).
+ */
+function towerTop(
+  b: Building,
+  ring: V2[],
+  wallTop: number,
+  wallColor: THREE.Color,
+  walls: MeshBuilder,
+  flats: MeshBuilder,
+  owner: number,
+): void {
+  const ob = orientedBox(ring);
+  const [cx, cy] = ob.center;
+  walls.setAttribute('bay', [0, 0, 0]);
+  const lead = col('#7a8086');
+  if (b.form === 'minaret') {
+    const r = Math.max(0.9, Math.min(3, Math.min(ob.halfWidth, ob.halfLength)));
+    const top = b.topZ;
+    const height = top - b.floorZ;
+    prism(walls, cx, cy, r, 12, b.baseZ, top, wallColor, owner);
+    const sz = b.floorZ + height * 0.78;
+    prism(walls, cx, cy, r + 0.55, 12, sz - 0.45, sz, col('#e3ded5'), owner);
+    revolve(
+      flats,
+      cx,
+      cy,
+      [
+        [r + 0.55, sz],
+        [r, sz],
+      ],
+      12,
+      col('#d9d3c8'),
+      owner,
+    );
+    revolve(
+      flats,
+      cx,
+      cy,
+      [
+        [r * 1.05, top],
+        [0.001, top + r * 3.4],
+      ],
+      12,
+      lead,
+      owner,
+    );
+    revolve(
+      flats,
+      cx,
+      cy,
+      [
+        [0.12, top + r * 3.4],
+        [0.001, top + r * 3.4 + 1.2],
+      ],
+      6,
+      col('#b89a4a'),
+      owner,
+    );
+    return;
+  }
+  if (b.form === 'telecom') {
+    const tip = b.baseZ + (b.towerHeight ?? 70);
+    const r0 = Math.max(1.2, Math.min(4, Math.min(ob.halfWidth, ob.halfLength) * 0.5));
+    const shaft: [number, number][] = [
+      [r0, wallTop],
+      [r0 * 0.45, tip - 8],
+    ];
+    revolve(walls, cx, cy, shaft, 10, col('#d9dbdd'), owner);
+    // Antenna rings and the banded top (aviation marking).
+    for (const z of [tip - 22, tip - 14])
+      prism(walls, cx, cy, r0 * 0.75, 10, z, z + 2.2, col('#f2f2f0'), owner);
+    const bands = 4;
+    for (let k = 0; k < bands; k++) {
+      const z0 = tip - 8 + (k * 8) / bands;
+      prism(
+        walls,
+        cx,
+        cy,
+        r0 * (0.45 - 0.25 * (k / bands)),
+        8,
+        z0,
+        z0 + 8 / bands,
+        col(k % 2 ? '#f2f2f0' : '#c8302a'),
+        owner,
+      );
+    }
+    return;
+  }
+  if (b.form === 'clock') {
+    const ax = ob.axis;
+    const nx: V2 = [-ax[1], ax[0]];
+    const face = col('#f4f1e8');
+    const hand = col('#2a2a2a');
+    const zc = wallTop - Math.min(3, (wallTop - b.floorZ) * 0.15);
+    const rc = Math.max(0.6, Math.min(1.4, Math.min(ob.halfWidth, ob.halfLength) * 0.6));
+    for (const [d, half] of [
+      [ax, ob.halfLength],
+      [[-ax[0], -ax[1]] as V2, ob.halfLength],
+      [nx, ob.halfWidth],
+      [[-nx[0], -nx[1]] as V2, ob.halfWidth],
+    ] as [V2, number][]) {
+      const px = cx + d[0] * (half + 0.03);
+      const py = cy + d[1] * (half + 0.03);
+      const side: V2 = [-d[1], d[0]];
+      const n: [number, number, number] = [d[0], d[1], 0];
+      const disc = (rad: number, off: number, c: THREE.Color) => {
+        const ids: number[] = [];
+        const centre = walls.vertex(
+          toThree(px + d[0] * off, py + d[1] * off, zc),
+          toThree(...n),
+          c,
+          0,
+          0,
+        );
+        for (let k = 0; k <= 16; k++) {
+          const a = (k / 16) * Math.PI * 2;
+          ids.push(
+            walls.vertex(
+              toThree(
+                px + d[0] * off + side[0] * Math.cos(a) * rad,
+                py + d[1] * off + side[1] * Math.cos(a) * rad,
+                zc + Math.sin(a) * rad,
+              ),
+              toThree(...n),
+              c,
+              0,
+              0,
+            ),
+          );
+        }
+        for (let k = 0; k < 16; k++) walls.triangle(centre, ids[k], ids[k + 1], owner);
+      };
+      disc(rc, 0, face);
+      // Hands at ten past ten.
+      const handQuad = (ang: number, len: number) => {
+        const tx = Math.cos(ang);
+        const tz = Math.sin(ang);
+        const w = 0.06;
+        const o = 0.02;
+        const p = (s: number, t: number): [number, number, number] => [
+          px + d[0] * o + side[0] * (tx * s - tz * t),
+          py + d[1] * o + side[1] * (tx * s - tz * t),
+          zc + tz * s + tx * t,
+        ];
+        walls.quad(
+          [p(0, -w), p(len, -w), p(len, w), p(0, w)],
+          n,
+          hand,
+          [
+            [0, 0],
+            [1, 0],
+            [1, 1],
+            [0, 1],
+          ],
+          0,
+          owner,
+        );
+      };
+      handQuad(Math.PI / 2 + 0.5, rc * 0.75);
+      handQuad(Math.PI / 2 - 0.9, rc * 0.55);
+    }
+    // Lead cap with a finial.
+    const R = Math.hypot(ob.halfLength, ob.halfWidth) * 0.95;
+    revolve(
+      flats,
+      cx,
+      cy,
+      [
+        [R, wallTop],
+        [0.001, wallTop + R * 1.3],
+      ],
+      8,
+      lead,
+      owner,
+    );
+    revolve(
+      flats,
+      cx,
+      cy,
+      [
+        [0.1, wallTop + R * 1.3],
+        [0.001, wallTop + R * 1.3 + 1],
+      ],
+      6,
+      col('#b89a4a'),
+      owner,
+    );
+    return;
+  }
+  // Other towers: merlons along the parapet, every 1.6 m.
+  for (let k = 0; k < ring.length; k++) {
+    const a = ring[k];
+    const c = ring[(k + 1) % ring.length];
+    const len = Math.hypot(c[0] - a[0], c[1] - a[1]);
+    const n = Math.max(1, Math.floor(len / 1.6));
+    for (let i = 0; i < n; i += 2) {
+      const t0 = (i + 0.25) / n;
+      const t1 = (i + 0.75) / n;
+      const p0: V2 = [a[0] + (c[0] - a[0]) * t0, a[1] + (c[1] - a[1]) * t0];
+      const p1: V2 = [a[0] + (c[0] - a[0]) * t1, a[1] + (c[1] - a[1]) * t1];
+      const out: [number, number, number] = [(c[1] - a[1]) / len, -(c[0] - a[0]) / len, 0];
+      walls.quad(
+        [
+          [p0[0], p0[1], wallTop],
+          [p1[0], p1[1], wallTop],
+          [p1[0], p1[1], wallTop + 0.7],
+          [p0[0], p0[1], wallTop + 0.7],
+        ],
+        out,
+        wallColor,
+        [
+          [0, 0],
+          [1, 0],
+          [1, 1],
+          [0, 1],
+        ],
+        0,
+        owner,
+      );
+    }
+  }
+}
+
+/**
+ * A roof on posts (fuel station canopy, carport, shelter): steel posts at the
+ * footprint's corners (every few metres along long sides), the slab's edge
+ * band and its underside — the slab top is the flat roof.
+ */
+function canopy(
+  b: Building,
+  ring: V2[],
+  postColor: THREE.Color,
+  slabColor: THREE.Color,
+  walls: MeshBuilder,
+  flats: MeshBuilder,
+  owner: number,
+): void {
+  const top = b.topZ;
+  const under = top - 0.35;
+  walls.setAttribute('bay', [0, 0, 0]);
+  const inner = insetRing(ring, 0.6);
+  for (let k = 0; k < inner.length; k++) {
+    const a = inner[k];
+    const c = inner[(k + 1) % inner.length];
+    const n = Math.max(1, Math.round(Math.hypot(c[0] - a[0], c[1] - a[1]) / 8));
+    for (let i = 0; i < n; i++) {
+      const t = i / n;
+      prism(
+        walls,
+        a[0] + (c[0] - a[0]) * t,
+        a[1] + (c[1] - a[1]) * t,
+        0.14,
+        6,
+        b.baseZ,
+        under,
+        col('#8d9398'),
+        owner,
+      );
+    }
+  }
+  // Fascia band round the slab edge.
+  for (let k = 0; k < ring.length; k++) {
+    const e = edgeOf(ring, k);
+    walls.quad(
+      [
+        [e.a[0], e.a[1], under],
+        [e.b[0], e.b[1], under],
+        [e.b[0], e.b[1], top + 0.02],
+        [e.a[0], e.a[1], top + 0.02],
+      ],
+      [e.out[0], e.out[1], 0],
+      postColor,
+      [
+        [0, under],
+        [e.len, under],
+        [e.len, top],
+        [0, top],
+      ],
+      0,
+      owner,
+    );
+  }
+  // Underside (lit from below by the sky, seen from the street).
+  const { vertices, indices } = triangulate(b.footprint);
+  const base = flats.vertexCount;
+  for (let k = 0; k < vertices.length; k += 2)
+    flats.vertex(
+      toThree(vertices[k], vertices[k + 1], under),
+      [0, -1, 0],
+      slabColor,
+      vertices[k],
+      vertices[k + 1],
+    );
+  for (let k = 0; k < indices.length; k += 3) {
+    const [i0, i1, i2] = [indices[k], indices[k + 1], indices[k + 2]];
+    const ax = vertices[i0 * 2];
+    const ay = vertices[i0 * 2 + 1];
+    const cr =
+      (vertices[i1 * 2] - ax) * (vertices[i2 * 2 + 1] - ay) -
+      (vertices[i1 * 2 + 1] - ay) * (vertices[i2 * 2] - ax);
+    // Facing down: clockwise seen from above.
+    if (cr >= 0) flats.triangle(base + i0, base + i2, base + i1, owner);
+    else flats.triangle(base + i0, base + i1, base + i2, owner);
+  }
+}
+
+/** Height (m) of a stadium's stands at their pitch-side front. */
+const STAND_FRONT = 2.5;
+
 export function buildBuildingLayer(
   model: CityModel,
   mats: DtMaterials,
@@ -302,6 +932,8 @@ export function buildBuildingLayer(
   name: string,
   /** Groups 3D detail (windows, balconies …) into cells for distance LOD; shells stay one mesh each. */
   cellOf: (b: Building) => string = () => '',
+  /** Only what shows from afar: far walls and roofs (no bay walls, trims or 3D detail). */
+  farOnly = false,
 ): BuildingLayer {
   const modules = createModules();
   // Footprints of every building of the tile, with bounding boxes: a roof may
@@ -317,11 +949,34 @@ export function buildBuildingLayer(
       ];
     return { id: o.id, footprint: o.footprint, bb };
   });
+  // By id (the first of a repeated id, as a search would find) and in a 50 m
+  // grid: finding the neighbours by scanning every footprint per building was
+  // quadratic — a fifth of a 4,000-building tile's meshing (2026-10-12).
+  const byId = new Map<string, (typeof footprints)[number]>();
+  for (const f of footprints) if (!byId.has(f.id)) byId.set(f.id, f);
+  const CELL = 50;
+  const grid = new Map<string, number[]>();
+  const cellsOf = (bb: number[], pad: number, visit: (key: string) => void) => {
+    for (let x = Math.floor((bb[0] - pad) / CELL); x <= Math.floor((bb[2] + pad) / CELL); x++)
+      for (let y = Math.floor((bb[1] - pad) / CELL); y <= Math.floor((bb[3] + pad) / CELL); y++)
+        visit(`${x},${y}`);
+  };
+  footprints.forEach((f, i) =>
+    cellsOf(f.bb, 0, (key) => {
+      const list = grid.get(key);
+      if (list) list.push(i);
+      else grid.set(key, [i]);
+    }),
+  );
   const roofArea = (b: Building): Polygon[] => {
-    const own = footprints.find((f) => f.id === b.id)?.bb;
+    const own = byId.get(b.id)?.bb;
     const grown = offsetPolygons([b.footprint], Math.max(0, b.roof.overhang), 'miter');
     if (!own) return grown;
-    const near = footprints
+    const around = new Set<number>();
+    cellsOf(own, 2, (key) => grid.get(key)?.forEach((i) => around.add(i)));
+    const near = [...around]
+      .sort((x, y) => x - y)
+      .map((i) => footprints[i])
       .filter(
         (f) =>
           f.id !== b.id &&
@@ -338,12 +993,16 @@ export function buildBuildingLayer(
   // floorInfo = (top of ground floor, floor height, top of the last window row).
   walls.defineAttribute('bay', 3);
   walls.defineAttribute('floorInfo', 3);
+  // Far walls: bay = (−window period, window width, window height) repeats the window.
+  const farWalls = new MeshBuilder();
+  farWalls.defineAttribute('bay', 3);
+  farWalls.defineAttribute('floorInfo', 3);
   const trims = new MeshBuilder();
   const tiles = new MeshBuilder();
   const flats = new MeshBuilder();
   // Building index per vertex (offset to a global slot on the main thread):
   // scenario colouring looks each building's colour up in one shared texture.
-  const shellBuilders = [walls, trims, tiles, flats];
+  const shellBuilders = [walls, farWalls, trims, tiles, flats];
   for (const mb of shellBuilders) mb.defineAttribute(BUILDING_SLOT, 1);
   const newInstances = () => ({
     sill: new Instances(),
@@ -393,12 +1052,15 @@ export function buildBuildingLayer(
     const bottom = b.baseZ - 0.6;
     const plinthFinish =
       b.archetype === 'mustakil' || b.archetype === 'eski' ? FINISH.stone : FINISH.plaster;
+    // Public buildings: the ground floor in its own colour (palette.band), below a band.
     const groundColor =
-      b.shopfront && b.archetype !== 'eski'
-        ? b.archetype === 'modern' || b.archetype === 'yuksek'
-          ? baseColor
-          : trimColor
-        : null;
+      b.use === 'public' && !b.form
+        ? bandColor
+        : b.shopfront && b.archetype !== 'eski'
+          ? b.archetype === 'modern' || b.archetype === 'yuksek'
+            ? baseColor
+            : trimColor
+          : null;
     const hasCornices =
       b.archetype === 'klasik'
         ? rng.chance(0.6)
@@ -588,13 +1250,67 @@ export function buildBuildingLayer(
     };
 
     walls.setAttribute('floorInfo', [groundTop, b.floorHeight, b.topZ - 0.3]);
+    farWalls.setAttribute('floorInfo', [groundTop, b.floorHeight, b.topZ - 0.3]);
     const noWindow = [0, 0, 0];
+    const farQuad = (
+      e: Edge,
+      u0: number,
+      u1: number,
+      z0: number,
+      z1: number,
+      c: THREE.Color,
+      finish: number,
+    ) => {
+      if (z1 - z0 < 0.01) return;
+      const p0 = along(e, u0, 0);
+      const p1 = along(e, u1, 0);
+      farWalls.quad(
+        [
+          [p0[0], p0[1], z0],
+          [p1[0], p1[1], z0],
+          [p1[0], p1[1], z1],
+          [p0[0], p0[1], z1],
+        ],
+        [e.out[0], e.out[1], 0],
+        c,
+        [
+          [u0, z0],
+          [u1, z0],
+          [u1, z1],
+          [u0, z1],
+        ],
+        finish,
+        owner,
+      );
+    };
     const facadeByEdge = new Map(b.facades.map((f) => [f.edge, f]));
-    for (let k = 0; k < ring.length; k++) {
+    // A canopy has no walls: posts and the roof slab only; a minaret is a round
+    // shaft of its own (towerTop()).
+    for (let k = 0; k < (b.form === 'canopy' || b.form === 'minaret' ? 0 : ring.length); k++) {
       const e = edgeOf(ring, k);
       const f = facadeByEdge.get(k);
       const bays = f?.bays.length ? f.bays.length : 1;
       const bayW = e.len / bays;
+      {
+        // Far LOD: the façade's commonest window, repeated every bay; one quad
+        // per run of bays in the same colour band.
+        const kinds = (f?.bays ?? []).filter((k) => OPENING.has(k));
+        const ww = kinds.length * 2 >= bays ? windowWidthOf(kinds[0], bayW) : 0;
+        // A shopfront ground floor reads from afar; the plinth does not.
+        farWalls.setAttribute('bay', noWindow);
+        if (groundColor) farQuad(e, 0, e.len, bottom, groundTop, groundColor, FINISH.plaster);
+        farWalls.setAttribute('bay', ww > 0.5 ? [-bayW, ww, b.windowHeight] : noWindow);
+        for (let i = 0; i < bays; ) {
+          const band = f?.bands[i] ?? 0;
+          let j = i + 1;
+          while (j < bays && (f?.bands[j] ?? 0) === band) j++;
+          const finish = FINISH[b.finishes[band] ?? 'plaster'] ?? 0;
+          const c = band ? bandColor : wallColor;
+          farQuad(e, i * bayW, j * bayW, groundColor ? groundTop : bottom, wallTop, c, finish);
+          i = j;
+        }
+      }
+      if (farOnly) continue;
       for (let i = 0; i < bays; i++) {
         const u0 = i * bayW;
         const u1 = (i + 1) * bayW;
@@ -901,7 +1617,7 @@ export function buildBuildingLayer(
     // L-shaped corner balconies on the upper floors: the first leg runs past the
     // corner (covering the corner square), the second leg closes the L with
     // open-ended rails so no partition stands between the two.
-    for (const k of b.cornerBalconies ?? []) {
+    for (const k of farOnly ? [] : (b.cornerBalconies ?? [])) {
       const ea = edgeOf(ring, k);
       const eb = edgeOf(ring, (k + 1) % ring.length);
       const w = Math.min(3.0, ea.len * 0.35, eb.len * 0.35);
@@ -942,29 +1658,46 @@ export function buildBuildingLayer(
       }
     }
 
-    // Inner courtyard walls (holes), plain.
+    // Inner courtyard walls (holes), plain. A stadium's inner edge is the low
+    // front of its stands (the seating rakes up from it to the outer wall).
+    const holeTop = b.use === 'stadium' ? b.floorZ + STAND_FRONT : wallTop;
     for (const hole of b.footprint.holes as V2[][]) {
       for (let k = 0; k < hole.length; k++) {
         const e = edgeOf(hole, k);
-        wallQuad(e, 0, e.len, bottom, wallTop, wallColor, FINISH.plaster);
+        wallQuad(e, 0, e.len, bottom, holeTop, wallColor, FINISH.plaster);
+        farWalls.setAttribute('bay', noWindow);
+        farQuad(e, 0, e.len, bottom, holeTop, wallColor, FINISH.plaster);
       }
     }
 
-    buildRoof(
-      b,
-      roofArea(b),
-      ring,
-      wallTop,
-      roofColor,
-      trimColor,
-      wallColor,
-      tiles,
-      flats,
-      trims,
-      walls,
-      owner,
-      rng,
-    );
+    // Gable / party walls of the roof go to both wall meshes.
+    const roofWallsFrom = [walls.vertexCount, walls.indices.length] as const;
+    walls.setAttribute('bay', noWindow);
+    if (b.form !== 'minaret')
+      buildRoof(
+        b,
+        roofArea(b),
+        ring,
+        wallTop,
+        roofColor,
+        trimColor,
+        wallColor,
+        tiles,
+        flats,
+        trims,
+        walls,
+        owner,
+        // Own sequence: the roof comes out the same whether or not the façade detail was built.
+        new Rng(b.seed + 11),
+      );
+    // Domes and minarets, bell towers: built with the roof, so the far walls get them too.
+    if (b.form === 'canopy') canopy(b, ring, wallColor, roofColor, walls, flats, owner);
+    if (b.form === 'mosque' || b.form === 'church')
+      landmarks(b, ring, wallTop, wallColor, roofColor, walls, flats, tiles, owner);
+    if (b.form === 'box') mallFront(b, ring, wallTop, walls, owner);
+    if (b.form === 'minaret' || b.form === 'telecom' || b.form === 'clock' || b.form === 'tower')
+      towerTop(b, ring, wallTop, wallColor, walls, flats, owner);
+    farWalls.appendFrom(walls, ...roofWallsFrom);
   });
 
   const group = new THREE.Group();
@@ -980,6 +1713,11 @@ export function buildBuildingLayer(
   wallMesh.receiveShadow = true;
   wallMesh.name = `${name}-walls`;
   add(wallMesh);
+  const farWallMesh = new THREE.Mesh(farWalls.build({ color: true, finish: true }), mats.wall);
+  farWallMesh.castShadow = true;
+  farWallMesh.receiveShadow = true;
+  farWallMesh.name = `${name}-walls-far`;
+  add(farWallMesh);
   const tileMesh = new THREE.Mesh(tiles.build({ color: true }), mats.roofTile);
   tileMesh.name = `${name}-roof-tiles`;
   tileMesh.castShadow = true;
@@ -1037,6 +1775,7 @@ export function buildBuildingLayer(
     // Walls and roofs: a building is picked from the street and from above.
     pickables: [
       { mesh: wallMesh, owners: walls.triangleOwner },
+      { mesh: farWallMesh, owners: farWalls.triangleOwner },
       ...(nonEmpty(tiles) ? [{ mesh: tileMesh, owners: tiles.triangleOwner }] : []),
       ...(nonEmpty(flats) ? [{ mesh: flatMesh, owners: flats.triangleOwner }] : []),
     ],
@@ -1050,6 +1789,7 @@ export function buildBuildingLayer(
     ],
     // Cornices / floor bands: many small quads that do not read from afar.
     trim: nonEmpty(trims) ? trimMesh : null,
+    farWalls: farWallMesh,
   };
 }
 
@@ -1073,11 +1813,18 @@ function buildRoof(
     // Roof slab slightly below the parapet top, with inner parapet faces.
     const z = b.topZ + 0.02;
     const { vertices, indices } = triangulate(b.footprint);
-    const grey = new THREE.Color().setScalar(rng.range(0.28, 0.42));
+    // Stands: the top is the seating, raked from the pitch-side front (the
+    // hole's edge, low) up to the outer wall; coloured seats, not a grey slab.
+    const stands = b.use === 'stadium' && b.footprint.holes.length > 0;
+    const front = new Set(
+      (b.footprint.holes as V2[][]).flatMap((h) => h.map((q) => `${q[0]},${q[1]}`)),
+    );
+    const grey = stands ? col('#4f5d70') : new THREE.Color().setScalar(rng.range(0.28, 0.42));
     const base = flats.vertexCount;
     for (let k = 0; k < vertices.length; k += 2) {
+      const low = stands && front.has(`${vertices[k]},${vertices[k + 1]}`);
       flats.vertex(
-        toThree(vertices[k], vertices[k + 1], z),
+        toThree(vertices[k], vertices[k + 1], low ? b.floorZ + STAND_FRONT : z),
         [0, 1, 0],
         grey,
         vertices[k],
@@ -1309,19 +2056,41 @@ function buildRoof(
   };
   // Walls up to the roof wherever it rises above the wall top: gable ends,
   // party walls where the roof stops at a neighbour, corners of an irregular
-  // footprint under its box roof. Sampled every metre along each edge.
+  // footprint under its box roof. Sampled every metre along each edge; runs of
+  // samples on one straight line (a planar roof face) become one quad.
   for (let k = 0; k < ring.length; k++) {
     const e = edgeOf(ring, k);
     const n = Math.max(1, Math.ceil(e.len / 1));
     const n3 = toThree(e.out[0], e.out[1], 0);
-    for (let i = 0; i < n; i++) {
+    const pointAt = (t: number): V2 => [
+      e.a[0] + (e.b[0] - e.a[0]) * t,
+      e.a[1] + (e.b[1] - e.a[1]) * t,
+    ];
+    const zs = Array.from({ length: n + 1 }, (_, i) => roofZ(pointAt(i / n)));
+    const rises = (i: number) => zs[i] >= b.topZ + 0.03 || zs[i + 1] >= b.topZ + 0.03;
+    const top = (i: number) => Math.max(b.topZ, zs[i]);
+    /** Samples between i and j lie within 2 cm of the straight top from i to j. */
+    const straight = (i: number, j: number) => {
+      for (let m = i + 1; m < j; m++) {
+        if (Math.abs(top(m) - (top(i) + ((top(j) - top(i)) * (m - i)) / (j - i))) > 0.02)
+          return false;
+      }
+      return true;
+    };
+    for (let i = 0; i < n; ) {
+      if (!rises(i)) {
+        i++;
+        continue;
+      }
+      let j = i + 1;
+      while (j < n && rises(j) && straight(i, j + 1)) j++;
       const t0 = i / n;
-      const t1 = (i + 1) / n;
-      const p0: V2 = [e.a[0] + (e.b[0] - e.a[0]) * t0, e.a[1] + (e.b[1] - e.a[1]) * t0];
-      const p1: V2 = [e.a[0] + (e.b[0] - e.a[0]) * t1, e.a[1] + (e.b[1] - e.a[1]) * t1];
+      const t1 = j / n;
+      i = j;
+      const p0 = pointAt(t0);
+      const p1 = pointAt(t1);
       const z0 = roofZ(p0);
       const z1 = roofZ(p1);
-      if (z0 < b.topZ + 0.03 && z1 < b.topZ + 0.03) continue;
       const ids = [
         walls.vertex(toThree(p0[0], p0[1], b.topZ - 0.05), n3, wallColor, t0 * e.len, b.topZ, 0),
         walls.vertex(toThree(p1[0], p1[1], b.topZ - 0.05), n3, wallColor, t1 * e.len, b.topZ, 0),

@@ -4,10 +4,19 @@ import { type BuildingLayer, buildBuildingLayer } from './buildings';
 import { buildFences } from './fences';
 import { toThree } from './geom';
 import { buildGround } from './ground';
+import { groundRaster } from './landcover';
 import type { DtMaterials } from './materials';
+import { buildOverhead } from './overhead';
 import { buildFixOverlay } from './overlays';
 import { buildPropGroup } from './props';
-import { type TilePayload, isEmptyTile, serializeMeshes, summarize } from './tile-payload';
+import { buildRails } from './rails';
+import {
+  type MeshPayload,
+  type TilePayload,
+  isEmptyTile,
+  serializeMeshes,
+  summarize,
+} from './tile-payload';
 import { buildUtilities } from './utilities';
 
 /**
@@ -32,11 +41,19 @@ function tag(o: THREE.Object3D | null, role: string): void {
 }
 
 /**
- * Builds the complete render content of one compiled tile and serializes it
- * (runs in the tile worker). Roles: `ground`, `fix`, `util:<kind>`, `props:showcase`,
- * `props:data`, `sub:<i>:obsShell|obsDetail|synShell|synDetail|obsProps|synProps`.
+ * Builds the render content of one compiled tile and serializes it (runs in
+ * the tile worker). Roles: `ground`, `fix`, `props:showcase`, `props:data`,
+ * `tile:obs|synShell(Near|Far)?`, `sub:<i>:obsShell|obsDetail|synShell|synDetail|obsProps|synProps`; with
+ * `utilities` also `util:<kind>`. The buried networks are left out by default:
+ * they show only in the underground view and were the larger part of the
+ * meshing (2.4 s of 3.9 s on a dense İzmir tile) — `buildUtilityPayload`
+ * builds them when that view opens. Their statistics stay in the summary.
  */
-export function buildTilePayload(model: CityModel): {
+export function buildTilePayload(
+  model: CityModel,
+  /** far: only what a `far` CityTile keeps (no near ground, furniture, building detail). */
+  options: { utilities?: boolean; far?: boolean } = {},
+): {
   payload: TilePayload;
   transfer: ArrayBuffer[];
 } {
@@ -45,23 +62,32 @@ export function buildTilePayload(model: CityModel): {
   // Sea only where the tile reaches down to it (the scene backdrop is ground).
   const t = model.terrain;
   const coastal = t.heights.some((h) => h <= t.seaLevel + 0.5);
-  root.add(buildGround(model, mats, { sea: coastal, empty: isEmptyTile(model) }));
-  const fences = buildFences(model, mats);
-  if (fences) root.add(fences);
-  const utilities = buildUtilities(model, mats);
-  if (utilities) root.add(utilities);
+  const far = !!options.far;
+  root.add(buildGround(model, mats, { sea: coastal, empty: isEmptyTile(model), far }));
+  if (!far) {
+    const fences = buildFences(model, mats);
+    if (fences) root.add(fences);
+    const overhead = buildOverhead(model, mats);
+    if (overhead) root.add(overhead);
+    const rails = buildRails(model, mats);
+    if (rails) root.add(rails);
+    // Manhole / valve covers lie on the street and always show; the networks below
+    // (tubes, shafts, glowing cabinets) only with `utilities`.
+    const utilities = buildUtilities(model, mats, { networks: !!options.utilities, covers: true });
+    if (utilities) root.add(utilities);
 
-  const street = model.props.filter((p) => !p.buildingId);
-  const showcase = buildPropGroup(street, mats, 'showcase', 'props-showcase');
-  tag(showcase, 'props:showcase');
-  // Street furniture not in the data shown as holograms in the data view.
-  const data = buildPropGroup(street, mats, 'data', 'props-data');
-  tag(data, 'props:data');
-  root.add(showcase, data);
+    const street = model.props.filter((p) => !p.buildingId);
+    const showcase = buildPropGroup(street, mats, 'showcase', 'props-showcase');
+    tag(showcase, 'props:showcase');
+    // Street furniture not in the data shown as holograms in the data view.
+    const data = buildPropGroup(street, mats, 'data', 'props-data');
+    tag(data, 'props:data');
+    root.add(showcase, data);
 
-  const fix = buildFixOverlay(model, mats).group;
-  tag(fix, 'fix');
-  root.add(fix);
+    const fix = buildFixOverlay(model, mats).group;
+    tag(fix, 'fix');
+    root.add(fix);
+  }
 
   const cellKey = (b: Building) => {
     const [x, y] = b.footprint.outer[0];
@@ -69,8 +95,8 @@ export function buildTilePayload(model: CityModel): {
   };
   const obs = model.buildings.filter(isObserved);
   const syn = model.buildings.filter((b) => !isObserved(b));
-  const observed = obs.length ? buildBuildingLayer(model, mats, obs, 'bo', cellKey) : null;
-  const synthetic = syn.length ? buildBuildingLayer(model, mats, syn, 'bs', cellKey) : null;
+  const observed = obs.length ? buildBuildingLayer(model, mats, obs, 'bo', cellKey, far) : null;
+  const synthetic = syn.length ? buildBuildingLayer(model, mats, syn, 'bs', cellKey, far) : null;
 
   const detailProps = new Map<string, typeof model.props>();
   for (const p of model.props) {
@@ -99,6 +125,9 @@ export function buildTilePayload(model: CityModel): {
   const tagLayer = (layer: BuildingLayer | null, kind: 'obs' | 'syn') => {
     if (!layer) return;
     for (const shell of layer.shells) tag(shell, `tile:${kind}Shell`);
+    // Walls: bay-by-bay near the camera, one quad per edge beyond (CityTile switches).
+    tag(layer.shells[0], `tile:${kind}ShellNear`);
+    tag(layer.farWalls, `tile:${kind}ShellFar`);
     tag(layer.trim, `tile:${kind}Trim`);
     for (const [cell, objects] of layer.detailCells) {
       for (const o of objects) tag(o, `sub:${indexOf(cell)}:${kind}Detail`);
@@ -112,10 +141,12 @@ export function buildTilePayload(model: CityModel): {
   tagLayer(synthetic, 'syn');
 
   // Roof / wall clutter of buildings, per detail cell.
-  for (const [kind, list] of [
-    ['obs', obs],
-    ['syn', syn],
-  ] as const) {
+  for (const [kind, list] of far
+    ? []
+    : ([
+        ['obs', obs],
+        ['syn', syn],
+      ] as const)) {
     const byCell = new Map<string, Building[]>();
     for (const b of list) {
       const key = cellKey(b);
@@ -135,5 +166,20 @@ export function buildTilePayload(model: CityModel): {
     obs: observed?.buildings.map((b) => b.id) ?? [],
     syn: synthetic?.buildings.map((b) => b.id) ?? [],
   };
-  return { payload: { summary: summarize(model), meshes, subTiles, slots }, transfer };
+  // The open ground's colours, parcel by parcel (landcover.ts); the engine
+  // copies it into the ground atlas the terrain samples.
+  const ground = isEmptyTile(model) ? undefined : groundRaster(model, model.frame?.size ?? 1000);
+  if (ground) transfer.push(ground.buffer as ArrayBuffer);
+  return { payload: { summary: summarize(model), meshes, subTiles, slots, ground }, transfer };
+}
+
+/** The buried networks of a tile alone (`util:<kind>` meshes), for the underground view. */
+export function buildUtilityPayload(model: CityModel): {
+  meshes: MeshPayload[];
+  transfer: ArrayBuffer[];
+} {
+  const root = new THREE.Group();
+  const utilities = buildUtilities(model, MATERIAL_KEYS, { networks: true, covers: false });
+  if (utilities) root.add(utilities);
+  return serializeMeshes(root);
 }
