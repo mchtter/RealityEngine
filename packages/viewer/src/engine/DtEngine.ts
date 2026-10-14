@@ -920,8 +920,8 @@ export class DtEngine {
       this.levelListeners.forEach((cb) => cb(next));
     }
     for (const tile of this.tiles.values()) tile.updateDetail(eye, height);
-    // Street wear (cracks, potholes, broken pavers) only at walking height.
-    this.mats.streetDetail.value = 1 - THREE.MathUtils.smoothstep(height, 5, 8);
+    // Street wear (cracks, potholes, broken pavers) only at street height (L1).
+    this.mats.streetDetail.value = 1 - THREE.MathUtils.smoothstep(height, 10, 14);
   }
 
   /** Camera mode: map orbit, isometric, street level, free flight (all with WASD). */

@@ -144,7 +144,7 @@ function disposeVariants(base: THREE.Material): void {
  */
 export interface DtMaterials {
   night: THREE.UniformNode<'float', number>;
-  /** 1 with the camera at walking height (L1), 0 from ~8 m up: street-level wear (see WEAR_*). */
+  /** 1 with the camera at street height (L1, under 10 m), 0 from 14 m up: street-level wear (see WEAR_*). */
   streetDetail: THREE.UniformNode<'float', number>;
   /** 1 while a scenario colours the buildings (see `scenario`). */
   scenarioOn: THREE.UniformNode<'float', number>;
@@ -271,17 +271,17 @@ function decal(material: THREE.Material, factor: number): void {
 // fades below are a pixel's ground footprint in metres (the longer side of the
 // pixel on the ground), detail fully on below the first value, gone above the
 // second — far views, where it would only shimmer, keep the plain surfaces.
-// Walking distance: from a 1.7 m eye, hairline detail is full to ~4 m and gone
-// by ~7 m, patches / potholes full to ~6 m and gone by ~12 m. On top of that
+// Walking distance: from a 1.7 m eye, hairline detail is full to ~6 m and gone
+// by ~10 m, patches / potholes full to ~8 m and gone by ~14 m. On top of that
 // the `streetDetail` uniform keeps it to a camera at walking height (L1).
 /** Hairline cracks, paver cracks, weeds in joints. */
-const WEAR_FINE_PX = [0.0064, 0.0196] as const;
+const WEAR_FINE_PX = [0.0144, 0.04] as const;
 /** Repair patches, potholes, oil stains, concrete spalls. */
-const WEAR_COARSE_PX = [0.0144, 0.0576] as const;
+const WEAR_COARSE_PX = [0.0256, 0.0784] as const;
 /** Relief of the wear (potholes, sunken pavers, crack grooves) in the ground normal. */
 const WEAR_BUMP = 0.35;
 /** View distance (m) past which the wear relief is flat (bumpedNormal fade). */
-const WEAR_BUMP_FAR = 12;
+const WEAR_BUMP_FAR = 16;
 /** Asphalt: one random repair patch / pothole / oil stain slot per cell of this size (m). */
 const ASPHALT_WEAR_CELL = 8;
 /** Asphalt: share of cells with a repair patch, a pothole, an oil stain. */
