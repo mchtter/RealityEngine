@@ -1,0 +1,283 @@
+/**
+ *   npx tsx --test tools/city/osm/osm-package.test.ts
+ */
+import { strict as assert } from 'node:assert';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, it } from 'node:test';
+import { readDistricts, selectArea } from '../osm-city';
+import {
+  aerodromeReaches,
+  anchor,
+  areaKind,
+  buildingUse,
+  districtLocator,
+  type Geometry,
+  inOsmArea,
+  inPolygon,
+  osmRow,
+  osmTheme,
+  PackageWriter,
+  polygonTester,
+  readOsm,
+  type Ring,
+} from './osm-package';
+
+const square = (x0: number, y0: number, x1: number, y1: number): Ring => [
+  [x0, y0],
+  [x1, y0],
+  [x1, y1],
+  [x0, y1],
+  [x0, y0],
+];
+const poly = (ring: Ring, ...holes: Ring[]): Geometry => ({
+  type: 'Polygon',
+  coordinates: [ring, ...holes],
+});
+const pt = (x: number, y: number): Geometry => ({ type: 'Point', coordinates: [x, y] });
+const line = (...c: [number, number][]): Geometry => ({ type: 'LineString', coordinates: c });
+
+/** The area of the tests: the unit square. */
+const AREA = poly(square(0, 0, 1, 1));
+const inside = (p: [number, number]) => inPolygon(p, AREA);
+
+describe('areaKind', () => {
+  it('maps tags to contract kinds, first rule wins', () => {
+    assert.equal(areaKind({ leisure: 'park' }), 'park');
+    assert.equal(areaKind({ leisure: 'garden' }), 'park');
+    assert.equal(areaKind({ leisure: 'sports_centre' }), 'stadium');
+    assert.equal(areaKind({ landuse: 'cemetery' }), 'cemetery');
+    assert.equal(areaKind({ amenity: 'grave_yard' }), 'cemetery');
+    assert.equal(areaKind({ military: 'barracks' }), 'military');
+    assert.equal(areaKind({ military: 'bunker' }), null);
+    assert.equal(areaKind({ amenity: 'parking' }), 'parking');
+    assert.equal(areaKind({ amenity: 'parking', parking: 'multi-storey' }), null);
+    assert.equal(areaKind({ amenity: 'hospital' }), 'school');
+    assert.equal(areaKind({ aeroway: 'aerodrome' }), 'airport');
+    assert.equal(areaKind({ aeroway: 'stopway' }), 'taxiway');
+    assert.equal(areaKind({ power: 'substation' }), 'substation');
+    assert.equal(areaKind({ power: 'substation', building: 'yes' }), null);
+    assert.equal(areaKind({ natural: 'water' }), 'water');
+    assert.equal(areaKind({ leisure: 'swimming_pool' }), 'water');
+    assert.equal(areaKind({ landuse: 'railway' }), 'industrial');
+    assert.equal(areaKind({ landuse: 'retail' }), 'residential');
+    assert.equal(areaKind({ landuse: 'farmland' }), null);
+    // Order: a park in a residential landuse polygon is a park.
+    assert.equal(areaKind({ leisure: 'park', landuse: 'residential' }), 'park');
+  });
+});
+
+describe('osmTheme', () => {
+  const a = poly(square(0, 0, 1, 1));
+  it('selects the contract theme by tags and geometry', () => {
+    assert.equal(osmTheme({ building: 'yes' }, a), 'building');
+    assert.equal(osmTheme({ building: 'no', leisure: 'park' }, a), 'area');
+    assert.equal(osmTheme({ man_made: 'silo' }, a), 'building');
+    assert.equal(osmTheme({ building: 'yes' }, pt(0, 0)), null);
+    assert.equal(osmTheme({ highway: 'residential' }, line([0, 0], [1, 1])), 'road');
+    assert.equal(osmTheme({ aeroway: 'runway' }, line([0, 0], [1, 1])), 'road');
+    assert.equal(osmTheme({ aeroway: 'runway' }, a), 'area');
+    assert.equal(osmTheme({ railway: 'tram' }, line([0, 0], [1, 1])), 'road');
+    assert.equal(osmTheme({ railway: 'abandoned' }, line([0, 0], [1, 1])), null);
+    assert.equal(osmTheme({ highway: 'crossing' }, pt(0, 0)), 'crossing');
+    assert.equal(osmTheme({ crossing: 'zebra' }, pt(0, 0)), 'crossing');
+    assert.equal(osmTheme({ natural: 'tree' }, pt(0, 0)), 'tree');
+    assert.equal(osmTheme({ highway: 'street_lamp' }, pt(0, 0)), 'asset');
+    assert.equal(osmTheme({ power: 'pole' }, pt(0, 0)), 'asset');
+    assert.equal(osmTheme({ amenity: 'cafe' }, pt(0, 0)), null);
+    assert.equal(osmTheme({ landuse: 'farmland' }, a), null);
+  });
+
+  it('builds rows with contract values', () => {
+    assert.equal(buildingUse({ building: 'yes', amenity: 'school' }), 'school');
+    assert.equal(buildingUse({ building: 'yes', shop: 'mall' }), 'retail');
+    assert.equal(
+      buildingUse({ building: 'yes', man_made: 'tower', 'tower:type': 'minaret' }),
+      'minaret',
+    );
+    assert.equal(buildingUse({ building: 'yes', amenity: 'place_of_worship' }), 'mosque');
+    assert.equal(buildingUse({ building: 'apartments' }), 'residential');
+    const road = osmRow('road', 'r', line([0, 0], [1, 1]), { highway: 'path', oneway: 'yes' });
+    assert.ok(!('drop' in road));
+    assert.equal(road.attrs.class, 'footway');
+    assert.equal(road.attrs.oneway, true);
+    const rail = osmRow('road', 'r', line([0, 0], [1, 1]), { railway: 'subway', lanes: '4' });
+    assert.ok(!('drop' in rail) && rail.attrs.class === 'subway' && rail.attrs.lanes === 1);
+    assert.deepEqual(osmRow('road', 'r', line([0, 0], [1, 1]), { highway: 'proposed' }), {
+      drop: 'sınıf dışı (proposed)',
+    });
+    const crossing = osmRow('crossing', 'c', pt(0, 0), { crossing: 'unmarked' });
+    assert.ok(!('drop' in crossing) && crossing.attrs.type === 'uncontrolled');
+    const mast = osmRow('asset', 'm', pt(0, 0), { man_made: 'mast', 'tower:type': 'lighting' });
+    assert.ok(!('drop' in mast) && mast.attrs.kind === 'floodlight');
+  });
+});
+
+describe('area filtering', () => {
+  it('anchors: point, middle vertex, vertex mean of the outer ring', () => {
+    assert.deepEqual(anchor(pt(3, 4)), [3, 4]);
+    assert.deepEqual(anchor(line([0, 0], [5, 5], [9, 9])), [5, 5]);
+    assert.deepEqual(
+      anchor(
+        poly([
+          [0, 0],
+          [2, 0],
+          [2, 2],
+          [0, 2],
+        ]),
+      ),
+      [1, 1],
+    );
+  });
+
+  it('keeps a feature by its anchor', () => {
+    assert.equal(inOsmArea('building', {}, poly(square(0.4, 0.4, 0.6, 0.6)), inside, []), true);
+    // A road whose middle vertex is outside is left out, though it starts inside.
+    const road = line([0.5, 0.5], [2, 2], [3, 3]);
+    assert.equal(inOsmArea('road', { highway: 'primary' }, road, inside, []), false);
+    assert.equal(inOsmArea('tree', {}, pt(1.5, 0.5), inside, []), false);
+    // Holes are outside.
+    const holed = poly(square(0, 0, 1, 1), square(0.25, 0.25, 0.75, 0.75));
+    assert.equal(inPolygon([0.5, 0.5], holed), false);
+    assert.equal(inPolygon([0.1, 0.1], holed), true);
+  });
+
+  it('keeps an airfield way whole when any vertex is in the area', () => {
+    const runway = line([0.9, 0.5], [2, 0.5], [3, 0.5]); // anchor outside
+    assert.equal(inOsmArea('road', { aeroway: 'runway' }, runway, inside, []), true);
+    // …or in an aerodrome that reaches the area.
+    const farTaxiway = line([5, 0.5], [6, 0.5], [7, 0.5]);
+    assert.equal(inOsmArea('road', { aeroway: 'taxiway' }, farTaxiway, inside, []), false);
+    const aerodrome = poly(square(0.8, 0, 8, 1));
+    assert.equal(aerodromeReaches(aerodrome, inside), true);
+    assert.equal(aerodromeReaches(poly(square(4, 0, 8, 1)), inside), false);
+    assert.equal(inOsmArea('road', { aeroway: 'taxiway' }, farTaxiway, inside, [aerodrome]), true);
+    // A road way in the aerodrome is not an airfield way: by its anchor.
+    assert.equal(inOsmArea('road', { highway: 'service' }, farTaxiway, inside, [aerodrome]), false);
+  });
+
+  it('polygonTester answers as inPolygon', () => {
+    // A jagged polygon with a hole, many vertices.
+    const outer: Ring = [];
+    for (let i = 0; i < 400; i++) {
+      const a = (i / 400) * 2 * Math.PI;
+      const r = 1 + 0.3 * Math.sin(7 * a) + 0.1 * Math.sin(31 * a);
+      outer.push([r * Math.cos(a), r * Math.sin(a)]);
+    }
+    outer.push(outer[0]);
+    const g: Geometry = {
+      type: 'MultiPolygon',
+      coordinates: [[outer, square(-0.2, -0.2, 0.2, 0.2)], [square(3, 3, 4, 4)]],
+    };
+    const test = polygonTester(g);
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 10 - 3;
+    for (let k = 0; k < 20000; k++) {
+      const p: [number, number] = [rnd() / 2, rnd() / 2];
+      assert.equal(test(p), inPolygon(p, g), `at ${p}`);
+    }
+    for (const p of outer) assert.equal(test(p), inPolygon(p, g));
+  });
+
+  it('districtLocator returns the first district of the area containing the point', () => {
+    const a = { key: 'A', name: 'A', geometry: poly(square(0, 0, 1, 1)) };
+    const b = { key: 'B', name: 'B', geometry: poly(square(1, 0, 2, 1)) };
+    const at = districtLocator([a, b]);
+    assert.equal(at([0.5, 0.5])?.key, 'A');
+    assert.equal(at([1.5, 0.5])?.key, 'B');
+    assert.equal(at([5, 5]), undefined);
+  });
+});
+
+describe('readOsm + PackageWriter', () => {
+  it('reads an osmium export once per element and writes JSON.stringify bytes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'osm-package-'));
+    try {
+      const f = (id: number, type: string, g: Geometry, tags: Record<string, string>) =>
+        `\x1e${JSON.stringify({ type: 'Feature', geometry: g, properties: { '@type': type, '@id': id, ...tags } })}`;
+      const seq = [
+        f(1, 'way', poly(square(0.1, 0.1, 0.2, 0.2)), { building: 'yes', 'building:levels': '4' }),
+        f(1, 'way', poly(square(0.1, 0.1, 0.2, 0.2)), { building: 'yes' }), // duplicate
+        f(2, 'way', poly(square(5, 5, 6, 6)), { building: 'yes' }), // outside
+        f(3, 'way', line([0.5, 0.5], [9, 0.5], [10, 0.5]), { aeroway: 'runway' }),
+        f(4, 'way', line([0.5, 0.5], [0.6, 0.6]), { highway: 'construction' }),
+        f(5, 'node', pt(0.5, 0.5), { natural: 'tree', species: 'Pinus' }),
+        '',
+      ].join('\n');
+      writeFileSync(join(dir, 'x.geojsonseq'), seq);
+      const osm = await readOsm([join(dir, 'x.geojsonseq')], inside);
+      assert.equal(osm.read, 5);
+      assert.deepEqual(
+        osm.rows.building.map((r) => [r.id, r.attrs.levels]),
+        [['osm:w1', 4]],
+      );
+      assert.deepEqual(osm.dropped.building, { 'demo alanı dışında': 1 });
+      assert.deepEqual(
+        osm.rows.road.map((r) => r.id),
+        ['osm:w3'],
+      );
+      assert.deepEqual(osm.dropped.road, { 'sınıf dışı (construction)': 1 });
+      assert.equal(osm.rows.tree[0].attrs.species, 'Pinus');
+
+      const w = new PackageWriter(join(dir, 'pkg'), 'Test (ODbL)');
+      const rows = [...osm.rows.building, { ...osm.rows.building[0], id: 'b2', extra: { X: 1 } }];
+      const file = w.writeLayer('building', 'osm', rows, { source: 's', read: 1, dropped: {} });
+      assert.equal(file, 'yapi_osm.geojson');
+      const written = readFileSync(join(dir, 'pkg', file), 'utf8');
+      const parsed = JSON.parse(written);
+      assert.equal(written, JSON.stringify(parsed)); // compact, one JSON document
+      assert.equal(parsed.attribution, 'Test (ODbL)');
+      assert.equal(parsed.features.length, 2);
+      assert.equal(parsed.features[0].properties.KIMLIK, 'osm:w1');
+      assert.equal(parsed.features[0].properties.KAYNAK, 'gerçek');
+      assert.equal(parsed.features[1].properties.X, 1);
+      const empty = w.writeLayer('tree', 'osm', [], { source: 's', read: 0, dropped: {} });
+      assert.deepEqual(JSON.parse(readFileSync(join(dir, 'pkg', empty), 'utf8')).features, []);
+      assert.deepEqual(
+        w.reports.map((r) => [r.layer, r.written]),
+        [
+          ['yapi_osm.geojson', 2],
+          ['agac_osm.geojson', 0],
+        ],
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('osm-city districts', () => {
+  const fc = {
+    features: [
+      { properties: { name: 'Keçiören', admin_level: '6' }, geometry: poly(square(0, 0, 1, 1)) },
+      { properties: { name: 'Çankaya', admin_level: 6 }, geometry: poly(square(1, 0, 2, 1)) },
+      { properties: { name: 'Ankara', admin_level: '4' }, geometry: poly(square(0, 0, 2, 1)) },
+      { properties: { name: 'Çankaya', admin_level: '6' }, geometry: poly(square(1, 0, 2, 1)) },
+      { properties: { name: 'Altındağ' }, geometry: line([0, 0], [1, 1]) },
+      { properties: {}, geometry: poly(square(0, 0, 1, 1)) },
+    ],
+  };
+  it('keeps admin_level 6 polygons with a name, one per name, sorted by name', () => {
+    const { districts, dropped } = readDistricts(fc);
+    assert.deepEqual(
+      districts.map((d) => d.name),
+      ['Çankaya', 'Keçiören'],
+    );
+    assert.deepEqual(dropped, {
+      'admin_level ≠ 6': 1,
+      'aynı ad (ilki alındı)': 1,
+      'poligon değil': 1,
+      'adı yok': 1,
+    });
+  });
+  it('selects the named districts (Turkish case-insensitive) or all', () => {
+    const { districts } = readDistricts(fc);
+    assert.deepEqual(
+      selectArea(districts, ['KEÇİÖREN']).map((d) => d.name),
+      ['Keçiören'],
+    );
+    assert.equal(selectArea(districts).length, 2);
+    assert.throws(() => selectArea(districts, ['Mamak']), /Mamak/);
+  });
+});
