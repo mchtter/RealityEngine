@@ -461,6 +461,7 @@ const BUILDING_USES: Record<string, string> = {
   tower: 'Kule (anıt, savunma, seyir)',
   substation: 'Trafo binası / köşkü',
   terminal: 'Terminal binası (havalimanı / otogar)',
+  train_station: 'Tren / metro istasyonu',
 };
 
 export const BUILDING_CONTRACT_V2: CityThemeContract = {
@@ -499,6 +500,16 @@ export const BUILDING_CONTRACT_V2: CityThemeContract = {
       range: [1, 400],
       dt: true,
       description: 'Kat sayısı yoksa kat sayısı yükseklikten çıkarılır (3 m / kat).',
+    },
+    {
+      key: 'layer',
+      type: 'integer',
+      label: 'Kot katmanı',
+      column: 'KOT_KATMANI',
+      range: [-5, 5],
+      dt: true,
+      description:
+        '1 ve üstü: yolun / rayın üstünde duran yapı (istasyon holü, köprü bina); motor kolonlar üstüne kaldırır.',
     },
     {
       key: 'use',
