@@ -38,6 +38,9 @@ export interface LoadedTile {
   timings?: { fetchParseMs: number; meshMs: number };
 }
 
+/** How far down the queue a job may jump to reuse the model its worker holds. */
+const AFFINITY_WINDOW = 4;
+
 interface Slot {
   worker: Worker;
   busy: boolean;
@@ -55,6 +58,8 @@ export class TileLoader {
   private queue: TileJob[] = [];
   private readonly inFlight = new Map<number, TileJob>();
   private readonly pending = new Set<string>();
+  /** The worker that last read a tile url: it still holds the parsed model. */
+  private readonly affinity = new Map<string, Slot>();
   private seq = 0;
 
   constructor(
@@ -135,6 +140,7 @@ export class TileLoader {
       this.inFlight.delete(slot.job);
       this.pending.delete(jobId(job));
       slot.worker.terminate();
+      for (const [url, s] of this.affinity) if (s === slot) this.affinity.delete(url);
       this.spawn(slot);
     }
     this.queue = this.queue.filter((j) => {
@@ -148,8 +154,16 @@ export class TileLoader {
     this.queue.sort((a, b) => a.priority - b.priority);
     for (const slot of this.workers) {
       if (slot.busy) continue;
-      const job = this.queue.shift();
-      if (!job) return;
+      if (!this.queue.length) return;
+      // Among the next few jobs, one whose model this worker holds goes first
+      // (a tile's full build after its far one: no second download and parse).
+      const near = this.queue
+        .slice(0, AFFINITY_WINDOW)
+        .findIndex((j) => this.affinity.get(j.url) === slot);
+      const [job] = this.queue.splice(Math.max(0, near), 1);
+      this.affinity.set(job.url, slot);
+      while (this.affinity.size > this.workers.length * 4)
+        this.affinity.delete(this.affinity.keys().next().value!);
       slot.busy = true;
       const id = ++this.seq;
       slot.job = id;

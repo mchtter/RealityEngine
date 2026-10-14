@@ -45,6 +45,7 @@ import {
   createMaterials,
   setUnderground as fadeGround,
 } from './materials';
+import { PlacePin, type PinScreen } from './place-pin';
 import { PlacementLayer } from './placements';
 import { SlotAllocator } from './slot-allocator';
 import {
@@ -849,6 +850,34 @@ export class DtEngine {
     return utmInverse(this.world.originE + t.x, this.world.originN - t.z, this.world.zone);
   }
 
+  /**
+   * The camera for tile planning: its ground position (UTM metres in the
+   * world's zone), height above the ground, and the compass heading and pitch
+   * (degrees below the horizon) it looks along. Null before the first tile.
+   */
+  eyeView(): {
+    zone: number;
+    e: number;
+    n: number;
+    height: number;
+    heading: number;
+    pitch: number;
+  } | null {
+    if (!this.world) return null;
+    const p = this.camera.position;
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    const flat = Math.hypot(dir.x, dir.z);
+    return {
+      zone: this.world.zone,
+      e: this.world.originE + p.x,
+      n: this.world.originN - p.z,
+      height: p.y - this.heightAt(p.x, -p.z),
+      // three: x east, z south.
+      heading: ((Math.atan2(dir.x, -dir.z) * 180) / Math.PI + 360) % 360,
+      pitch: (Math.atan2(-dir.y, flat) * 180) / Math.PI,
+    };
+  }
+
   /** World model coordinates of a geographic point (requires the world frame). */
   worldOf(lon: number, lat: number): [number, number] | null {
     if (!this.world || utmZoneOf(lon) !== this.world.zone) return null;
@@ -1474,6 +1503,44 @@ export class DtEngine {
     this.scene.add(this.cityStatesGroup);
   }
 
+  private placePin: PlacePin | null = null;
+  private pinned: { lon: number; lat: number; height: number } | null = null;
+  private readonly pinListeners = new Set<(p: PinScreen) => void>();
+
+  /**
+   * Pins a place: a thin white line `height` m up from its ground, kept while
+   * the camera moves (null clears). The label on top is the page's — it
+   * follows `onPinScreen`.
+   */
+  pinPlace(place: { lon: number; lat: number; height: number } | null): void {
+    this.pinned = place;
+    this.placePin ??= new PlacePin(this.scene);
+    this.placePin.set(null);
+  }
+
+  /** Screen position of the pin's top (px in the canvas), null when off screen or cleared. */
+  onPinScreen(cb: (p: PinScreen) => void): () => void {
+    this.pinListeners.add(cb);
+    return () => this.pinListeners.delete(cb);
+  }
+
+  private tickPin(): void {
+    const pin = this.placePin;
+    if (!pin) return;
+    // The world frame may come after the pin (first tile): place it once it is there.
+    if (this.pinned && !pin.isSet()) {
+      const at = this.worldOf(this.pinned.lon, this.pinned.lat);
+      if (at) pin.set({ x: at[0], y: at[1], height: this.pinned.height });
+    }
+    pin.tick(
+      (x, y) => this.heightAt(x, y),
+      this.camera,
+      this.container.clientWidth,
+      this.container.clientHeight,
+      (p) => this.pinListeners.forEach((cb) => cb(p)),
+    );
+  }
+
   /** Flies to a state's object (its outline, else ~60 m around the point). */
   focusCityState(state: CityObjectState): void {
     const pts = state.outline?.length
@@ -1852,6 +1919,8 @@ export class DtEngine {
   }
 
   dispose(): void {
+    this.placePin?.dispose();
+    this.pinListeners.clear();
     this.vehicles.dispose();
     this.placements.dispose();
     this.groundAtlas.dispose();
@@ -1972,6 +2041,8 @@ export class DtEngine {
       cam.bottom = -extent;
       cam.updateProjectionMatrix();
     }
+
+    this.tickPin();
 
     const cpu0 = performance.now();
     if (this.debugFlags.post) this.pipeline.render();
