@@ -23,6 +23,7 @@ import {
   unionPolygons,
 } from '@opentwin/city-core';
 import * as THREE from 'three/webgpu';
+import { buildAirfieldLights } from './airfield-lights';
 import { MeshBuilder, drapeCells, drapeOnTerrain, drapeRingWall, toThree } from './geom';
 import type { DtMaterials } from './materials';
 
@@ -736,6 +737,10 @@ export function buildGround(
             ribbon(marks, terrainAt, pts, 0.1, PATH_MARKING_LIFT);
           } else if (m.kind === 'taxiway-center') {
             ribbon(yellow, groundAt, pts, 0.3, MARKING_LIFT);
+          } else if (m.kind === 'airfield-white') {
+            ribbon(marks, groundAt, pts, m.width ?? 0.9, MARKING_LIFT);
+          } else if (m.kind === 'airfield-yellow') {
+            ribbon(yellow, groundAt, pts, m.width ?? 0.15, MARKING_LIFT);
           } else if (m.kind === 'runway-center') {
             for (const d of dashes(pts, 30, 20)) ribbon(marks, groundAt, d, 0.9, MARKING_LIFT);
           } else if (m.kind === 'runway-edge') {
@@ -779,6 +784,35 @@ export function buildGround(
       group.add(chunk);
     }
   }
+
+  // Airfield paint seen from afar: a runway is kilometres long, its paint
+  // must not vanish where the tile switches to the coarse ground.
+  const farPaint = new MeshBuilder();
+  const farYellow = new MeshBuilder();
+  const farLift = LIFT.airfield + FAR_LIFT + 0.06;
+  for (const m of model.markings) {
+    if (m.kind !== 'airfield-white' && m.kind !== 'airfield-yellow') continue;
+    if ((m.width ?? 0) < 0.85) continue;
+    const pts = m.points as [number, number][];
+    ribbon(m.kind === 'airfield-white' ? farPaint : farYellow, terrainAt, pts, m.width!, farLift);
+  }
+  for (const [b, mat, name] of [
+    [farPaint, mats.marking, 'airfield-paint-far'],
+    [farYellow, mats.markingYellow, 'airfield-yellow-far'],
+  ] as const) {
+    if (!b.indices.length) continue;
+    const mesh = new THREE.Mesh(b.build({ uv: false }), mat);
+    mesh.name = name;
+    mesh.userData.role = 'ground:far';
+    group.add(mesh);
+  }
+  // Runway, approach and taxiway lights (night).
+  const lights = buildAirfieldLights(
+    model.airfieldLights ?? [],
+    opts.far ? (x, y) => terrainAt(x, y) + farLift : groundAt,
+    mats.airfieldLight,
+  );
+  if (lights) group.add(lights);
 
   // Bridges and viaducts: asphalt deck with lane markings, walkways, concrete
   // barriers with a steel handrail, a slab edge and a narrower box girder

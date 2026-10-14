@@ -485,6 +485,28 @@ function createPropModules(): Record<PropVariant, THREE.BufferGeometry> {
       ),
     ]),
     flagpole: merge([cyl(0.09, 0.16, 20, 8, C('#e8e8e6'), 0, 10, 0), ...flag(undefined, 20)]),
+    // Windsock: a 6.6 m mast, a swivel, and a cone of five orange / white
+    // bands blowing out along +z (the wind), drooping a little.
+    windsock: merge([
+      cyl(0.05, 0.08, 6.6, 8, pole, 0, 3.3, 0),
+      box(0.12, 0.12, 0.5, darkMetal, 0, 6.5, 0.15),
+      ...[0, 1, 2, 3, 4].map((k) => {
+        const len = 0.72;
+        const z = 0.45 + k * len + len / 2;
+        const r0 = 0.46 - k * 0.05;
+        return cyl(
+          r0 - 0.05,
+          r0,
+          len,
+          12,
+          k % 2 ? C('#f4f1ea') : C('#ff5a14'),
+          0,
+          6.5 - z * 0.1,
+          z,
+          Math.PI / 2 + 0.1,
+        );
+      }),
+    ]),
     'flagpole-EU': merge([cyl(0.09, 0.16, 20, 8, C('#e8e8e6'), 0, 10, 0), ...flag('EU', 20)]),
     'flagpole-FR': merge([cyl(0.09, 0.16, 20, 8, C('#e8e8e6'), 0, 10, 0), ...flag('FR', 20)]),
     // Power transformer: tank with radiator banks, three bushings, conservator.
@@ -674,6 +696,7 @@ export function buildPropGroup(
             'mast',
             'floodlight',
             'flagpole',
+            'windsock',
             'transformer',
             'gantry',
             'stack',

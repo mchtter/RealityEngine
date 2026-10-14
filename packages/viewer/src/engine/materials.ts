@@ -52,6 +52,7 @@ import {
   vertexStage,
 } from 'three/tsl';
 import * as THREE from 'three/webgpu';
+import { airfieldLightMaterial } from './airfield-lights';
 import { GROUND_GRID } from './ground-atlas';
 import { GROUND_INNER, GROUND_PAD, GROUND_SIZE } from './landcover';
 
@@ -196,6 +197,8 @@ export interface DtMaterials {
   fence: THREE.MeshStandardNodeMaterial;
   lampGlow: THREE.MeshStandardNodeMaterial;
   lampPool: THREE.MeshBasicNodeMaterial;
+  /** Runway, approach and taxiway lights (airfield-lights.ts). */
+  airfieldLight: THREE.MeshBasicNodeMaterial;
   /** The dark inside of a tunnel mouth. */
   tunnelDark: THREE.MeshBasicNodeMaterial;
   /** Tunnel tube walls: light ceramic panels up to 3.5 m, dark coating above. */
@@ -1191,6 +1194,8 @@ export function createMaterials(): DtMaterials {
   }
   decal(lampPool, -6);
 
+  const airfieldLight = airfieldLightMaterial(night);
+
   // ─── Holograms (data view) ────────────────────────────────────────────────
   const holo = (tint: THREE.Color, strength: number) => {
     const m = new THREE.MeshBasicNodeMaterial({
@@ -1331,6 +1336,7 @@ export function createMaterials(): DtMaterials {
     holoGhost,
     fix,
     lampPool,
+    airfieldLight,
     tunnelDark,
     tunnelWall,
     tunnelGlow,
@@ -1379,6 +1385,7 @@ export function createMaterials(): DtMaterials {
     fence,
     lampGlow,
     lampPool,
+    airfieldLight,
     tunnelDark,
     tunnelWall,
     tunnelGlow,
