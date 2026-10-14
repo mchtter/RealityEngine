@@ -144,6 +144,8 @@ function disposeVariants(base: THREE.Material): void {
  */
 export interface DtMaterials {
   night: THREE.UniformNode<'float', number>;
+  /** 1 with the camera at walking height (L1), 0 from ~8 m up: street-level wear (see WEAR_*). */
+  streetDetail: THREE.UniformNode<'float', number>;
   /** 1 while a scenario colours the buildings (see `scenario`). */
   scenarioOn: THREE.UniformNode<'float', number>;
   /** Building slot → colour; written by the engine, sampled by shell materials. */
@@ -269,14 +271,17 @@ function decal(material: THREE.Material, factor: number): void {
 // fades below are a pixel's ground footprint in metres (the longer side of the
 // pixel on the ground), detail fully on below the first value, gone above the
 // second — far views, where it would only shimmer, keep the plain surfaces.
+// Walking distance: from a 1.7 m eye, hairline detail is full to ~4 m and gone
+// by ~7 m, patches / potholes full to ~6 m and gone by ~12 m. On top of that
+// the `streetDetail` uniform keeps it to a camera at walking height (L1).
 /** Hairline cracks, paver cracks, weeds in joints. */
-const WEAR_FINE_PX = [0.025, 0.07] as const;
+const WEAR_FINE_PX = [0.0064, 0.0196] as const;
 /** Repair patches, potholes, oil stains, concrete spalls. */
-const WEAR_COARSE_PX = [0.12, 0.4] as const;
+const WEAR_COARSE_PX = [0.0144, 0.0576] as const;
 /** Relief of the wear (potholes, sunken pavers, crack grooves) in the ground normal. */
 const WEAR_BUMP = 0.35;
 /** View distance (m) past which the wear relief is flat (bumpedNormal fade). */
-const WEAR_BUMP_FAR = 40;
+const WEAR_BUMP_FAR = 12;
 /** Asphalt: one random repair patch / pothole / oil stain slot per cell of this size (m). */
 const ASPHALT_WEAR_CELL = 8;
 /** Asphalt: share of cells with a repair patch, a pothole, an oil stain. */
@@ -298,6 +303,7 @@ const BAY_SPALL = 0.22;
 
 export function createMaterials(): DtMaterials {
   const night = uniform(0);
+  const streetDetail = uniform(1);
   const skyTint = uniform(new THREE.Color(0.55, 0.68, 0.85));
   const day = oneMinus(night);
 
@@ -664,8 +670,10 @@ export function createMaterials(): DtMaterials {
   const pxIso = pxA.mul(pxB).sqrt();
   /** Longer side of the footprint (grazing views stretch it): drives the fades. */
   const pxMax = max(pxA, pxB);
-  const fineNear = oneMinus(smoothstep(WEAR_FINE_PX[0], WEAR_FINE_PX[1], pxMax));
-  const coarseNear = oneMinus(smoothstep(WEAR_COARSE_PX[0], WEAR_COARSE_PX[1], pxMax));
+  const fineNear = oneMinus(smoothstep(WEAR_FINE_PX[0], WEAR_FINE_PX[1], pxMax)).mul(streetDetail);
+  const coarseNear = oneMinus(smoothstep(WEAR_COARSE_PX[0], WEAR_COARSE_PX[1], pxMax)).mul(
+    streetDetail,
+  );
   /**
    * Coverage of a line of half-width `w` (m) at distance `d` (m), filtered
    * over `aa` (m). Darkness is conserved: a line thinner than a pixel turns
@@ -1667,6 +1675,7 @@ export function createMaterials(): DtMaterials {
 
   return {
     night,
+    streetDetail,
     scenarioOn,
     scenario,
     skyTint,

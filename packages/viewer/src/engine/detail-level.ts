@@ -1,6 +1,7 @@
 /**
- * Detail levels by the camera's height above the ground: L1 at street level
- * (every detail, few tiles) … L5 over the city (many tiles, no detail). The
+ * Detail levels by the camera's height above the ground: L1 at walking height
+ * (under 5 m: every detail, few tiles) … L5 over the city (many tiles, no
+ * detail). The
  * level sets how many tiles load and how many of them in full; within a
  * tile, detail falls off with the 3D distance to the camera (city-tile.ts).
  * Bounds follow the screen-space-error rule of 3D tile streaming (Cesium:
@@ -10,7 +11,7 @@
 export type DetailLevel = 1 | 2 | 3 | 4 | 5;
 
 /** Upper height bound (m above ground) of L1 … L4; above the last one is L5. */
-export const LEVEL_TOPS = [30, 100, 400, 1500] as const;
+export const LEVEL_TOPS = [5, 100, 400, 1500] as const;
 /** Hysteresis: a level is left only this far (share of the bound) past its bound. */
 const BAND = 0.15;
 /** A new level holds this long (ms) before it takes effect: no flicker on a zoom bounce. */
