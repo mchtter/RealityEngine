@@ -85,6 +85,7 @@ export type CityDomain =
   | 'furniture'
   | 'iot'
   | 'construction'
+  | 'industry'
   | 'hazard';
 
 export const CITY_DOMAIN_LABEL: Record<CityDomain, string> = {
@@ -111,6 +112,7 @@ export const CITY_DOMAIN_LABEL: Record<CityDomain, string> = {
   furniture: 'Kent donatısı',
   iot: 'Sensör ve saha cihazı',
   construction: 'İnşaat ve kazı',
+  industry: 'Sanayi ve üretim',
   hazard: 'Afet ve tehlike',
 };
 
@@ -340,8 +342,14 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
   c('land.industrial_area', 'Sanayi / liman / demiryolu alanı', 'district', 'polygon', {
     theme: t('area', { kind: 'industrial' }),
   }),
-  c('land.plaza', 'Meydan / pazar yeri', 'street', 'polygon', {
+  c('land.plaza', 'Meydan', 'street', 'polygon', {
     theme: t('area', { kind: 'plaza' }),
+  }),
+  c('land.quarry', 'Taş ocağı / maden sahası', 'site', 'polygon', {
+    theme: t('area', { kind: 'quarry' }),
+  }),
+  c('land.military', 'Askeri alan', 'district', 'polygon', {
+    theme: t('area', { kind: 'military' }),
   }),
 
   // ── Yapılar ve iç mekân
@@ -389,7 +397,17 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
     parents: ['building.floor', 'building.*'],
     description: 'MAKS bağımsız bölümü; sayaç, kilit ve sakin hizmetleri buna bağlanır.',
   }),
-  c('building.room', 'Oda / mahal', 'unit', 'volume', { parents: ['building.unit'] }),
+  c('building.room', 'Oda / mahal', 'unit', 'volume', {
+    parents: ['building.unit', 'building.floor'],
+  }),
+  c('building.hall', 'Salon / hol', 'floor', 'volume', {
+    parents: ['building.floor', 'building.*'],
+  }),
+  c('building.service_desk', 'Hizmet masası (Beyaz Masa)', 'unit', 'point', {
+    parents: ['building.hall', 'building.*'],
+    capabilities: ['telemetry', 'state'],
+    description: 'Sıra / bekleme süresi telemetri olarak gelir.',
+  }),
   c('building.entrance', 'Bina girişi', 'building', 'point', { parents: ['building.*'] }),
   c('building.stairwell', 'Merdiven / kaçış yolu', 'building', 'volume', {
     parents: ['building.*'],
@@ -577,6 +595,7 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
     standards: ['GTFS'],
   }),
   c('transit.metro_track', 'Metro ray hattı (tünel / viyadük kesimi)', 'district', 'line', {
+    theme: t('road', { class: 'subway' }),
     parents: ['transit.metro_line'],
     capabilities: ['state'],
   }),
@@ -595,6 +614,7 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
     standards: ['GTFS-RT', 'SIRI'],
   }),
   c('transit.tram_line', 'Tramvay hattı', 'city', 'line', {
+    theme: t('road', { class: 'tram' }),
     capabilities: ['schedule'],
     standards: ['GTFS'],
   }),
@@ -604,6 +624,7 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
     standards: ['GTFS-RT'],
   }),
   c('transit.rail_line', 'Banliyö / demiryolu hattı', 'region', 'line', {
+    theme: t('road', { class: 'rail' }),
     capabilities: ['schedule'],
   }),
   c('transit.rail_station', 'Tren istasyonu', 'site', 'volume'),
@@ -628,6 +649,18 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
   }),
   c('transit.cable_car', 'Teleferik / füniküler', 'district', 'line', { capabilities: ['state'] }),
   c('transit.depot', 'Toplu taşıma garajı / depo', 'site', 'polygon'),
+  c('transit.bus_terminal', 'Şehirlerarası otobüs terminali (otogar)', 'site', 'volume', {
+    theme: t('area', { kind: 'bus_station' }),
+    capabilities: ['state', 'schedule'],
+  }),
+  c('transit.bus_bay', 'Otobüs peronu', 'unit', 'point', {
+    parents: ['transit.bus_terminal'],
+    capabilities: ['state', 'schedule'],
+  }),
+  c('transit.ticket_office', 'Bilet gişesi / yazıhane', 'unit', 'point', {
+    parents: ['transit.bus_terminal', 'transit.rail_station'],
+    capabilities: ['state'],
+  }),
   c('transit.passenger_display', 'Yolcu bilgilendirme ekranı', 'street', 'point', {
     capabilities: ['state', 'command'],
     commands: ['display.message'],
@@ -638,16 +671,45 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
   }),
 
   // ── Havacılık
-  c('aviation.airport', 'Havalimanı', 'region', 'polygon', { capabilities: ['state', 'schedule'] }),
+  c('aviation.airport', 'Havalimanı', 'region', 'polygon', {
+    capabilities: ['state', 'schedule'],
+    theme: t('area', { kind: 'airport' }),
+  }),
   c('aviation.runway', 'Pist', 'district', 'polygon', {
     parents: ['aviation.airport'],
     capabilities: ['state'],
+    theme: t('road', { class: 'runway' }),
   }),
-  c('aviation.apron', 'Apron', 'site', 'polygon', { parents: ['aviation.airport'] }),
+  c('aviation.taxiway', 'Taksi yolu', 'district', 'polygon', {
+    parents: ['aviation.airport'],
+    theme: t('road', { class: 'taxiway' }),
+  }),
+  c('aviation.apron', 'Apron', 'site', 'polygon', {
+    parents: ['aviation.airport'],
+    theme: t('area', { kind: 'apron' }),
+  }),
   c('aviation.terminal', 'Terminal binası', 'building', 'volume', {
     parents: ['aviation.airport'],
+    theme: t('building', { use: 'terminal' }),
   }),
   c('aviation.gate', 'Uçuş kapısı', 'building', 'point', { parents: ['aviation.terminal'] }),
+  c('aviation.checkin_counter', 'Check-in bankosu', 'unit', 'point', {
+    parents: ['aviation.terminal'],
+    capabilities: ['state', 'telemetry'],
+  }),
+  c('aviation.security_checkpoint', 'Güvenlik kontrol noktası', 'unit', 'point', {
+    parents: ['aviation.terminal'],
+    capabilities: ['telemetry', 'state'],
+    description: 'Kuyruk uzunluğu / bekleme süresi.',
+  }),
+  c('aviation.baggage_claim', 'Bagaj bandı', 'unit', 'point', {
+    parents: ['aviation.terminal'],
+    capabilities: ['state'],
+  }),
+  c('aviation.jet_bridge', 'Yolcu köprüsü', 'building', 'point', {
+    parents: ['aviation.gate', 'aviation.terminal'],
+    capabilities: ['state'],
+  }),
   c('aviation.heliport', 'Helikopter pisti', 'site', 'polygon'),
   c('aviation.aircraft', 'Uçak (canlı)', 'region', 'point', {
     capabilities: ['position', 'state'],
@@ -660,7 +722,10 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
   }),
 
   // ── Denizcilik ve liman
-  c('maritime.port', 'Liman', 'district', 'polygon', { capabilities: ['state'] }),
+  c('maritime.port', 'Liman', 'district', 'polygon', {
+    capabilities: ['state'],
+    theme: t('area', { kind: 'harbour' }),
+  }),
   c('maritime.berth', 'Rıhtım / yanaşma yeri', 'site', 'line', {
     parents: ['maritime.port'],
     capabilities: ['state'],
@@ -668,6 +733,7 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
   c('maritime.pier', 'İskele', 'site', 'polygon'),
   c('maritime.marina', 'Marina', 'site', 'polygon'),
   c('maritime.breakwater', 'Dalgakıran', 'district', 'line'),
+  c('maritime.lighthouse', 'Deniz feneri', 'site', 'point', { capabilities: ['state'] }),
   c('maritime.container_yard', 'Konteyner sahası', 'site', 'polygon', {
     parents: ['maritime.port'],
   }),
@@ -715,8 +781,11 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
   c('energy.power_pole', 'Elektrik direği (havai hat)', 'street', 'point', {
     theme: t('asset', { kind: 'power_pole' }),
   }),
-  c('energy.transmission_tower', 'Enerji iletim direği (yüksek gerilim)', 'region', 'point'),
+  c('energy.transmission_tower', 'Enerji iletim direği (yüksek gerilim)', 'region', 'point', {
+    theme: t('asset', { kind: 'power_tower' }),
+  }),
   c('energy.substation', 'Trafo merkezi', 'site', 'polygon', {
+    theme: t('area', { kind: 'substation' }),
     capabilities: ['telemetry', 'state', 'command', 'alarm'],
     commands: ['breaker.operate'],
     deviceKind: 'plc',
@@ -756,6 +825,7 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
     capabilities: ['telemetry', 'state'],
   }),
   c('energy.power_plant', 'Santral (termik / hidroelektrik)', 'district', 'polygon', {
+    theme: t('area', { kind: 'power_plant' }),
     capabilities: ['telemetry', 'state'],
   }),
   c('energy.wind_farm', 'Rüzgâr santrali (RES)', 'region', 'polygon', {
@@ -774,6 +844,27 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
   c('energy.rooftop_solar', 'Çatı GES paneli', 'building', 'polygon', {
     parents: ['building.*'],
     capabilities: ['telemetry'],
+  }),
+  c('energy.solar_array', 'Panel dizisi (blok)', 'site', 'polygon', {
+    parents: ['energy.solar_farm'],
+    capabilities: ['telemetry', 'alarm'],
+  }),
+  c('energy.inverter', 'İnvertör', 'site', 'point', {
+    parents: ['energy.solar_farm', 'energy.solar_array', 'energy.rooftop_solar'],
+    capabilities: ['telemetry', 'state', 'alarm', 'command'],
+    commands: ['generation.curtail'],
+    deviceKind: 'plc',
+    standards: ['SunSpec Modbus', 'IEC 61850-7-420'],
+  }),
+  c('energy.power_transformer', 'Güç trafosu', 'site', 'point', {
+    parents: ['energy.substation', 'energy.solar_farm', 'energy.wind_farm'],
+    capabilities: ['telemetry', 'state', 'alarm'],
+  }),
+  c('energy.switchgear', 'Şalt hücresi / kesici', 'site', 'point', {
+    parents: ['energy.substation', 'energy.solar_farm', 'building.*'],
+    capabilities: ['state', 'alarm'],
+    commands: ['breaker.operate'],
+    standards: ['IEC 61850'],
   }),
   c('energy.battery_storage', 'Enerji depolama (batarya)', 'site', 'point', {
     capabilities: ['telemetry', 'state', 'command', 'alarm'],
@@ -846,6 +937,9 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
     theme: t('utility_node', { type: 'cabinet', network: 'telecom' }),
   }),
   c('telecom.cell_tower', 'Baz istasyonu', 'street', 'point'),
+  c('telecom.mast', 'Anten / verici direği', 'site', 'point', {
+    theme: t('asset', { kind: 'mast' }),
+  }),
   c('telecom.wifi_hotspot', 'Kent Wi-Fi noktası', 'street', 'point', {
     capabilities: ['state', 'telemetry'],
   }),
@@ -976,8 +1070,27 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
 
   // ── Kültür, spor ve inanç
   c('social.stadium', 'Stadyum', 'site', 'volume', {
+    theme: t('area', { kind: 'stadium' }),
     capabilities: ['telemetry', 'state', 'schedule'],
     description: 'Etkinlik takvimi ve kalabalık yoğunluğu.',
+  }),
+  c('social.pitch', 'Saha (oyun alanı)', 'site', 'polygon', {
+    parents: ['social.stadium'],
+    theme: t('area', { kind: 'pitch' }),
+  }),
+  c('social.running_track', 'Atletizm pisti', 'site', 'polygon', {
+    parents: ['social.stadium'],
+    theme: t('area', { kind: 'track' }),
+  }),
+  c('social.stand_sector', 'Tribün sektörü', 'building', 'polygon', {
+    parents: ['social.stadium'],
+    theme: t('building', { use: 'stadium' }),
+    capabilities: ['telemetry'],
+    description: 'Doluluk telemetri olarak gelir.',
+  }),
+  c('social.turnstile', 'Stadyum turnikesi', 'building', 'point', {
+    parents: ['social.stadium'],
+    capabilities: ['telemetry', 'state'],
   }),
   c('social.sports_hall', 'Spor salonu', 'building', 'volume'),
   c('social.sports_field', 'Spor sahası', 'site', 'polygon'),
@@ -989,14 +1102,19 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
   }),
   c('social.cultural_center', 'Kültür merkezi / tiyatro', 'building', 'volume'),
   c('social.museum', 'Müze', 'building', 'volume'),
-  c('social.cemetery', 'Mezarlık', 'site', 'polygon'),
+  c('social.cemetery', 'Mezarlık', 'site', 'polygon', {
+    theme: t('area', { kind: 'cemetery' }),
+  }),
   c('social.playground', 'Çocuk oyun alanı', 'site', 'polygon', {
     theme: t('area', { kind: 'playground' }),
   }),
 
   // ── Ticaret ve hizmet
   c('commerce.shop', 'Mağaza / işletme', 'building', 'point'),
-  c('commerce.market', 'Semt pazarı', 'street', 'polygon', { capabilities: ['schedule'] }),
+  c('commerce.market', 'Semt pazarı', 'street', 'polygon', {
+    capabilities: ['schedule'],
+    theme: t('area', { kind: 'marketplace' }),
+  }),
   c('commerce.bank_atm', 'Banka / ATM', 'building', 'point'),
 
   // ── Kent donatısı (sokaktaki sabit kamu eşyası)
@@ -1011,6 +1129,12 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
     theme: t('asset', { kind: 'waste_basket' }),
   }),
   c('furniture.bollard', 'Babalık / dikme', 'street', 'point'),
+  c('furniture.floodlight', 'Projektör direği', 'street', 'point', {
+    theme: t('asset', { kind: 'floodlight' }),
+  }),
+  c('furniture.flagpole', 'Bayrak direği', 'street', 'point', {
+    theme: t('asset', { kind: 'flagpole' }),
+  }),
   c('furniture.bike_rack', 'Bisiklet park yeri', 'street', 'point'),
   c('furniture.billboard', 'Reklam panosu / dijital pano', 'street', 'point', {
     capabilities: ['state', 'command'],
@@ -1052,7 +1176,10 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
   }),
 
   // ── İnşaat ve kazı
-  c('construction.site', 'İnşaat alanı', 'site', 'polygon', { capabilities: ['state'] }),
+  c('construction.site', 'İnşaat alanı', 'site', 'polygon', {
+    capabilities: ['state'],
+    theme: t('area', { kind: 'construction' }),
+  }),
   c('construction.building', 'Yapım hâlindeki bina', 'building', 'volume', {
     parents: ['construction.site'],
     capabilities: ['state'],
@@ -1062,6 +1189,28 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
   c('construction.tower_crane', 'Kule vinç', 'site', 'point', {
     parents: ['construction.site'],
     capabilities: ['telemetry', 'state'],
+  }),
+
+  // ── Sanayi ve üretim
+  c('industry.production_hall', 'Üretim holü', 'floor', 'polygon', { parents: ['building.*'] }),
+  c('industry.production_line', 'Üretim hattı', 'floor', 'line', {
+    parents: ['industry.production_hall', 'building.*'],
+    capabilities: ['telemetry', 'state', 'alarm'],
+    standards: ['OPC UA', 'ISA-95'],
+  }),
+  c('industry.machine', 'Makine / tezgâh', 'unit', 'point', {
+    parents: ['industry.production_line', 'industry.production_hall'],
+    capabilities: ['telemetry', 'state', 'alarm'],
+    deviceKind: 'plc',
+    standards: ['OPC UA', 'MTConnect'],
+  }),
+  c('industry.storage_rack', 'Raf sistemi', 'unit', 'line', {
+    parents: ['building.*', 'industry.production_hall'],
+    capabilities: ['telemetry'],
+  }),
+  c('industry.loading_dock', 'Yükleme rampası', 'building', 'point', {
+    parents: ['building.*'],
+    capabilities: ['state'],
   }),
 
   // ── Afet ve tehlike (canlı olay ya da simülasyon)

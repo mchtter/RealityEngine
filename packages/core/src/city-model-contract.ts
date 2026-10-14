@@ -127,6 +127,13 @@ export const CITY_ROAD_CLASSES = [
   'steps',
   'track',
   'cycleway',
+  // Not roads, but lines with a width the city model lays the same way: rail
+  // (lanes = tracks) and airfield ways.
+  'rail',
+  'subway',
+  'tram',
+  'runway',
+  'taxiway',
 ] as const;
 export type CityRoadClass = (typeof CITY_ROAD_CLASSES)[number];
 
@@ -441,6 +448,19 @@ const BUILDING_USES: Record<string, string> = {
   garage: 'Garaj (tek kat)',
   shed: 'Baraka / kulübe (tek kat)',
   kiosk: 'Büfe (tek kat)',
+  stadium: 'Stadyum tribünü',
+  church: 'Kilise',
+  parking: 'Katlı otopark',
+  silo: 'Silo',
+  storage_tank: 'Depolama tankı',
+  roof: 'Sundurma / üstü kapalı alan (duvarsız)',
+  greenhouse: 'Sera',
+  minaret: 'Minare',
+  communication_tower: 'Verici / iletişim kulesi',
+  clock_tower: 'Saat kulesi',
+  tower: 'Kule (anıt, savunma, seyir)',
+  substation: 'Trafo binası / köşkü',
+  terminal: 'Terminal binası (havalimanı / otogar)',
 };
 
 export const BUILDING_CONTRACT_V2: CityThemeContract = {
@@ -550,6 +570,11 @@ const ROAD_CLASS_LABELS: Record<CityRoadClass, string> = {
   steps: 'Merdiven',
   track: 'Tarla / orman yolu',
   cycleway: 'Bisiklet yolu',
+  rail: 'Demiryolu / banliyö (İZBAN) — şerit sayısı = hat sayısı',
+  subway: 'Metro — şerit sayısı = hat sayısı',
+  tram: 'Tramvay',
+  runway: 'Pist (havalimanı)',
+  taxiway: 'Taksi yolu (havalimanı)',
 };
 
 export const ROAD_CONTRACT_V2: CityThemeContract = {
@@ -665,15 +690,29 @@ export const CROSSING_CONTRACT_V1: CityThemeContract = {
 const AREA_KINDS: Record<string, string> = {
   park: 'Park / bahçe',
   playground: 'Çocuk oyun alanı',
-  grass: 'Çim / yeşil alan / mezarlık / spor sahası',
+  grass: 'Çim / yeşil alan',
   forest: 'Orman / koruluk',
   water: 'Su yüzeyi (göl, gölet, havuz)',
   parking: 'Açık otopark',
-  plaza: 'Meydan / pazar yeri',
+  plaza: 'Meydan',
   school: 'Okul / hastane / kampüs bahçesi',
   religious: 'İbadethane avlusu',
-  industrial: 'Sanayi / liman / demiryolu alanı',
+  industrial: 'Sanayi / demiryolu alanı',
   residential: 'Konut / ticaret alanı',
+  stadium: 'Stadyum alanı',
+  pitch: 'Spor sahası (futbol, halı saha, kort)',
+  track: 'Atletizm pisti',
+  bus_station: 'Otobüs terminali / otogar alanı',
+  cemetery: 'Mezarlık',
+  construction: 'Şantiye / inşaat alanı',
+  quarry: 'Taş ocağı / maden sahası',
+  harbour: 'Liman / konteyner sahası',
+  military: 'Askeri alan',
+  marketplace: 'Pazar yeri',
+  substation: 'Trafo merkezi / şalt sahası',
+  power_plant: 'Enerji santrali',
+  airport: 'Havalimanı / hava üssü alanı',
+  apron: 'Apron (uçak park sahası)',
 };
 
 export const AREA_CONTRACT_V1: CityThemeContract = {
@@ -812,6 +851,10 @@ const ASSET_KINDS: Record<string, string> = {
   bench: 'Bank',
   waste_basket: 'Çöp kutusu',
   power_pole: 'Elektrik direği (havai hat)',
+  power_tower: 'Yüksek gerilim direği (pilon)',
+  mast: 'Anten / verici direği',
+  floodlight: 'Projektör direği (apron, stadyum, kavşak)',
+  flagpole: 'Bayrak direği',
 };
 
 export const ASSET_CONTRACT_V1: CityThemeContract = {
@@ -821,7 +864,7 @@ export const ASSET_CONTRACT_V1: CityThemeContract = {
   file: 'kent_donatisi',
   label: 'Kent donatısı',
   description:
-    'Sokak lambaları, trafik ışıkları, duraklar, banklar, çöp kutuları, elektrik direkleri.',
+    'Sokak lambaları, trafik ışıkları, duraklar, banklar, çöp kutuları, elektrik ve yüksek gerilim direkleri, anten ve bayrak direkleri.',
   dtUse:
     'Konumunda 3B nesne; taşıt yolunun üstüne düşen nesne bordüre çekilir. Verisi olmayan sokaklara DT görsel amaçlı lamba ekleyebilir; bunlar kayıt sayılmaz.',
   geometry: ['Point'],
@@ -837,6 +880,15 @@ export const ASSET_CONTRACT_V1: CityThemeContract = {
       dt: true,
     },
     { ...NAME, dt: false, description: 'Duraklarda durak adı.' },
+    {
+      key: 'country',
+      type: 'string',
+      label: 'Bayrak ülkesi',
+      column: 'ULKE',
+      dt: true,
+      description:
+        'Bayrak direklerinde bayrağın ülkesi (ISO kodu, Avrupa Birliği için EU); boşsa Türk bayrağı.',
+    },
   ],
   rules: [...BASE_RULES('Nokta', 'Point'), enumKnown('kind.known', 'Donatı türü')],
   example: { KIMLIK: 'L-7781', TUR: 'street_lamp' },
