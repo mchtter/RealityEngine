@@ -851,6 +851,158 @@ describe('compileCity', () => {
     expect(paving.some((p) => pointInRing([0, 20], p.outer))).toBe(true);
   });
 
+  it('makes everything give way to a rail line, and records each correction', () => {
+    const feature = (
+      ref: string,
+      kind: 'road' | 'building' | 'point',
+      geometry: unknown,
+      tags: Record<string, string>,
+    ) => ({ ref, source: 'osm', priority: 0, kind, geometry, tags }) as never;
+    const line = (pts: [number, number][]) => ({
+      type: 'LineString',
+      coordinates: pts.map(([x, y]) => ll(x, y)),
+    });
+    const box = (x0: number, y0: number, x1: number, y1: number) => ({
+      type: 'Polygon',
+      coordinates: [
+        [
+          [x0, y0],
+          [x1, y0],
+          [x1, y1],
+          [x0, y1],
+          [x0, y0],
+        ].map(([x, y]) => ll(x, y)),
+      ],
+    });
+    const m = compileCity(
+      {
+        ...gridSource(),
+        features: [
+          feature(
+            'osm:rail',
+            'road',
+            line([
+              [-200, 0],
+              [200, 0],
+            ]),
+            { highway: 'rail', lanes: '2' },
+          ),
+          // A footbridge over the tracks, ramps / stairs landing 30 m either side.
+          feature(
+            'osm:footbridge',
+            'road',
+            line([
+              [0, -30],
+              [0, 30],
+            ]),
+            {
+              highway: 'footway',
+              bridge: 'yes',
+              layer: '1',
+            },
+          ),
+          // A house the line's data runs into, and the station hall over the tracks.
+          feature('osm:house', 'building', box(-40, -2, -20, 12), { building: 'house' }),
+          feature('osm:hall', 'building', box(15, -8, 35, 8), {
+            building: 'train_station',
+            layer: '2',
+          }),
+          // A pole mapped on the bed.
+          feature(
+            'osm:pole',
+            'point',
+            { type: 'Point', coordinates: ll(-150, 1) },
+            { power: 'pole' },
+          ),
+        ],
+      },
+      { infill: false, decorate: true },
+    );
+    const fixes = m.fixes;
+    const rules = new Set(fixes.map((f) => f.rule));
+    // The footbridge clears the catenary envelope over the bed.
+    const deck = m.bridges.find((b) => b.roadId.includes('footbridge'))!;
+    const over = deck.path.filter((q) => Math.abs(q[1]) < 3);
+    expect(over.length).toBeGreaterThan(0);
+    for (const q of over)
+      expect(q[2] - 1.4 - terrainHeightAt(m.terrain, q[0], q[1])).toBeGreaterThan(6.4);
+    expect(rules.has('clearance.bridge-rail')).toBe(true);
+    // No pier on the bed.
+    for (const pier of deck.piers)
+      expect(Math.abs(pier.at[1])).toBeGreaterThan(m.rails![0].width / 2);
+    // The house is cut back off the bed; the hall over the tracks stays whole.
+    const house = m.buildings.find((b) => b.ref === 'osm:house')!;
+    expect(house.footprint.outer.every((p) => p[1] > m.rails![0].width / 2)).toBe(true);
+    expect(rules.has('building.rail')).toBe(true);
+    const hall = m.buildings.find((b) => b.ref === 'osm:hall')!;
+    expect(hall.area).toBeCloseTo(20 * 16, 0);
+    // … raised on columns, clear of the catenary envelope, none on the bed.
+    expect(hall.underside! - terrainHeightAt(m.terrain, 25, 0)).toBeGreaterThan(6.5);
+    expect(hall.columns!.length).toBeGreaterThan(0);
+    for (const c of hall.columns!)
+      expect(Math.abs(c[1])).toBeGreaterThan(m.rails![0].width / 2 + 1);
+    expect(rules.has('building.raised')).toBe(true);
+    // The pole stands beside the bed now.
+    const pole = m.props.find((p) => p.id.includes('pole'))!;
+    expect(Math.abs(pole.position[1])).toBeGreaterThan(m.rails![0].width / 2);
+    // Every correction says why.
+    for (const f of fixes.filter((x) => x.rule)) expect(f.note.length).toBeGreaterThan(10);
+  });
+
+  it('lays a rail bridge on its own deck, clear of the street under it', () => {
+    const feature = (ref: string, pts: [number, number][], tags: Record<string, string>) =>
+      ({
+        ref,
+        source: 'osm',
+        priority: 0,
+        kind: 'road',
+        geometry: { type: 'LineString', coordinates: pts.map(([x, y]) => ll(x, y)) },
+        tags,
+      }) as never;
+    // Track at grade, then on a bridge over the N–S street at x = 60, then at grade again.
+    const m = compileCity(
+      {
+        ...gridSource(),
+        features: [
+          feature(
+            'osm:t1',
+            [
+              [-190, 0],
+              [20, 0],
+            ],
+            { highway: 'rail' },
+          ),
+          feature(
+            'osm:t2',
+            [
+              [20, 0],
+              [100, 0],
+            ],
+            { highway: 'rail', bridge: 'yes', layer: '1' },
+          ),
+          feature(
+            'osm:t3',
+            [
+              [100, 0],
+              [190, 0],
+            ],
+            { highway: 'rail' },
+          ),
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    const onBridge = m.rails!.find((r) => r.grade === 'bridge')!;
+    expect(onBridge.profile?.length).toBe(onBridge.points.length);
+    expect(m.bridges.some((b) => b.roadId.startsWith('rl-deck:'))).toBe(true);
+    // Over the street the track is high enough for traffic under it (4.8 m + deck).
+    const k = onBridge.points.findIndex((p) => Math.abs(p[0] - 60) < 4);
+    const q = onBridge.points[k];
+    expect(onBridge.profile![k] - 1.4 - terrainHeightAt(m.terrain, q[0], q[1])).toBeGreaterThan(
+      4.7,
+    );
+  });
+
   it('keeps a shore street and the ground under it at the land floor, above the sea', () => {
     const road = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
       ref,

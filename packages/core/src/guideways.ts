@@ -1,7 +1,7 @@
 import type { SourceRoad } from './osm';
 import { bufferPolyline } from './poly';
 import { densify, offsetPolyline } from './roads';
-import type { Marking, Polygon, RailLine, Vec2 } from './types';
+import type { Marking, Polygon, RailLine, Road, Vec2 } from './types';
 
 /**
  * Lines with a width that are not roads, carried in the road theme (class
@@ -16,6 +16,9 @@ export const GUIDEWAY_CLASSES: ReadonlySet<string> = new Set([
   'taxiway',
 ]);
 
+/** Id prefix of a rail bridge's deck (a bridge built for a rail line). */
+export const RAIL_DECK = 'rl-deck:';
+
 /** Paved width (m) of an airfield way without a width in the data. */
 const AIRFIELD_WIDTH: Record<string, number> = { runway: 45, taxiway: 23 };
 /** Tracks of a rail line without a count in the data. */
@@ -25,6 +28,12 @@ export const TRACK_SPACING = 4.2;
 
 export interface Guideways {
   rails: RailLine[];
+  /**
+   * The decks of rail bridges, as road-like lines for the bridge builder (it
+   * gives them their height, piers and the clearance over what they cross);
+   * the rail is then laid on them (`RailLine.profile`).
+   */
+  decks: Road[];
   /** Runway / taxiway asphalt. */
   airfield: Polygon[];
   /** Runway paint (white) and taxiway centrelines (yellow). */
@@ -105,6 +114,7 @@ export function layGuideways(sources: SourceRoad[]): Guideways {
   const airfield: Polygon[] = [];
   const markings: Marking[] = [];
   const footprint: Polygon[] = [];
+  const decks: Road[] = [];
   for (const r of sources) {
     const cls = r.tags.highway ?? '';
     if (!GUIDEWAY_CLASSES.has(cls) || r.points.length < 2) continue;
@@ -121,20 +131,39 @@ export function layGuideways(sources: SourceRoad[]): Guideways {
     }
     // Underground stretches (metro, the İZBAN tunnel) are not drawn.
     if (tunnel) continue;
+    const bridge = !!r.tags.bridge && r.tags.bridge !== 'no';
     const lanes = Number.parseInt(r.tags.lanes ?? '', 10);
     const tracks = Number.isFinite(lanes) && lanes > 0 && lanes <= 6 ? lanes : TRACKS[cls];
-    const bed = tracks * TRACK_SPACING + (cls === 'tram' ? 0.6 : 2.4);
+    const bed = tracks * TRACK_SPACING + (cls === 'tram' ? 0.6 : 1.2);
     rails.push({
       id: `rl:${r.ref}`,
       ref: r.ref,
       kind: cls as RailLine['kind'],
+      grade: bridge ? 'bridge' : 'ground',
       tracks,
       width: bed,
       points: r.points,
       ...(r.tags.name ? { name: r.tags.name } : {}),
       provenance: 'observed',
     });
-    footprint.push(...bufferPolyline(r.points, bed / 2, false));
+    if (!bridge) footprint.push(...bufferPolyline(r.points, bed / 2, false));
+    else {
+      const layer = Number.parseInt(r.tags.layer ?? '', 10);
+      decks.push({
+        id: `${RAIL_DECK}${r.ref}`,
+        ref: r.ref,
+        cls: 'service',
+        grade: 'bridge',
+        layer: Number.isFinite(layer) && layer > 0 ? layer : 1,
+        centerline: r.points,
+        width: bed,
+        sidewalk: 0,
+        lanes: 1,
+        oneway: true,
+        formsBlocks: false,
+        provenance: { width: 'inferred', lanes: 'inferred' },
+      });
+    }
   }
-  return { rails, airfield, markings, footprint };
+  return { rails, decks, airfield, markings, footprint };
 }

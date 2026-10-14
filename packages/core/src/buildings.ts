@@ -256,6 +256,8 @@ export function makeBuilding(
     shopfront,
     use: buildingUse(tags, archetype, shopTag),
     ...(form !== 'block' ? { form } : {}),
+    ...(Number.parseInt(tags.layer ?? '', 10) >= 1 ? { raised: true } : {}),
+    ...(['train_station', 'transportation'].includes(tags.building ?? '') ? { station: true } : {}),
     // A transmitter's mast, base to tip: the tagged height or a usual one.
     ...(form === 'telecom'
       ? { towerHeight: Number.isFinite(tagHeight) && tagHeight > 10 ? tagHeight : 70 }
@@ -899,6 +901,12 @@ export function layoutFacades(
               }))
             : facades;
     b.cornerBalconies = wantCorner && !b.form ? cornerBalconies(b, ring, rng, tightEdges) : [];
+    // A hall raised over tracks: no door or shop up in the air, the ground row is windows.
+    if (b.underside !== undefined)
+      b.facades = b.facades.map((f) => ({
+        ...f,
+        groundBays: f.bays.map((k) => (k === 'balcony' || k === 'glazed-balcony' ? 'window' : k)),
+      }));
   }
 }
 

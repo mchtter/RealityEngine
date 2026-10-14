@@ -26,6 +26,7 @@ describe('building forms', () => {
     expect(formOf({ building: 'yes', man_made: 'tower' }, 60)).toBe('tower');
     expect(formOf({ building: 'yes', power: 'substation' }, 40)).toBe('hut');
     expect(formOf({ building: 'substation' }, 900)).toBe('shed');
+    expect(formOf({ building: 'train_station' }, 900)).toBe('box');
     // A tower without a height is slender, not a stub.
     expect(formLevels('tower', 33, new Rng(1))!.floorHeight).toBeGreaterThan(20);
   });

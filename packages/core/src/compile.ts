@@ -38,7 +38,8 @@ import {
 import { isGraded, transferGrades } from './grade';
 import { GroundModel, SURFACE_LIFT } from './ground-model';
 import { furnishGrounds } from './grounds';
-import { layGuideways } from './guideways';
+import { RAIL_DECK, layGuideways } from './guideways';
+import { type Envelope, Harmonizer } from './harmony/engine';
 import {
   ENTITY_TAG,
   LANDFORM_LINES,
@@ -105,6 +106,7 @@ import type {
   Marking,
   Polygon,
   Prop,
+  RailLine,
   Road,
   TerrainGrid,
   Vec2,
@@ -118,7 +120,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '85';
+export const COMPILER_VERSION = '90';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -459,6 +461,9 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     inRegion(c.center),
   );
   const roadIndex = new RoadIndex(roads);
+  // Uyum motoru: rails and the network are fixed; everything after gives way
+  // to them by the rule catalogue (harmony/rules.ts), leaving corrections.
+  const harmony = new Harmonizer(guide.rails, roadIndex);
 
   const areas: Area[] = distinctAreas(features.areas).flatMap((a) =>
     intersection(a.polygons, [regionPoly]).map((polygon, i) => ({
@@ -527,7 +532,9 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   // Observed buildings (highest-priority source first), corrected against roads and each other.
   const bctx = { terrain, roads: roadIndex };
   const placedObserved = placeObservedBuildings(candidates, bctx, [regionPoly]);
-  const { buildings: observed, fixes } = placedObserved;
+  const fixes = placedObserved.fixes;
+  // Buildings against rail beds (cut back; raised halls and canopies stay).
+  const observed = harmony.structures(placedObserved.buildings);
   const superseded = [
     ...placedObserved.superseded,
     ...outranked.map((b) => ringCentroid(b.polygons[0].outer)),
@@ -777,8 +784,43 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   // Laid out clear of buildings and roads by their own rules (rows of graves, stalls …).
   props.push(...grounds.props.filter((p) => inRegion([p.position[0], p.position[1]])));
 
-  let bridges = buildBridges(roads, terrain, roadIndex, cutGround, streetAt);
+  let bridges = buildBridges(
+    [...roads, ...guide.decks],
+    terrain,
+    roadIndex,
+    cutGround,
+    streetAt,
+    harmony,
+  );
+  // Rail on its bridges: the deck-top height along each line on a deck.
+  const railDecks = bridges.filter((b) => b.roadId.startsWith(RAIL_DECK));
+  const onDeck = (r: RailLine): RailLine => {
+    if (r.grade !== 'bridge' || !railDecks.length) return r;
+    // Points every 5 m: the deck rises and falls between the line's own vertices.
+    const points = densify(r.points, 5);
+    const profile = points.map((p) => {
+      let best = { d: Infinity, z: 0 };
+      for (const b of railDecks)
+        for (let k = 1; k < b.path.length; k++) {
+          const c = closestOnSegment(
+            p,
+            [b.path[k - 1][0], b.path[k - 1][1]],
+            [b.path[k][0], b.path[k][1]],
+          );
+          if (c.d < best.d)
+            best = { d: c.d, z: b.path[k - 1][2] + (b.path[k][2] - b.path[k - 1][2]) * c.t };
+        }
+      return best.z;
+    });
+    return { ...r, points, profile };
+  };
   props = clearOfBridges(props, bridges);
+  // Nothing stands on a rail bed; walls and fences do not cross the line.
+  {
+    const kept = harmony.furniture(props, walls.fences);
+    props = kept.props;
+    walls.fences = kept.fences;
+  }
   // Overhead lines between the pylons (turned to face along their line).
   const overhead = overheadSpans(props.filter((p) => p.kind === 'pylon'));
   // Paved / gravel yards around buildings (outside the hard ground above); the
@@ -834,33 +876,25 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     { kind: 'yard' as const, polygons: yards },
     ...hard,
   ];
-  // A rail bed lies on the ground: where it runs along a median, a sidewalk
-  // or a square (a tram in its reserved strip), those raised surfaces give
-  // way, or they would cover the track.
-  const railBeds = guide.rails.flatMap((r) => bufferPolyline(r.points, r.width / 2, false));
-  if (railBeds.length)
-    outSurfaces = outSurfaces.map((sf) =>
-      ['island', 'sidewalk', 'paving', 'path'].includes(sf.kind)
-        ? { ...sf, polygons: dropHairlines(difference(sf.polygons, railBeds)) }
-        : sf,
-    );
-  const allMarkings = [
+  // One surface per spot: nothing else under a rail bed (surface.rail).
+  outSurfaces = harmony.surfaces(outSurfaces);
+  const allMarkings = harmony.paint([
     ...markings,
     ...parking.markings,
     ...pitchMarkings(areas),
     ...runwayMarkings(areas),
     ...guide.markings,
-  ];
+  ]);
   let outMarkings = allMarkings;
   let outFences = walls.fences;
   let outOverhead = overhead;
-  let outRails = guide.rails;
+  let outRails = guide.rails.map(onDeck);
   let outCrossings = crossings;
   let outJunctions = junctions;
   let outAreas = areas;
   let outBlocks = blocks;
   let outRoads = roads;
-  let outFixes = fixes;
+  let outFixes = [...fixes, ...harmony.corrections];
 
   if (src.frame) {
     // Ownership: everything is cut to the tile so neighbours never overlap.
@@ -870,7 +904,16 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     props = props.filter((p) =>
       p.buildingId ? kept.has(p.buildingId) : inCore([p.position[0], p.position[1]]),
     );
-    outFixes = fixes.filter((f) => kept.has(f.targetId));
+    outFixes = [
+      ...fixes.filter((f) => kept.has(f.targetId)),
+      // The engine's corrections: a building's with the building, the others
+      // by where they happened.
+      ...harmony.corrections.filter((f) =>
+        f.targetId.startsWith('b:')
+          ? kept.has(f.targetId)
+          : inCore(f.at ?? (f.removed[0] ? ringCentroid(f.removed[0].outer) : [Infinity, 0])),
+      ),
+    ];
     outSurfaces = outSurfaces.map((sf) => ({
       kind: sf.kind,
       polygons: dropHairlines(intersection(sf.polygons, [corePoly])),
@@ -878,11 +921,9 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     outMarkings = clipMarkings(allMarkings, inCore);
     // A rail line crossing tiles: each tile lays the stretches over its core.
     outRails = guide.rails.flatMap((r) =>
-      linePieces(r.points, inCore).map((points, i) => ({
-        ...r,
-        id: i ? `${r.id}~${i}` : r.id,
-        points,
-      })),
+      linePieces(r.points, inCore).map((points, i) =>
+        onDeck({ ...r, id: i ? `${r.id}~${i}` : r.id, points }),
+      ),
     );
     // Long walls (a campus, an airfield's fence) cut into short pieces, each
     // drawn by the tile it stands in: on its own terrain, never past the margin.
@@ -1216,6 +1257,8 @@ function buildBridges(
   ground: CutGround,
   /** Street surface height (null off the street corridors). */
   streetAt: (x: number, y: number) => number | null,
+  /** Uyum motoru: what each deck crosses and the clearance it needs. */
+  harmony?: Harmonizer,
 ): Bridge[] {
   const bridges = roads.filter((r) => r.grade === 'bridge');
   // A deck lands on the street surface (levelled across the carriageway) at
@@ -1337,11 +1380,12 @@ function buildBridges(
       edgeLines: chain.some((r) => ['motorway', 'trunk', 'primary'].includes(r.cls)),
       piers: [],
     };
-    return { bridge, pts, layer };
+    return { bridge, pts, layer, chain, startInner, endInner };
   });
   settleJoinedDecks(decks);
   matchDeckEnds(decks);
   spreadSplitDecks(decks);
+  if (harmony) for (const d of decks) raiseOverEnvelope(d, harmony, roads, terrain);
   // Deck segments in a 20 m grid (a column checks only the decks around it).
   const deckSegs = new GridIndex<{ bridge: Bridge; a: Vec3; b: Vec3 }>(20);
   for (const { bridge } of decks) {
@@ -1358,9 +1402,126 @@ function buildBridges(
       );
     }
   }
-  const ctx = { terrain, roadIndex, ground, deckSegs };
+  const ctx = {
+    terrain,
+    roadIndex,
+    ground,
+    deckSegs,
+    blocked: harmony && ((q: Vec2) => harmony.blocksPier(q)),
+  };
   for (const { bridge, pts } of decks) bridge.piers = placePiers(bridge, pts, ctx);
   return decks.map((d) => d.bridge);
+}
+
+/** Steepest grade a deck may be raised with: a footbridge takes stairs, a road a ramp. */
+const RAISE_GRADE = { path: 0.25, road: 0.07 };
+const RAISE_LANDING = { path: 0.5, road: 0.12 };
+
+/**
+ * Clearance rules (clearance.bridge-*): wherever a deck passes over a rail
+ * bed, a ground carriageway or a path, its underside keeps that class's free
+ * height (classes.ts). A deck too low is raised there, eased back over a
+ * ramp at the class's grade; at an end that lands on the ground it may climb
+ * no steeper than stairs (path) / a steep ramp (road). What still does not
+ * clear is flagged for review. Roads the deck lands on are not "under" it.
+ */
+function raiseOverEnvelope(
+  deck: { bridge: Bridge; chain: Road[]; startInner: boolean; endInner: boolean },
+  harmony: Harmonizer,
+  roads: Road[],
+  terrain: TerrainGrid,
+): void {
+  const { bridge, chain } = deck;
+  const path = bridge.path;
+  if (path.length < 2) return;
+  const own = new Set(chain.map((r) => r.id));
+  // Ground roads touching the deck's ends (the streets its ramps land on).
+  const ends = [path[0], path[path.length - 1]].map((q) => [q[0], q[1]] as Vec2);
+  const landing = new Set(
+    roads
+      .filter(
+        (r) =>
+          r.grade === 'ground' &&
+          [r.centerline[0], r.centerline[r.centerline.length - 1]].some((p) =>
+            ends.some((e) => dist(p, e) < 6),
+          ),
+      )
+      .map((r) => r.id),
+  );
+  const skip = (id: string) => own.has(id) || landing.has(id);
+  const isPath = chain.every((r) => !isVehicular(r.cls));
+  const grade = isPath ? RAISE_GRADE.path : RAISE_GRADE.road;
+  const steep = isPath ? RAISE_LANDING.path : RAISE_LANDING.road;
+  // Arc length of each vertex.
+  const at: number[] = [0];
+  for (let k = 1; k < path.length; k++)
+    at.push(at[k - 1] + Math.hypot(path[k][0] - path[k - 1][0], path[k][1] - path[k - 1][1]));
+  const total = at[at.length - 1];
+  const zAt = (s: number) => {
+    let k = 1;
+    while (k < at.length - 1 && at[k] < s) k++;
+    const t = at[k] > at[k - 1] ? (s - at[k - 1]) / (at[k] - at[k - 1]) : 0;
+    return path[k - 1][2] + (path[k][2] - path[k - 1][2]) * Math.min(1, Math.max(0, t));
+  };
+  const pointAt = (s: number): Vec2 => {
+    let k = 1;
+    while (k < at.length - 1 && at[k] < s) k++;
+    const t = at[k] > at[k - 1] ? (s - at[k - 1]) / (at[k] - at[k - 1]) : 0;
+    return [
+      path[k - 1][0] + (path[k][0] - path[k - 1][0]) * t,
+      path[k - 1][1] + (path[k][1] - path[k - 1][1]) * t,
+    ];
+  };
+  // Needs, sampled every metre along the deck.
+  const needs: { s: number; lift: number; e: Envelope; under: number; p: Vec2 }[] = [];
+  for (let s = 0; s <= total; s += 1) {
+    const p = pointAt(s);
+    const e = harmony.envelopeAt(p, skip);
+    if (!e) continue;
+    const under = zAt(s) - DECK_DEPTH - terrainHeightAt(terrain, p[0], p[1]);
+    const lift = e.clearance - under;
+    if (lift > 0.05) needs.push({ s, lift, e, under, p });
+  }
+  if (!needs.length) return;
+  // A deck end on the ground stays there: within reach of it the deck climbs at most `steep`.
+  const cap = (s: number) =>
+    Math.min(
+      deck.startInner ? Infinity : s * steep,
+      deck.endInner ? Infinity : (total - s) * steep,
+    );
+  const PLATEAU = 4;
+  const liftAt = (s: number) => {
+    let l = 0;
+    for (const n of needs)
+      l = Math.max(l, n.lift - grade * Math.max(0, Math.abs(s - n.s) - PLATEAU));
+    return Math.max(0, Math.min(l, cap(s)));
+  };
+  // Vertices at most 4 m apart where the deck moves, so the raised span is not cut short.
+  const dense: Vec3[] = [path[0]];
+  const denseAt: number[] = [0];
+  for (let k = 1; k < path.length; k++) {
+    const n = liftAt(at[k]) > 0 || liftAt(at[k - 1]) > 0 ? Math.ceil((at[k] - at[k - 1]) / 4) : 1;
+    for (let i = 1; i <= n; i++) {
+      const t = i / n;
+      dense.push([
+        path[k - 1][0] + (path[k][0] - path[k - 1][0]) * t,
+        path[k - 1][1] + (path[k][1] - path[k - 1][1]) * t,
+        path[k - 1][2] + (path[k][2] - path[k - 1][2]) * t,
+      ]);
+      denseAt.push(at[k - 1] + (at[k] - at[k - 1]) * t);
+    }
+  }
+  bridge.path = dense.map((q, k) => [q[0], q[1], q[2] + liftAt(denseAt[k])]);
+  // One correction per thing crossed: the worst point of each.
+  const worst = new Map<string, (typeof needs)[number]>();
+  for (const n of needs) {
+    const prev = worst.get(n.e.ref);
+    if (!prev || n.lift > prev.lift) worst.set(n.e.ref, n);
+  }
+  for (const n of worst.values()) {
+    const after = n.under + liftAt(n.s);
+    harmony.deckRaised(bridge.roadId, n.p, n.e, n.under, after, after >= n.e.clearance - 0.05);
+  }
 }
 
 /** Order in which decks own a shared surface: widest (main carriageway) first. */
@@ -1591,6 +1752,8 @@ function placePiers(
     roadIndex: RoadIndex;
     ground: CutGround;
     deckSegs: GridIndex<{ bridge: Bridge; a: Vec3; b: Vec3 }>;
+    /** Ground a column may not stand on (a rail bed and its margin). */
+    blocked?: (q: Vec2) => boolean;
   },
 ): Bridge['piers'] {
   const girder = Math.max(1.5, (bridge.width / 2) * 0.62);
@@ -1601,6 +1764,7 @@ function placePiers(
   const clear = (q: Vec2, top: number) => {
     if (ctx.roadIndex.covering(q, onRoad)) return false;
     if (ctx.ground.inTrench(q[0], q[1])) return false;
+    if (ctx.blocked?.(q)) return false;
     for (const s of ctx.deckSegs.query(q[0], q[1], q[0], q[1])) {
       if (s.bridge === bridge) continue;
       const c = closestOnSegment(q, [s.a[0], s.a[1]], [s.b[0], s.b[1]]);

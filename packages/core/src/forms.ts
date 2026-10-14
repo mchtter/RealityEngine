@@ -42,6 +42,9 @@ const FORM_OF: Record<string, BuildingForm> = {
   tower: 'tower',
   // An airport terminal: a long low box, glazed front, entrance hall and sign.
   terminal: 'box',
+  // A station building: a hall of two tall storeys, not a block of flats.
+  train_station: 'box',
+  transportation: 'box',
 };
 
 /** Below this footprint (m²) a building without levels in the data is a hut, not a house. */

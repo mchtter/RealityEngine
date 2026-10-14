@@ -437,6 +437,20 @@ export interface Building {
   /** Shape family (absent: `block`). */
   form?: BuildingForm;
   /**
+   * OSM `layer` ≥ 1 of the source: a hall that may stand over tracks or a
+   * road (it does not give way to them).
+   */
+  raised?: boolean;
+  /** A station building (it may span the tracks even without a `layer`). */
+  station?: boolean;
+  /**
+   * Raised over what it spans (building.raised): the underside of its lowest
+   * floor (absolute height) and the columns it stands on (outside rail beds
+   * and carriageways).
+   */
+  underside?: number;
+  columns?: Vec2[];
+  /**
    * Mosques: minarets the renderer adds at the hall's corners (absent: 1, 2
    * for a large hall); 0 where the data maps its minarets as buildings.
    */
@@ -513,6 +527,10 @@ export interface RailLine {
   id: string;
   ref: string;
   kind: 'rail' | 'subway' | 'tram';
+  /** On a bridge (its deck carries it), else at grade. */
+  grade: 'ground' | 'bridge';
+  /** On a bridge: the deck-top height at each point (absent at grade). */
+  profile?: number[];
   tracks: number;
   width: number;
   points: Vec2[];
@@ -559,7 +577,24 @@ export interface Prop {
   flag?: string;
 }
 
-export type FixKind = 'road-overlap' | 'building-overlap' | 'invalid-geometry' | 'sliver';
+export type FixKind =
+  | 'road-overlap'
+  | 'building-overlap'
+  | 'invalid-geometry'
+  | 'sliver'
+  /** Uyum motoru (harmony/rules.ts): one kind per rule family. */
+  | 'rail-overlap'
+  | 'clearance'
+  | 'pier-moved'
+  | 'surface-cut'
+  | 'marking-cut'
+  | 'prop-moved'
+  | 'prop-removed'
+  | 'fence-cut'
+  | 'needs-review';
+
+/** What a correction did to the object that gave way. */
+export type CorrectionAction = 'cut' | 'remove' | 'move' | 'raise' | 'elevate' | 'flag';
 
 export interface Fix {
   id: string;
@@ -573,6 +608,13 @@ export interface Fix {
   height: number;
   baseZ: number;
   note: string;
+  /** Uyum motoru rule that made it (absent: the building placement pass). */
+  rule?: string;
+  action?: CorrectionAction;
+  /** The object it gave way to. */
+  otherId?: string;
+  /** Where it happened, when nothing was cut (a raised deck, a moved pole). */
+  at?: Vec2;
 }
 
 export interface Bridge {
