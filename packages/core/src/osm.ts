@@ -78,6 +78,14 @@ const GUIDE_RAILWAY: Record<string, string> = {
   tram: 'tram',
 };
 
+/** `aeroway=*` lines laid as airfield (airfield.ts), by the class they get. */
+const AIRFIELD_LINES: Record<string, string> = {
+  runway: 'runway',
+  taxiway: 'taxiway',
+  stopway: 'stopway',
+  parking_position: 'stand',
+};
+
 const NON_ROAD_HIGHWAYS = new Set([
   'construction',
   'proposed',
@@ -253,10 +261,8 @@ export function readOsm(elements: OsmElement[], proj: Projection): SourceFeature
         out.roads.push({ ...osmBase(el), points });
         continue;
       }
-      // Rail and airfield ways ride with the roads (guideways.ts lays them).
-      const guide =
-        GUIDE_RAILWAY[tags.railway ?? ''] ??
-        (tags.aeroway === 'runway' || tags.aeroway === 'taxiway' ? tags.aeroway : undefined);
+      // Rail and airfield ways ride with the roads (guideways.ts / airfield.ts lay them).
+      const guide = GUIDE_RAILWAY[tags.railway ?? ''] ?? AIRFIELD_LINES[tags.aeroway ?? ''];
       if (guide && tags.area !== 'yes') {
         out.roads.push({ ...osmBase(el), tags: { ...tags, highway: guide }, points });
         continue;

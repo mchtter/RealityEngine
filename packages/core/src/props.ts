@@ -121,6 +121,7 @@ export const PROP_RADIUS: Record<PropKind, number> = {
   transformer: 0,
   gantry: 0,
   stack: 0,
+  windsock: 0.5,
 };
 
 /** Height (m) of a ground prop at scale 1 — the renderer's models, as PROP_RADIUS. */
@@ -145,6 +146,7 @@ export const PROP_HEIGHT: Partial<Record<PropKind, number>> = {
   transformer: 4.5,
   gantry: 12,
   stack: 45,
+  windsock: 7,
 };
 /** Reach (m) of a prop at scale 1 for bridge clearance: a lamp's arm, not just its pole. */
 const STRUCTURE_RADIUS: Partial<Record<PropKind, number>> = {

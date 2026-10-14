@@ -184,11 +184,62 @@ export type MarkingKind =
   | 'runway-edge'
   | 'runway-bar'
   /** Taxiway centreline (yellow). */
-  | 'taxiway-center';
+  | 'taxiway-center'
+  /**
+   * Airfield paint drawn at its own `width`: runway marks and designators
+   * (white); taxiway edges, holding positions, stand lines, stopway chevrons
+   * (yellow).
+   */
+  | 'airfield-white'
+  | 'airfield-yellow';
 
 export interface Marking {
   kind: MarkingKind;
   points: Vec2[];
+  /** Paint width (m) where the kind has none of its own (airfield paint). */
+  width?: number;
+}
+
+/**
+ * Airfield light fixtures (ICAO Annex 14). Directional ones (`dir`) are seen
+ * only from in front of them; the colour of `edge` / `center` follows the
+ * direction too (a fixture is two lights back to back).
+ */
+export type AirfieldLightKind =
+  /** Runway edge: white, yellow over the last 600 m (caution zone). */
+  | 'edge'
+  | 'edge-caution'
+  /** Runway centreline: white; red / white alternating, then red near the end. */
+  | 'center'
+  | 'center-red'
+  /** Threshold and wing bars (green, toward the approach) and runway end (red, toward the runway). */
+  | 'threshold'
+  | 'end'
+  /** Touchdown zone barrettes (white). */
+  | 'tdz'
+  /** Approach lighting: steady white barrettes and crossbars, and sequenced flashers (the "rabbit"). */
+  | 'approach'
+  | 'approach-flash'
+  /** Runway end identifier lights: a pair of synchronised white strobes. */
+  | 'reil'
+  /** Precision approach path indicator unit: red below its angle, white above. */
+  | 'papi'
+  /** Taxiway edge (blue) and centreline (green); stop bar at a holding position (red). */
+  | 'taxi-edge'
+  | 'taxi-center'
+  | 'stopbar';
+
+export interface AirfieldLight {
+  kind: AirfieldLightKind;
+  at: Vec2;
+  /** Height of the lamp above the ground (m). */
+  lift: number;
+  /** Heading (radians, 0 = +x, CCW) the light faces; absent: seen all round. */
+  dir?: number;
+  /** Sequenced flashers: order of the flash, 0 (farthest out) … 1 (at the threshold). */
+  seq?: number;
+  /** PAPI: the unit's setting angle (degrees). */
+  angle?: number;
 }
 
 export interface Crossing {
@@ -515,7 +566,9 @@ export type PropKind =
   /** Substation gantry: a portal frame the lines are strung from. */
   | 'gantry'
   /** Power station stack. */
-  | 'stack';
+  | 'stack'
+  /** Airfield wind direction indicator: a striped cone on a mast, lit at night. */
+  | 'windsock';
 
 /**
  * A rail line at the surface: suburban rail (İZBAN), metro, tram. Its bed
@@ -781,6 +834,8 @@ export interface CityModel {
   overhead?: OverheadSpan[];
   /** Rail lines at the surface (tunnels left out). */
   rails?: RailLine[];
+  /** Runway, approach and taxiway lights (on at night). */
+  airfieldLights?: AirfieldLight[];
   /** Buried pipes and cables, and their manholes / valves. */
   utilities?: Utility[];
   utilityNodes?: UtilityNode[];

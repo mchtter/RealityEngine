@@ -38,10 +38,9 @@ describe('layGuideways', () => {
     ]);
     // 3000 × 45 m and ≈1270 × 23 m of asphalt.
     expect(totalArea(g.airfield)).toBeGreaterThan(3000 * 45 + 1200 * 23 - 1);
-    const kinds = g.markings.map((m) => m.kind);
-    expect(kinds.filter((k) => k === 'runway-center')).toHaveLength(1);
-    expect(kinds.filter((k) => k === 'runway-edge')).toHaveLength(2);
-    expect(kinds.filter((k) => k === 'runway-bar').length).toBeGreaterThan(20);
+    // Runway paint (airfield.ts covers it in detail): side stripes, keys, centreline.
+    expect(g.markings.filter((m) => m.kind === 'airfield-white').length).toBeGreaterThan(60);
+    expect(g.lights.length).toBeGreaterThan(100);
     const yellow = g.markings.filter((m) => m.kind === 'taxiway-center');
     expect(yellow).toHaveLength(1);
     // The taxiway's yellow line follows its centreline, bend included.

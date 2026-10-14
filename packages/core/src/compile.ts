@@ -120,7 +120,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '90';
+export const COMPILER_VERSION = '91';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -340,8 +340,11 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       src.features ? readFeatures(src.features, proj) : EMPTY,
     ),
   );
-  // Rail lines, runways and taxiways (road-theme lines that are not roads).
-  const guide = layGuideways(features.roads);
+  // Rail lines and the airfield (road-theme lines that are not roads).
+  const guide = layGuideways(
+    features.roads,
+    features.areas.filter((a) => a.kind === 'apron').flatMap((a) => a.polygons),
+  );
   // Authoritative road network (e.g. the municipality's centrelines): other
   // sources' roads yield where it has data, so two networks never overlap.
   // Exceptions: national roads (motorway / trunk and their ramps, outside a
@@ -783,6 +786,17 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   props.push(...buildingDetails(buildings));
   // Laid out clear of buildings and roads by their own rules (rows of graves, stalls …).
   props.push(...grounds.props.filter((p) => inRegion([p.position[0], p.position[1]])));
+  // Windsocks beside the runway ends, on the ground.
+  for (const p of guide.props)
+    if (inRegion([p.position[0], p.position[1]]))
+      props.push({
+        ...p,
+        position: [
+          p.position[0],
+          p.position[1],
+          terrainHeightAt(terrain, p.position[0], p.position[1]),
+        ],
+      });
 
   let bridges = buildBridges(
     [...roads, ...guide.decks],
@@ -1016,6 +1030,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     corePathRuns(u.path, inCore).map((path, k) => ({ ...u, id: k ? `${u.id}~${k}` : u.id, path })),
   );
   const outNodes = network.nodes.filter((n) => inCore([n.position[0], n.position[1]]));
+  const outLights = guide.lights.filter((l) => inCore(l.at));
 
   const observedOut = buildings.filter((b) => b.source !== 'synthetic');
   const count = (pred: (p: Prop) => boolean) => props.filter(pred).length;
@@ -1033,6 +1048,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     fences: outFences,
     ...(outOverhead.length ? { overhead: outOverhead } : {}),
     ...(outRails.length ? { rails: outRails } : {}),
+    ...(outLights.length ? { airfieldLights: outLights } : {}),
     ...(outUtilities.length ? { utilities: outUtilities } : {}),
     ...(outNodes.length ? { utilityNodes: outNodes } : {}),
     ...(outFill.length ? { streetFill: outFill } : {}),
@@ -1102,16 +1118,35 @@ function cropTerrain(t: TerrainGrid, b: Bounds): TerrainGrid {
 
 function clipMarkings(markings: Marking[], inside: (p: Vec2) => boolean): Marking[] {
   const out: Marking[] = [];
+  // Where a segment leaves (or enters) the core: found by halving, so paint
+  // runs on to the tile edge and the neighbour's starts right there.
+  const edge = (a: Vec2, b: Vec2): Vec2 => {
+    let lo = a;
+    let hi = b;
+    for (let k = 0; k < 16; k++) {
+      const mid: Vec2 = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2];
+      if (inside(mid) === inside(a)) lo = mid;
+      else hi = mid;
+    }
+    return inside(a) ? lo : hi;
+  };
+  const emit = (m: Marking, points: Vec2[]) => {
+    if (points.length >= 2) out.push({ ...m, points });
+  };
   for (const m of markings) {
     let run: Vec2[] = [];
-    for (const p of m.points) {
-      if (inside(p)) run.push(p);
-      else {
-        if (run.length >= 2) out.push({ kind: m.kind, points: run });
+    m.points.forEach((p, k) => {
+      const prev = m.points[k - 1];
+      if (inside(p)) {
+        if (!run.length && prev) run.push(edge(prev, p));
+        run.push(p);
+      } else {
+        if (run.length && prev) run.push(edge(prev, p));
+        emit(m, run);
         run = [];
       }
-    }
-    if (run.length >= 2) out.push({ kind: m.kind, points: run });
+    });
+    emit(m, run);
   }
   return out;
 }
