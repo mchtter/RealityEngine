@@ -69,6 +69,15 @@ export interface SourceFeatures {
   lines: SourceLine[];
 }
 
+/** `railway=*` lines laid as rail (guideways.ts), by the class they get. */
+const GUIDE_RAILWAY: Record<string, string> = {
+  rail: 'rail',
+  light_rail: 'rail',
+  narrow_gauge: 'rail',
+  subway: 'subway',
+  tram: 'tram',
+};
+
 const NON_ROAD_HIGHWAYS = new Set([
   'construction',
   'proposed',
@@ -82,10 +91,38 @@ const NON_ROAD_HIGHWAYS = new Set([
 ]);
 
 /** Maps landuse / leisure / natural / amenity tags to a ground area kind. */
+/** `military=*` values that are grounds (not a building or a bunker on them). */
+const MILITARY_GROUNDS = new Set([
+  'base',
+  'barracks',
+  'training_area',
+  'airfield',
+  'naval_base',
+  'range',
+]);
+
 export function areaKindOf(tags: Record<string, string>): AreaKind | null {
   const { landuse, leisure, natural, amenity } = tags;
   if (natural === 'water' || landuse === 'reservoir' || landuse === 'basin') return 'water';
   if (leisure === 'playground') return 'playground';
+  if (leisure === 'stadium') return 'stadium';
+  if (leisure === 'pitch') return 'pitch';
+  if (leisure === 'track') return 'track';
+  if (amenity === 'bus_station') return 'bus_station';
+  if (landuse === 'cemetery' || amenity === 'grave_yard') return 'cemetery';
+  if (landuse === 'construction') return 'construction';
+  if (landuse === 'quarry') return 'quarry';
+  if (landuse === 'harbour' || landuse === 'port' || tags.industrial === 'port') return 'harbour';
+  if (landuse === 'military' || MILITARY_GROUNDS.has(tags.military ?? '')) return 'military';
+  if (amenity === 'marketplace') return 'marketplace';
+  // A substation / plant mapped as a building is a building (a kiosk, a roof
+  // of solar panels), not a yard.
+  if (tags.power === 'substation' && !tags.building) return 'substation';
+  if (tags.power === 'plant' && !tags.building) return 'power_plant';
+  if (tags.aeroway === 'aerodrome') return 'airport';
+  if (tags.aeroway === 'apron') return 'apron';
+  if (tags.aeroway === 'runway') return 'runway';
+  if (tags.aeroway === 'taxiway' || tags.aeroway === 'stopway') return 'taxiway';
   if (leisure === 'park' || leisure === 'garden') return 'park';
   if (natural === 'wood' || landuse === 'forest') return 'forest';
   if (
@@ -94,9 +131,7 @@ export function areaKindOf(tags: Record<string, string>): AreaKind | null {
     natural === 'heath' ||
     landuse === 'grass' ||
     landuse === 'meadow' ||
-    landuse === 'recreation_ground' ||
-    landuse === 'cemetery' ||
-    leisure === 'pitch'
+    landuse === 'recreation_ground'
   ) {
     return 'grass';
   }
@@ -108,8 +143,8 @@ export function areaKindOf(tags: Record<string, string>): AreaKind | null {
     return 'parking';
   if (amenity === 'school' || amenity === 'university' || amenity === 'hospital') return 'school';
   if (amenity === 'place_of_worship') return 'religious';
-  if (amenity === 'marketplace' || tags.place === 'square') return 'plaza';
-  if (landuse === 'industrial' || landuse === 'railway' || landuse === 'port') return 'industrial';
+  if (tags.place === 'square') return 'plaza';
+  if (landuse === 'industrial' || landuse === 'railway') return 'industrial';
   if (landuse === 'residential' || landuse === 'commercial' || landuse === 'retail')
     return 'residential';
   return null;
@@ -216,6 +251,14 @@ export function readOsm(elements: OsmElement[], proj: Projection): SourceFeature
       }
       if (tags.highway && !NON_ROAD_HIGHWAYS.has(tags.highway) && tags.area !== 'yes') {
         out.roads.push({ ...osmBase(el), points });
+        continue;
+      }
+      // Rail and airfield ways ride with the roads (guideways.ts lays them).
+      const guide =
+        GUIDE_RAILWAY[tags.railway ?? ''] ??
+        (tags.aeroway === 'runway' || tags.aeroway === 'taxiway' ? tags.aeroway : undefined);
+      if (guide && tags.area !== 'yes') {
+        out.roads.push({ ...osmBase(el), tags: { ...tags, highway: guide }, points });
         continue;
       }
       if (LANDFORM_LINES.has(tags.natural ?? '')) {

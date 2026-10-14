@@ -1,3 +1,4 @@
+import { BLANK_FORMS, formLevels, formOf, formStyle, publicStyle } from './forms';
 import {
   add,
   closestOnSegment,
@@ -45,6 +46,9 @@ export interface BuildingContext {
   roads: RoadIndex;
 }
 
+/** Stands of a stadium (`building=`): drawn as stands, not as a block of flats. */
+export const STADIUM_BUILDINGS: ReadonlySet<string> = new Set(['stadium', 'grandstand']);
+
 const SMALL_TYPES = new Set([
   'garage',
   'garages',
@@ -67,6 +71,13 @@ const BUILDING_FIX_MIN_AREA = 1;
 const ROAD_TOLERANCE = 0.6;
 /** A building that reaches into a street is cut back this far behind the sidewalk's outer edge. */
 const ROAD_SETBACK = 2;
+/**
+ * How far balconies (slab and rail, ~1.3 m) and oriels (~0.75 m) stand out
+ * from the wall, plus a margin. They may overhang a sidewalk, never a
+ * carriageway: a wall closer to one gets French windows instead.
+ */
+const BALCONY_REACH = 1.6;
+const ORIEL_REACH = 1.0;
 /** Share of a building's area covered by a higher-priority source that makes it a duplicate. */
 const SUPERSEDE_SHARE = 0.3;
 
@@ -142,12 +153,37 @@ export function makeBuilding(
   const area = polygonArea(footprint);
   const ring = footprint.outer;
   const front = findFrontEdge(ring, ctx.roads);
-  const inferred = inferLevels(tags, area, front.road, rng);
+  const form = formOf(tags, area);
+  // A form's own storeys (a shed is one or two high ones) unless the source gives height.
+  const formFloors = formLevels(form, area, rng);
+  const tagged = inferLevels(tags, area, front.road, rng);
+  // A transmitter's tagged height is its mast's: the body stays its low base.
+  const inferred =
+    formFloors && (tagged.provenance !== 'observed' || form === 'telecom')
+      ? { levels: formFloors.levels, provenance: tagged.provenance }
+      : tagged;
   const levels = levelsHint ?? inferred.levels;
   const archetype = pickArchetype(levels, tags, rng);
   const box = orientedBox(ring);
   const rectangularity = box.area > 0 ? area / box.area : 0;
-  const { style, fromData } = pickStyle(archetype, tags, rectangularity, box.halfWidth * 2, rng);
+  const picked = pickStyle(archetype, tags, rectangularity, box.halfWidth * 2, rng);
+  const { fromData } = picked;
+  const formed = publicStyle(
+    tags,
+    formStyle(form, picked.style, tags, rectangularity, rng),
+    form,
+    rng,
+  );
+  // A form's storey height, or — where the source gives the height — that
+  // height over the storeys (a 10 m shed is not 3 × 6.5 m tall).
+  const tagHeight = Number.parseFloat(tags.height ?? '');
+  const formFloor =
+    formFloors && Number.isFinite(tagHeight) && tagHeight > 2 && form !== 'telecom'
+      ? tagHeight / levels
+      : formFloors?.floorHeight;
+  const style = formFloor ? { ...formed, floorHeight: formFloor } : formed;
+  // Only blocks (and a mall's ground floor) have shopfronts; only blocks a raised ground floor.
+  const block = form === 'block';
 
   const heights = ring.map((p) => terrainHeightAt(ctx.terrain, p[0], p[1]));
   const c = ringCentroid(ring);
@@ -158,19 +194,22 @@ export function makeBuilding(
 
   const shopTag = Boolean(tags.shop) || ['commercial', 'retail', 'shop'].includes(tags.building);
   const shopfront =
-    shopTag ||
-    (levels >= 3 &&
-      archetype !== 'mustakil' &&
-      front.road !== null &&
-      [...MAJOR, ...MEDIUM].includes(front.road.cls) &&
-      rng.chance(0.85));
+    (block || form === 'box') &&
+    (shopTag ||
+      (levels >= 3 &&
+        archetype !== 'mustakil' &&
+        front.road !== null &&
+        [...MAJOR, ...MEDIUM].includes(front.road.cls) &&
+        rng.chance(0.85)));
   // Houses and older apartments sit on a raised ground floor (stone / concrete
   // plinth, a few steps up to the door); shops and modern blocks open at street level.
   const raise =
-    !shopfront && archetype !== 'modern' && archetype !== 'yuksek' ? rng.range(0.45, 1.0) : 0;
+    block && !shopfront && archetype !== 'modern' && archetype !== 'yuksek'
+      ? rng.range(0.45, 1.0)
+      : 0;
   const floorZ = Math.min(Math.max(street + raise, baseZ + 0.3), baseZ + 9);
   const plinth = Math.max(0, floorZ - street);
-  const groundFloorHeight = shopfront ? rng.range(3.8, 4.4) : style.floorHeight + 0.2;
+  const groundFloorHeight = shopfront ? rng.range(3.8, 4.4) : style.floorHeight + (block ? 0.2 : 0);
   const topZ = floorZ + groundFloorHeight + (levels - 1) * style.floorHeight;
 
   return {
@@ -194,13 +233,33 @@ export function makeBuilding(
       pitchDeg: style.pitchDeg,
       overhang:
         style.roofShape === 'flat' ? 0 : style.roofShape === 'barrel' ? 0.3 : rng.range(0.4, 0.7),
-      parapet: style.roofShape === 'flat' ? rng.range(0.6, 1.0) : 0,
+      parapet:
+        style.roofShape !== 'flat' ||
+        form === 'canopy' ||
+        form === 'minaret' ||
+        form === 'clock' ||
+        form === 'telecom'
+          ? 0
+          : form === 'tower'
+            ? 0.9
+            : form === 'hut'
+              ? 0.15
+              : form === 'stands'
+                ? 1.1
+                : form === 'tank'
+                  ? 0.25
+                  : rng.range(0.6, 1.0),
     },
     rail: style.rail,
     windowWidth: style.windowWidth,
     windowHeight: style.windowHeight,
     shopfront,
     use: buildingUse(tags, archetype, shopTag),
+    ...(form !== 'block' ? { form } : {}),
+    // A transmitter's mast, base to tip: the tagged height or a usual one.
+    ...(form === 'telecom'
+      ? { towerHeight: Number.isFinite(tagHeight) && tagHeight > 10 ? tagHeight : 70 }
+      : {}),
     facades: [
       { edge: front.edge, length: fe.len, bays: [], groundBays: [], bands: [], front: true },
     ],
@@ -442,10 +501,12 @@ function buildingUse(tags: Record<string, string>, archetype: string, shop: bool
     forced === 'residential' ||
     forced === 'house' ||
     forced === 'public' ||
-    forced === 'commercial'
+    forced === 'commercial' ||
+    forced === 'stadium'
   )
     return forced;
   const b = tags.building ?? '';
+  if (STADIUM_BUILDINGS.has(b)) return 'stadium';
   const PUBLIC_BUILDING = [
     'school',
     'university',
@@ -519,7 +580,12 @@ function balconyBays(n: number, pattern: BalconyPattern): Set<number> {
  * Convex, near-square corners between two walls with openings, front corners
  * first; the bays next to a chosen corner become windows (the balcony wraps them).
  */
-function cornerBalconies(b: Building, ring: Vec2[], rng: Rng): number[] {
+function cornerBalconies(
+  b: Building,
+  ring: Vec2[],
+  rng: Rng,
+  tight: ReadonlySet<number> = new Set(),
+): number[] {
   const n = ring.length;
   const candidates: { k: number; score: number }[] = [];
   for (let k = 0; k < n; k++) {
@@ -529,6 +595,7 @@ function cornerBalconies(b: Building, ring: Vec2[], rng: Rng): number[] {
     const ea = edgeOutward(ring, k);
     const eb = edgeOutward(ring, (k + 1) % n);
     if (ea.len < 6 || eb.len < 6) continue;
+    if (tight.has(k) || tight.has((k + 1) % n)) continue;
     if (dot(normalize(sub(eb.b, eb.a)), ea.out) > -0.9) continue;
     if (fa.oriel && fa.oriel[1] === fa.bays.length - 1) continue;
     if (fb.oriel && fb.oriel[0] === 0) continue;
@@ -566,7 +633,32 @@ function bandFor(k: number, n: number, pattern: BandPattern, balconies: Set<numb
  * blank. The front wall gets the entrance and, on shopfront buildings, shop
  * windows; front and back walls carry the balconies.
  */
-export function layoutFacades(buildings: Building[], index: PolygonIndex<Building>): void {
+/**
+ * Free space in front of a wall before the nearest carriageway's edge
+ * (the least of three points along it), or Infinity with no road near.
+ */
+function streetClearance(e: ReturnType<typeof edgeOutward>, roads: RoadIndex): number {
+  let least = Infinity;
+  for (const t of [0.15, 0.5, 0.85]) {
+    const p = lerp2(e.a, e.b, t);
+    for (const r of roads.roadsNear(p[0] - 15, p[1] - 15, p[0] + 15, p[1] + 15)) {
+      if (r.grade !== 'ground' || !isVehicular(r.cls)) continue;
+      for (let k = 1; k < r.centerline.length; k++) {
+        const c = closestOnSegment(p, r.centerline[k - 1], r.centerline[k]);
+        // Only a road in front of the wall (not one behind the building).
+        if (c.d > 1e-6 && dot(e.out, scale(sub(c.point, p), 1 / c.d)) < 0.3) continue;
+        least = Math.min(least, c.d - r.width / 2);
+      }
+    }
+  }
+  return least;
+}
+
+export function layoutFacades(
+  buildings: Building[],
+  index: PolygonIndex<Building>,
+  roads?: RoadIndex,
+): void {
   for (const b of buildings) {
     const rng = new Rng(b.seed);
     const spec = ARCHETYPES[b.archetype];
@@ -590,8 +682,9 @@ export function layoutFacades(buildings: Building[], index: PolygonIndex<Buildin
             ['inner-pair', 0.25],
             ['all', 0.15],
           ] as const);
-    const bandPattern: BandPattern =
-      b.archetype === 'modern'
+    const bandPattern: BandPattern = pub
+      ? 'none'
+      : b.archetype === 'modern'
         ? rng.weighted([
             ['balconies', 0.35],
             ['edges', 0.25],
@@ -612,13 +705,14 @@ export function layoutFacades(buildings: Building[], index: PolygonIndex<Buildin
     const glazed = !pub && rng.chance(spec.glazedBalcony * 1.6);
     const modernish = b.archetype === 'modern' || b.archetype === 'yuksek';
     /** Column kind of a window bay, by use and wall. */
+    // Schools, hospitals, offices: one window type the whole building round,
+    // in a regular rhythm (no balconies, oriels or colour bands).
+    const pubKind: BayKind = rng.weighted([
+      ['pair-window', 0.6],
+      ['window', 0.4],
+    ] as const);
     const windowKind = (main: boolean): BayKind => {
-      if (pub)
-        return rng.weighted([
-          ['pair-window', 0.6],
-          ['window', 0.3],
-          ['wide-window', 0.1],
-        ] as const);
+      if (pub) return pubKind;
       if (house)
         return rng.weighted([
           ['wide-window', 0.34],
@@ -646,11 +740,13 @@ export function layoutFacades(buildings: Building[], index: PolygonIndex<Buildin
             ['blank', 0.3],
           ] as const);
     };
-    const wantOriel = b.levels >= 3 && rng.chance(FEATURE_CHANCE.oriel[b.archetype]);
-    const wantOrnament = b.levels >= 3 && rng.chance(FEATURE_CHANCE.ornament[b.archetype]);
-    const wantCorner = b.levels >= 3 && rng.chance(FEATURE_CHANCE.corner[b.archetype]);
+    const wantOriel = !pub && b.levels >= 3 && rng.chance(FEATURE_CHANCE.oriel[b.archetype]);
+    const wantOrnament = !pub && b.levels >= 3 && rng.chance(FEATURE_CHANCE.ornament[b.archetype]);
+    const wantCorner = !pub && b.levels >= 3 && rng.chance(FEATURE_CHANCE.corner[b.archetype]);
 
     const facades: FacadeEdge[] = [];
+    /** Walls too close to a carriageway for anything to stand out (see BALCONY_REACH). */
+    const tightEdges = new Set<number>();
     for (let k = 0; k < ring.length; k++) {
       const e = edgeOutward(ring, k);
       const isFront = k === frontEdge;
@@ -683,8 +779,17 @@ export function layoutFacades(buildings: Building[], index: PolygonIndex<Buildin
         });
         continue;
       }
-      const balconies =
+      // A wall right on the carriageway: nothing may stand out over the road.
+      const clearance =
+        roads && (((hasBalconies || wantOriel) && (isFront || isBack)) || wantCorner)
+          ? streetClearance(e, roads)
+          : Infinity;
+      if (clearance < BALCONY_REACH) tightEdges.add(k);
+      const wanted =
         hasBalconies && (isFront || isBack) ? balconyBays(n, balconyPattern) : new Set<number>();
+      // Too close to the road for a balcony: its column gets French windows.
+      const tight = clearance < BALCONY_REACH;
+      const balconies = tight ? new Set<number>() : wanted;
       const side = !isFront && !isBack;
       const bays: BayKind[] = [];
       const groundBays: BayKind[] = [];
@@ -692,6 +797,7 @@ export function layoutFacades(buildings: Building[], index: PolygonIndex<Buildin
       const door = isFront ? (n >= 3 ? Math.floor(n / 2) : 0) : -1;
       for (let i = 0; i < n; i++) {
         if (balconies.has(i)) bays.push(glazed && rng.chance(0.7) ? 'glazed-balcony' : 'balcony');
+        else if (wanted.has(i)) bays.push('french-window');
         else bays.push(windowKind(isFront || isBack));
 
         // Ground floor: entrance, shops, otherwise the column's window (no
@@ -714,7 +820,7 @@ export function layoutFacades(buildings: Building[], index: PolygonIndex<Buildin
         bands.push(bandFor(i, n, bandPattern, balconies));
       }
       let oriel: [number, number] | undefined;
-      if (wantOriel && (isFront || isBack) && n >= 3) {
+      if (wantOriel && (isFront || isBack) && n >= 3 && clearance >= ORIEL_REACH) {
         const c = Math.floor((n - 1) / 2);
         oriel = n >= 5 && rng.chance(0.5) ? [c, c + 1] : [c, c];
         for (let i = oriel[0]; i <= oriel[1]; i++)
@@ -750,8 +856,49 @@ export function layoutFacades(buildings: Building[], index: PolygonIndex<Buildin
         ...(cells.length ? { cells } : {}),
       });
     }
-    b.facades = facades;
-    b.cornerBalconies = wantCorner ? cornerBalconies(b, ring, rng) : [];
+    // Forms with blank walls (stands, sheds, silos, tanks; a mall above its
+    // shopfronts); a car park's decks are open bands all round.
+    const blank = b.form !== undefined && BLANK_FORMS.has(b.form);
+    // A hut: its door (and a small window beside it) on the front, nothing else.
+    const hutFront = (f: FacadeEdge): FacadeEdge => {
+      const n = Math.max(1, f.bays.length);
+      const door = Math.floor((n - 1) / 2);
+      return {
+        ...f,
+        bays: Array.from({ length: n }, (): BayKind => 'blank'),
+        groundBays: Array.from(
+          { length: n },
+          (_, i): BayKind => (i === door ? 'door' : i === door + 1 ? 'small-window' : 'blank'),
+        ),
+        bands: Array.from({ length: n }, () => 0),
+        cells: undefined,
+        oriel: undefined,
+        ornament: undefined,
+      };
+    };
+    b.facades =
+      b.form === 'hut'
+        ? facades.map((f) =>
+            f.front ? hutFront(f) : { ...f, bays: [], groundBays: [], bands: [] },
+          )
+        : b.form === 'carpark'
+          ? facades.map((f) => ({
+              ...f,
+              bays: f.bays.map(() => 'wide-window' as const),
+              groundBays: f.bays.map(() => 'wide-window' as const),
+              bands: f.bays.map(() => 0),
+              cells: undefined,
+              oriel: undefined,
+            }))
+          : blank
+            ? facades.map((f) => ({
+                ...f,
+                bays: [],
+                groundBays: b.form === 'box' ? f.groundBays : [],
+                bands: [],
+              }))
+            : facades;
+    b.cornerBalconies = wantCorner && !b.form ? cornerBalconies(b, ring, rng, tightEdges) : [];
   }
 }
 

@@ -1,7 +1,7 @@
 export * from './types';
 export { COMPILER_VERSION, compileCity, deckPriority } from './compile';
 export { RoadSurface, terrainHeightAt } from './terrain';
-export { LocalProjection, orientedBox, pointInRing, ringArea } from './geo';
+export { LocalProjection, orientedBox, pointInRing, ringArea, simplifyRing } from './geo';
 export { Rng, hashString } from './random';
 export { triangulate } from './triangulate';
 export {
@@ -38,6 +38,7 @@ export {
   validateCity,
 } from './validate';
 export { barrelRise } from './styles';
+export { TRACK_SPACING } from './guideways';
 export {
   UTILITY_CLEARANCE,
   UTILITY_SPECS,
@@ -46,6 +47,12 @@ export {
   utilityKindOf,
 } from './utilities';
 export { ENTITY_TAG } from './osm';
+export {
+  REPLACE_MARGIN_DEG,
+  buildingKeys,
+  removeReplacedBuildings,
+  replaceSearchBox,
+} from './replace';
 export {
   SEGMENT_LENGTH,
   type CityLocation,

@@ -176,7 +176,15 @@ export type MarkingKind =
   | 'stall'
   /** Walking / cycle path: white edge lines, dashed centre (on the path surface). */
   | 'path-edge'
-  | 'path-dashed';
+  | 'path-dashed'
+  /** Lines of a sports pitch (touchlines, halfway line, centre circle, boxes). */
+  | 'pitch'
+  /** Runway: dashed centreline, side stripes, threshold and touchdown-zone bars. */
+  | 'runway-center'
+  | 'runway-edge'
+  | 'runway-bar'
+  /** Taxiway centreline (yellow). */
+  | 'taxiway-center';
 
 export interface Marking {
   kind: MarkingKind;
@@ -213,7 +221,21 @@ export type SurfaceKind =
   /** Surface car park. */
   | 'parking'
   /** Playground safety surface. */
-  | 'playground';
+  | 'playground'
+  /** Sports pitch: turf (football) or court. */
+  | 'pitch'
+  /** Running track (tartan). */
+  | 'track'
+  /** Cemetery ground: gravel between the graves. */
+  | 'cemetery'
+  /** Bare, worked soil (a building site). */
+  | 'earth'
+  /** Quarry floor and benches: broken pale rock and dust. */
+  | 'quarry'
+  /** Crushed stone of a substation yard. */
+  | 'gravel'
+  /** Runway / taxiway asphalt. */
+  | 'airfield';
 
 export interface Surface {
   kind: SurfaceKind;
@@ -231,7 +253,33 @@ export type AreaKind =
   | 'school'
   | 'religious'
   | 'industrial'
-  | 'residential';
+  | 'residential'
+  /** Stadium grounds (stands, concourse); its pitch and track are areas of their own. */
+  | 'stadium'
+  | 'pitch'
+  | 'track'
+  /** Bus station / intercity terminal grounds. */
+  | 'bus_station'
+  | 'cemetery'
+  /** A building site. */
+  | 'construction'
+  | 'quarry'
+  /** Port / harbour land (quays, container yards). */
+  | 'harbour'
+  | 'military'
+  /** Open-air market (pazar yeri). */
+  | 'marketplace'
+  /** Electrical substation (şalt sahası): gravel, transformers, gantries, a fence. */
+  | 'substation'
+  /** Power station grounds. */
+  | 'power_plant'
+  /** Aerodrome grounds (airport, air base). */
+  | 'airport'
+  /** Apron: concrete where aircraft park. */
+  | 'apron'
+  /** Runway / taxiway: the paved area of the airfield way. */
+  | 'runway'
+  | 'taxiway';
 
 export interface Area {
   id: string;
@@ -304,7 +352,42 @@ export interface FacadeEdge {
 }
 
 /** What a building is used for (from the source tags): drives its facade rules. */
-export type BuildingUse = 'residential' | 'house' | 'public' | 'commercial';
+export type BuildingUse = 'residential' | 'house' | 'public' | 'commercial' | 'stadium';
+
+/**
+ * Shape family of a building (forms.ts): `block` (flats, offices, schools —
+ * bays and balconies by archetype) or a form the renderer builds its own way.
+ */
+export type BuildingForm =
+  | 'block'
+  /** Stadium stands, raked toward the pitch. */
+  | 'stands'
+  /** Factory / warehouse: high, wide-span, metal-clad, low ridge roof. */
+  | 'shed'
+  /** Prayer hall with a dome and minaret(s). */
+  | 'mosque'
+  /** Church with a bell tower. */
+  | 'church'
+  | 'silo'
+  | 'tank'
+  /** Multi-storey car park: open decks. */
+  | 'carpark'
+  /** Mall / hypermarket: blank clad box over a glazed ground floor. */
+  | 'box'
+  /** Shed, hut, kiosk, toilet block: one low storey, a door and a small window. */
+  | 'hut'
+  /** Roof on posts, no walls (fuel station canopy, carport, shelter). */
+  | 'canopy'
+  /** Glasshouse: low, pale, a ridge roof. */
+  | 'greenhouse'
+  /** Free-standing minaret: a slim shaft, a balcony, a lead cone. */
+  | 'minaret'
+  /** Radio / TV transmitter: a low base and a tall mast with antennas. */
+  | 'telecom'
+  /** Clock tower: a tall shaft, clock faces, a cap. */
+  | 'clock'
+  /** Other towers (monument, defensive, lift tower): a tall stone shaft. */
+  | 'tower';
 
 export interface BuildingPalette {
   wall: string;
@@ -351,6 +434,15 @@ export interface Building {
   windowHeight: number;
   shopfront: boolean;
   use: BuildingUse;
+  /** Shape family (absent: `block`). */
+  form?: BuildingForm;
+  /**
+   * Mosques: minarets the renderer adds at the hall's corners (absent: 1, 2
+   * for a large hall); 0 where the data maps its minarets as buildings.
+   */
+  minarets?: number;
+  /** Transmitters: height of the mast over the ground (m). */
+  towerHeight?: number;
   facades: FacadeEdge[];
   /**
    * Corner balconies on the upper floors: edge indices k whose end corner
@@ -385,7 +477,55 @@ export type PropKind =
   | 'seesaw'
   | 'climber'
   /** Garden gate between two piers, in a gap of a garden wall. */
-  | 'gate';
+  | 'gate'
+  /** Marble grave: kerb slab and headstone. */
+  | 'grave'
+  /** Italian cypress (cemeteries). */
+  | 'cypress'
+  /** Tower crane over a building site. */
+  | 'crane'
+  /** Market stall under an awning. */
+  | 'stall'
+  /** 20 ft shipping container. */
+  | 'container'
+  /** High-voltage lattice pylon (power=tower). */
+  | 'pylon'
+  /** Communication mast with antennas. */
+  | 'mast'
+  /** Floodlight mast (apron, stadium, junction): a tall pole, a lamp frame on top. */
+  | 'floodlight'
+  /** Flagpole with its flag. */
+  | 'flagpole'
+  /** Substation power transformer. */
+  | 'transformer'
+  /** Substation gantry: a portal frame the lines are strung from. */
+  | 'gantry'
+  /** Power station stack. */
+  | 'stack';
+
+/**
+ * A rail line at the surface: suburban rail (İZBAN), metro, tram. Its bed
+ * (ballast, or concrete for a tram) is `width` wide along `points`, with
+ * `tracks` tracks 4.2 m apart; the renderer lays the sleepers, the rails and,
+ * for electric lines, the catenary.
+ */
+export interface RailLine {
+  id: string;
+  ref: string;
+  kind: 'rail' | 'subway' | 'tram';
+  tracks: number;
+  width: number;
+  points: Vec2[];
+  name?: string;
+  provenance: Provenance;
+}
+
+/** One span of an overhead power line, pylon base to pylon base. */
+export interface OverheadSpan {
+  a: Vec3;
+  b: Vec3;
+  provenance: Provenance;
+}
 
 /** Garden boundary styles (Turkish streets: low wall with railing, plain wall, stone, hedge, mesh). */
 export type FenceStyle = 'wall-rail' | 'wall' | 'stone' | 'hedge' | 'mesh';
@@ -415,6 +555,8 @@ export interface Prop {
   buildingId?: string;
   /** Street cabinets: the network they serve. */
   network?: UtilityKind;
+  /** Flagpoles: the flag's country (ISO 3166 alpha-2, `EU` for Europe); absent: Turkey's. */
+  flag?: string;
 }
 
 export type FixKind = 'road-overlap' | 'building-overlap' | 'invalid-geometry' | 'sliver';
@@ -590,6 +732,13 @@ export interface CityModel {
   terrainCut?: TerrainCut;
   /** Garden walls, fences and hedges. */
   fences?: Fence[];
+  /**
+   * Overhead line spans between pylons (inferred from the pylons' positions
+   * when the data has no line geometry).
+   */
+  overhead?: OverheadSpan[];
+  /** Rail lines at the surface (tunnels left out). */
+  rails?: RailLine[];
   /** Buried pipes and cables, and their manholes / valves. */
   utilities?: Utility[];
   utilityNodes?: UtilityNode[];

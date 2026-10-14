@@ -90,6 +90,12 @@ interface Span {
  * them, giving the overlapping piece that road's grade tags. Returns the new
  * authoritative road list and the graded roads that were absorbed this way
  * (the caller drops those; graded roads crossing over or under are kept).
+ * An authoritative road with a grade of its own keeps it whole (the other
+ * source's copy is still absorbed): splitting it by the copy's sampled extent
+ * turned the last metre of a viaduct way into ground, and the deck of the next
+ * way stopped in mid-air (İzmir, 2026-10-09). Ungraded pieces shorter than
+ * MIN_SPAN between or after graded ones join them: the sampled extent stops
+ * up to a sample short of the graded road's end.
  */
 export function transferGrades(
   authoritative: SourceRoad[],
@@ -98,18 +104,30 @@ export function transferGrades(
   const absorbed = new Set<SourceRoad>();
   const spans = new Map<SourceRoad, Span[]>();
   for (const g of graded) {
-    const samples = samplePolyline(g.points, 4);
+    // Every 4 m; a short piece (a footbridge segment) at least at both ends and its middle.
+    const samples = samplePolyline(
+      g.points,
+      Math.max(0.5, Math.min(4, polylineLength(g.points) / 2)),
+    );
     if (samples.length < 2) continue;
     for (const a of authoritative) {
       let s0 = Infinity;
       let s1 = -Infinity;
+      let along = 0;
       for (const smp of samples) {
         const pr = project(a.points, smp.point);
         if (pr.d > ALONG || Math.abs(dot(pr.dir, smp.dir)) < 0.85) continue;
         s0 = Math.min(s0, pr.s);
         s1 = Math.max(s1, pr.s);
+        along++;
       }
-      if (s1 - s0 < MIN_SPAN) continue;
+      if (s1 - s0 < MIN_SPAN) {
+        // A short graded road lying wholly along an authoritative road that is
+        // graded itself is a copy of it (the same footbridge from two sources):
+        // both were drawn, at different heights.
+        if (along === samples.length && isGraded(a)) absorbed.add(g);
+        continue;
+      }
       const tags: Record<string, string> = {};
       for (const k of GRADE_TAGS) if (g.tags[k]) tags[k] = g.tags[k];
       const list = spans.get(a) ?? [];
@@ -122,7 +140,7 @@ export function transferGrades(
   const roads: SourceRoad[] = [];
   for (const a of authoritative) {
     const list = spans.get(a);
-    if (!list) {
+    if (!list || isGraded(a)) {
       roads.push(a);
       continue;
     }
@@ -139,6 +157,27 @@ export function transferGrades(
       at = s1;
     }
     if (total - at > 0.5) cuts.push({ s0: at, s1: total, tags: {} });
+    // Short ungraded leftovers join a graded neighbour (the one before, else after).
+    const graded = (c: Span) => Object.keys(c.tags).length > 0;
+    for (let k = 0; k < cuts.length; k++) {
+      const c = cuts[k];
+      if (graded(c) || c.s1 - c.s0 >= MIN_SPAN) continue;
+      const prev = cuts[k - 1];
+      const next = cuts[k + 1];
+      if (prev && graded(prev)) {
+        prev.s1 = c.s1;
+        cuts.splice(k--, 1);
+      } else if (next && graded(next)) {
+        next.s0 = c.s0;
+        cuts.splice(k--, 1);
+      }
+    }
+    // Neighbours with the same grade become one piece.
+    for (let k = 1; k < cuts.length; k++) {
+      if (JSON.stringify(cuts[k].tags) !== JSON.stringify(cuts[k - 1].tags)) continue;
+      cuts[k - 1].s1 = cuts[k].s1;
+      cuts.splice(k--, 1);
+    }
     const base: Record<string, string> = {};
     for (const [k, v] of Object.entries(a.tags)) if (!GRADE_TAGS.includes(k)) base[k] = v;
     cuts.forEach((c, k) => {

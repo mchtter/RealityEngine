@@ -255,7 +255,7 @@ export function conformTerrainToRoads(
       if (!s) continue;
       const idx = j * t.cols + i;
       const h = original[idx] + (s.z - original[idx]) * s.w;
-      t.heights[idx] = Math.round(Math.max(h, t.seaLevel + 0.3) * 100) / 100;
+      t.heights[idx] = Math.round(Math.max(h, t.seaLevel + LAND_FLOOR) * 100) / 100;
     }
   }
   return surfaceRoads.map((r) => r.profile);
@@ -283,6 +283,12 @@ function smoothAlong(values: number[], points: Vec2[], window: number): number[]
 }
 
 /**
+ * Least height of land above the sea (m): shore land, streets and the ground
+ * under them all keep to it, so the sea plane never lies on (or z-fights) them.
+ */
+export const LAND_FLOOR = 1.0;
+
+/**
  * Lifts ground the elevation model puts at or below the sea (reclaimed coast,
  * DEM noise) to just above it wherever there is land in the data: within
  * `reach` of a road, a building or a land area. The sea then shows only on
@@ -293,7 +299,7 @@ export function raiseLandAboveSea(
   land: { segments: [Vec2, Vec2][]; polygons: Polygon[] },
   reach = 20,
 ): void {
-  const floor = t.seaLevel + 1.0;
+  const floor = t.seaLevel + LAND_FLOOR;
   if (!t.heights.some((h) => h < floor)) return;
   const mark = new Uint8Array(t.heights.length);
   const nodes = (

@@ -47,7 +47,11 @@ const OBSERVED_KINDS: [(t: Record<string, string>) => boolean, PropKind][] = [
   [(t) => t.highway === 'bus_stop' || t.public_transport === 'platform', 'bus-stop'],
   [(t) => t.amenity === 'bench', 'bench'],
   [(t) => t.amenity === 'waste_basket', 'waste-basket'],
-  [(t) => t.power === 'pole' || t.power === 'tower', 'power-pole'],
+  [(t) => t.power === 'tower', 'pylon'],
+  [(t) => t.power === 'pole', 'power-pole'],
+  [(t) => t.man_made === 'mast' && t['tower:type'] === 'lighting', 'floodlight'],
+  [(t) => t.man_made === 'mast', 'mast'],
+  [(t) => t.man_made === 'flagpole', 'flagpole'],
   [(t) => t.man_made === 'street_cabinet', 'street-cabinet'],
 ];
 
@@ -102,6 +106,21 @@ export const PROP_RADIUS: Record<PropKind, number> = {
   seesaw: 1.6,
   climber: 1.6,
   gate: 0,
+  // Laid out by their grounds' rules (rows of graves, stalls, containers).
+  grave: 0,
+  cypress: 0,
+  crane: 0,
+  stall: 0,
+  container: 0,
+  // Mapped where they stand (pylons, masts, flagpoles) or laid out with their
+  // yard (transformers, gantries, stacks).
+  pylon: 0,
+  mast: 0,
+  floodlight: 0,
+  flagpole: 0,
+  transformer: 0,
+  gantry: 0,
+  stack: 0,
 };
 
 /** Height (m) of a ground prop at scale 1 — the renderer's models, as PROP_RADIUS. */
@@ -114,11 +133,25 @@ export const PROP_HEIGHT: Partial<Record<PropKind, number>> = {
   'waste-basket': 0.9,
   'power-pole': 9,
   'street-cabinet': 1.35,
+  grave: 1.1,
+  cypress: 11,
+  crane: 46,
+  stall: 2.7,
+  container: 2.6,
+  pylon: 38,
+  mast: 32,
+  floodlight: 30,
+  flagpole: 20,
+  transformer: 4.5,
+  gantry: 12,
+  stack: 45,
 };
 /** Reach (m) of a prop at scale 1 for bridge clearance: a lamp's arm, not just its pole. */
 const STRUCTURE_RADIUS: Partial<Record<PropKind, number>> = {
   'street-lamp': 1.9,
   'power-pole': 0.9,
+  // The jib (a quarter turned towards the deck is enough to hit it).
+  crane: 30,
 };
 
 /**
@@ -341,6 +374,7 @@ export function observedProps(points: SourcePoint[], ctx: PropContext): Prop[] {
       ...(kind === 'street-cabinet' && CABINET_NETWORK[pt.tags.street_cabinet ?? '']
         ? { network: CABINET_NETWORK[pt.tags.street_cabinet ?? ''] }
         : {}),
+      ...(kind === 'flagpole' && pt.tags.country ? { flag: pt.tags.country.toUpperCase() } : {}),
     });
   }
   return out;
@@ -517,7 +551,9 @@ export function suggestBusStops(
 export function buildingDetails(buildings: Building[]): Prop[] {
   const out: Prop[] = [];
   for (const b of buildings) {
-    if (b.area < 30) continue;
+    // Dishes, heaters and chimneys belong on homes and offices, not on stands,
+    // sheds, domes or a covered pitch.
+    if (b.area < 30 || b.form) continue;
     const rng = new Rng(b.seed + 17);
     const box = orientedBox(b.footprint.outer);
     const nrm = perp(box.axis);

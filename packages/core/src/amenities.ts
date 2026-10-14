@@ -6,6 +6,7 @@ import {
   orientedBox,
   perp,
   pointInRing,
+  ringCentroid,
   scale,
   simplifyLine,
   sub,
@@ -58,6 +59,37 @@ const boxOf = (p: Polygon): Box => {
 const meets = (a: Box, b: Box, pad = 0) =>
   a[0] <= b[2] + pad && a[2] >= b[0] - pad && a[1] <= b[3] + pad && a[3] >= b[1] - pad;
 
+/** Width of a running track drawn along its line (lanes and kerbs). */
+const TRACK_BAND = 6;
+
+/** Least share of a track's polygon its pitch covers when the track runs round that pitch. */
+const INFIELD_SHARE = 0.2;
+
+/**
+ * The ground of each track area. A track mapped round a pitch keeps its
+ * polygon (the pitch is cut out of it); any other — a jogging loop round a
+ * park (with the odd halı saha somewhere inside), a school's running ring —
+ * is a band along its line, not the land it encloses (OSM maps both as a
+ * closed `leisure=track` way).
+ */
+export function trackGrounds(areas: Area[]): Polygon[] {
+  const pitches = areas
+    .filter((a) => a.kind === 'pitch')
+    .map((a) => ({ poly: a.polygon, area: polygonArea(a.polygon) }));
+  return areas
+    .filter((a) => a.kind === 'track')
+    .flatMap((a) => {
+      const own = polygonArea(a.polygon);
+      const infield = pitches.some(
+        (p) =>
+          p.area >= own * INFIELD_SHARE && pointInRing(ringCentroid(p.poly.outer), a.polygon.outer),
+      );
+      if (infield) return [a.polygon];
+      const inner = offset([a.polygon], -TRACK_BAND);
+      return inner.length ? difference([a.polygon], inner) : [a.polygon];
+    });
+}
+
 export function groundSurfaces(
   areas: Area[],
   blocks: CityBlock[],
@@ -86,26 +118,73 @@ export function groundSurfaces(
     areas.filter((a) => a.kind === kind).flatMap((a) => minus(a.polygon));
   const parking = of('parking');
   const playground = of('playground');
-  const plaza = of('plaza');
+  // Open-air markets are paved squares under their stalls.
+  const plaza = [...of('plaza'), ...of('marketplace')];
+  // Gravel between the graves, a building site's bare soil, a quarry's rock.
+  const cemetery = of('cemetery');
+  const earth = of('construction');
+  const quarry = of('quarry');
+  // A substation's yard: crushed stone.
+  const gravel = of('substation');
+  // Runways and taxiways: the airfield's asphalt.
+  const airfield = [...of('runway'), ...of('taxiway')];
+  // Sports: the pitch on top; a track runs round it (its polygon often holds the infield).
+  const pitch = of('pitch');
+  const pitchBoxes = pitch.map((poly) => ({ poly, box: boxOf(poly) }));
+  const track = trackGrounds(areas).flatMap((poly) => minus(poly, pitchBoxes));
 
   // Institutional grounds: a school yard is hard throughout, a large campus
   // (university, hospital grounds) only around its buildings; works yards hard.
   const yards: Polygon[] = [];
+  // Stadium and bus station grounds: hard throughout, round their pitch / track / greens.
+  const fieldBoxes = [...pitchBoxes, ...track.map((poly) => ({ poly, box: boxOf(poly) }))];
   for (const a of areas) {
-    if (a.kind !== 'school' && a.kind !== 'religious' && a.kind !== 'industrial') continue;
+    if (
+      a.kind !== 'school' &&
+      a.kind !== 'religious' &&
+      a.kind !== 'industrial' &&
+      a.kind !== 'stadium' &&
+      a.kind !== 'bus_station' &&
+      a.kind !== 'harbour' &&
+      a.kind !== 'power_plant' &&
+      a.kind !== 'apron'
+    )
+      continue;
     const box = boxOf(a.polygon);
     let hard: Polygon[] = [a.polygon];
-    if (a.kind !== 'industrial' && polygonArea(a.polygon) > 3000) {
+    const throughout =
+      a.kind === 'industrial' ||
+      a.kind === 'stadium' ||
+      a.kind === 'bus_station' ||
+      a.kind === 'harbour' ||
+      a.kind === 'power_plant' ||
+      a.kind === 'apron';
+    if (!throughout && polygonArea(a.polygon) > 3000) {
       const own = near(fps, box)
         .filter((f) => inPoly(f.poly.outer[0], a.polygon))
         .map((f) => f.poly);
       hard = own.length ? intersection([a.polygon], offset(own, 12, 'miter')) : [];
     }
-    for (const h of hard) yards.push(...minus(h, greens));
+    const airfieldBoxes = airfield.map((poly) => ({ poly, box: boxOf(poly) }));
+    for (const h of hard) yards.push(...minus(h, [...greens, ...fieldBoxes, ...airfieldBoxes]));
   }
 
   // Dense blocks: hard throughout (a third built over) or within 7 m of the buildings.
-  const special = [...parking, ...playground, ...plaza].map((poly) => ({ poly, box: boxOf(poly) }));
+  const special = [
+    ...parking,
+    ...playground,
+    ...plaza,
+    ...pitch,
+    ...track,
+    ...cemetery,
+    ...earth,
+    ...quarry,
+    ...gravel,
+    ...airfield,
+  ].map((poly) => ({
+    poly,
+    box: boxOf(poly),
+  }));
   const dense: Polygon[] = [];
   for (const block of blocks) {
     const box = boxOf(block.polygon);
@@ -146,7 +225,112 @@ export function groundSurfaces(
     { kind: 'parking', polygons: parking },
     { kind: 'playground', polygons: playground },
     { kind: 'paving', polygons: plaza },
+    { kind: 'pitch', polygons: pitch },
+    { kind: 'track', polygons: track },
+    { kind: 'cemetery', polygons: cemetery },
+    { kind: 'earth', polygons: earth },
+    { kind: 'quarry', polygons: quarry },
+    { kind: 'gravel', polygons: gravel },
+    { kind: 'airfield', polygons: airfield },
   ];
+}
+
+/**
+ * Runway paint, ICAO style, along each runway's long axis: a dashed
+ * centreline (30 m dashes, 20 m gaps), side stripes, threshold bars ("piano
+ * keys") at both ends and touchdown-zone bar pairs 150, 300 and 450 m in.
+ * Only on a runway long and straight enough to be one (≥ 600 × 18 m box).
+ */
+export function runwayMarkings(areas: Area[]): Marking[] {
+  const out: Marking[] = [];
+  for (const a of areas) {
+    if (a.kind !== 'runway') continue;
+    const ob = orientedBox(a.polygon.outer as Vec2[]);
+    const L = ob.halfLength;
+    const W = ob.halfWidth;
+    if (L < 300 || W < 9 || (ob.area > 0 && polygonArea(a.polygon) / ob.area < 0.85)) continue;
+    const ax = ob.axis;
+    const nx: Vec2 = [-ax[1], ax[0]];
+    const at = (u: number, v: number): Vec2 => [
+      ob.center[0] + ax[0] * u + nx[0] * v,
+      ob.center[1] + ax[1] * u + nx[1] * v,
+    ];
+    // Points every 20 m: a tile keeps the part of a long line inside it (clipMarkings).
+    const line = (u0: number, u1: number, v: number) => {
+      const n = Math.max(1, Math.ceil((u1 - u0) / 20));
+      return Array.from({ length: n + 1 }, (_, k) => at(u0 + ((u1 - u0) * k) / n, v));
+    };
+    out.push({ kind: 'runway-center', points: line(-L + 70, L - 70, 0) });
+    for (const v of [-(W - 1.5), W - 1.5])
+      out.push({ kind: 'runway-edge', points: line(-L + 6, L - 6, v) });
+    // Threshold: bars 1.8 m wide, 30 m long, in two groups either side of the centre.
+    const bars = Math.max(2, Math.floor((W - 3) / 3.6));
+    for (const end of [-1, 1]) {
+      const u0 = end * (L - 6);
+      const u1 = end * (L - 36);
+      for (let k = 0; k < bars; k++) {
+        const v = 3 + 1.8 + k * 3.6;
+        if (v > W - 3) break;
+        for (const s of [-1, 1])
+          out.push({ kind: 'runway-bar', points: [at(u0, s * v), at(u1, s * v)] });
+      }
+      // Touchdown zone: pairs of 22.5 m bars 150, 300, 450 m in.
+      for (const d of [150, 300, 450]) {
+        if (L - d < 200) break;
+        const ua = end * (L - d);
+        const ub = end * (L - d - 22.5);
+        for (const v of [-(W * 0.45), W * 0.45])
+          out.push({ kind: 'runway-bar', points: [at(ua, v), at(ub, v)] });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Lines of the sports pitches: on a pitch whose outline is close to a
+ * rectangle, the touch and goal lines 1 m inside it, the halfway line and
+ * centre circle, and on a full-size one (length ≥ 60 m) the penalty and goal
+ * areas — laid out along the pitch's own long axis. Odd-shaped pitches keep
+ * just their outline.
+ */
+export function pitchMarkings(areas: Area[]): Marking[] {
+  const out: Marking[] = [];
+  const line = (pts: Vec2[]) => out.push({ kind: 'pitch', points: pts });
+  for (const a of areas) {
+    if (a.kind !== 'pitch') continue;
+    const ob = orientedBox(a.polygon.outer as Vec2[]);
+    const L = ob.halfLength - 1;
+    const W = ob.halfWidth - 1;
+    if (L < 6 || W < 4) continue;
+    const ax = ob.axis;
+    const nx: Vec2 = [-ax[1], ax[0]];
+    const at = (u: number, v: number): Vec2 => [
+      ob.center[0] + ax[0] * u + nx[0] * v,
+      ob.center[1] + ax[1] * u + nx[1] * v,
+    ];
+    const rect = (u0: number, v0: number, u1: number, v1: number) =>
+      line([at(u0, v0), at(u1, v0), at(u1, v1), at(u0, v1), at(u0, v0)]);
+    rect(-L, -W, L, W);
+    if (ob.area > 0 && polygonArea(a.polygon) / ob.area < 0.85) continue;
+    line([at(0, -W), at(0, W)]);
+    const r = Math.min(9.15, W * 0.3);
+    line(
+      Array.from({ length: 33 }, (_, k) => {
+        const t = (k / 32) * Math.PI * 2;
+        return at(Math.cos(t) * r, Math.sin(t) * r);
+      }),
+    );
+    if (2 * L >= 60 && 2 * W >= 40) {
+      for (const s of [-1, 1]) {
+        const pw = Math.min(20.15, W * 0.6);
+        const gw = Math.min(9.15, W * 0.28);
+        rect(s * L, -pw, s * (L - 16.5), pw);
+        rect(s * L, -gw, s * (L - 5.5), gw);
+      }
+    }
+  }
+  return out;
 }
 
 /** Runs of the segment a→b (sampled every 0.4 m) inside `poly` and clear of `avoid`. */
@@ -357,6 +541,8 @@ export function gardenWalls(
   buildings: Building[],
   terrain: TerrainGrid,
   roads: RoadIndex,
+  /** Buildings walled with their grounds already (campusWalls): no lot walls. */
+  walled: ReadonlySet<Building> = new Set(),
 ): { fences: Fence[]; gates: Prop[] } {
   // Walls stop short of any carriageway (service roads and driveways cross lots).
   const onRoad = (p: Vec2) =>
@@ -390,7 +576,7 @@ export function gardenWalls(
   };
   type FenceStyleOf = { style: FenceStyle; height: number; color: string };
   const styleOf = (b: Building): FenceStyleOf | null => {
-    if (b.shopfront || b.use === 'commercial') return null;
+    if (b.shopfront || b.use === 'commercial' || walled.has(b) || b.form) return null;
     const rng = new Rng(`${b.id}-fence`);
     const color = rng.pick(WALL_COLORS);
     if (b.use === 'public') {
@@ -695,4 +881,98 @@ export function gardenWalls(
     }
   }
   return { fences, gates };
+}
+
+/**
+ * Walls round school, hospital and campus grounds (`school` areas): a low wall
+ * with a railing along the boundary, broken where a road, path or building
+ * meets it, with a gate in the middle of the longest run. The buildings inside
+ * get no garden walls of their own (they would double the boundary).
+ */
+/**
+ * Pieces of a ring's boundary clear of `blocked`, sampled every 1.5 m (runs
+ * of at least three samples): where a wall can stand round an area.
+ */
+export function boundaryRuns(ring: Vec2[], blocked: (p: Vec2) => boolean): Vec2[][] {
+  const runs: Vec2[][] = [];
+  let run: Vec2[] = [];
+  for (let k = 0; k < ring.length; k++) {
+    const p = ring[k];
+    const q = ring[(k + 1) % ring.length];
+    const n = Math.max(1, Math.ceil(dist(p, q) / 1.5));
+    for (let i = 0; i < n; i++) {
+      const s: Vec2 = [p[0] + ((q[0] - p[0]) * i) / n, p[1] + ((q[1] - p[1]) * i) / n];
+      if (blocked(s)) {
+        if (run.length >= 3) runs.push(run);
+        run = [];
+      } else run.push(s);
+    }
+  }
+  if (run.length >= 3) runs.push(run);
+  return runs;
+}
+
+export function campusWalls(
+  areas: Area[],
+  buildings: Building[],
+  terrain: TerrainGrid,
+  roads: RoadIndex,
+): { fences: Fence[]; gates: Prop[]; inside: Set<Building> } {
+  const fences: Fence[] = [];
+  const gates: Prop[] = [];
+  const inside = new Set<Building>();
+  const onRoad = (p: Vec2) =>
+    roads.covering(p, (r) => (r.grade === 'ground' ? r.width / 2 + 1 : 0)) !== null;
+  for (const a of areas) {
+    if (a.kind !== 'school' || polygonArea(a.polygon) < 400) continue;
+    const ring = a.polygon.outer as Vec2[];
+    const own = buildings.filter((b) => pointInRing(b.footprint.outer[0], ring));
+    for (const b of own) inside.add(b);
+    // Any building on or near the boundary breaks the wall (also those standing across it).
+    const box = boxOf(a.polygon);
+    const nearBy = buildings.filter((b) => meets(boxOf(b.footprint), box, 3));
+    const blocked = (p: Vec2) =>
+      onRoad(p) ||
+      nearBy.some((b) => {
+        const r = b.footprint.outer;
+        return (
+          pointInRing(p, r) ||
+          r.some((q, k) => closestOnSegment(p, q, r[(k + 1) % r.length]).d < 1.2)
+        );
+      });
+    const runs = boundaryRuns(ring, blocked);
+    const rng = new Rng(`${a.id}-campus`);
+    const st = {
+      style: rng.chance(0.7) ? ('wall-rail' as const) : ('mesh' as const),
+      height: 1.9,
+      color: rng.pick(['#d9d2c4', '#e3ddd0', '#cfc6b6']),
+    };
+    let longest = -1;
+    runs.forEach((r, i) => {
+      if (longest < 0 || r.length > runs[longest].length) longest = i;
+    });
+    runs.forEach((r, i) => {
+      const pts = simplifyLine(r, 0.1);
+      if (i !== longest || r.length < 10) {
+        fences.push({ points: pts, ...st });
+        return;
+      }
+      // Gate: a 3 m gap in the middle of the longest run.
+      const m = Math.floor(r.length / 2);
+      fences.push({ points: simplifyLine(r.slice(0, m - 1), 0.1), ...st });
+      fences.push({ points: simplifyLine(r.slice(m + 1), 0.1), ...st });
+      const gp = r[m];
+      const dir = normalize(sub(r[m + 1], r[m - 1]));
+      const out = perp(dir);
+      gates.push({
+        id: `${a.id}-gate`,
+        kind: 'gate',
+        position: [gp[0], gp[1], terrainHeightAt(terrain, gp[0], gp[1])],
+        heading: Math.atan2(out[1], out[0]),
+        scale: 1,
+        provenance: 'synthetic',
+      });
+    });
+  }
+  return { fences, gates, inside };
 }

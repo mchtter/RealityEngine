@@ -1,4 +1,13 @@
-import { gardenWalls, groundSurfaces, parkingLayout, playgroundLayout } from './amenities';
+import {
+  campusWalls,
+  gardenWalls,
+  groundSurfaces,
+  parkingLayout,
+  pitchMarkings,
+  playgroundLayout,
+  runwayMarkings,
+  trackGrounds,
+} from './amenities';
 import {
   buildBlocks,
   infillAlongRoads,
@@ -7,7 +16,12 @@ import {
   regionRect,
   scatter,
 } from './blocks';
-import { layoutFacades, makeBuilding, placeObservedBuildings } from './buildings';
+import {
+  STADIUM_BUILDINGS,
+  layoutFacades,
+  makeBuilding,
+  placeObservedBuildings,
+} from './buildings';
 import { CutGround, buildCuttings, settleTrenchRims } from './cuttings';
 import {
   LocalProjection,
@@ -23,16 +37,29 @@ import {
 } from './geo';
 import { isGraded, transferGrades } from './grade';
 import { GroundModel, SURFACE_LIFT } from './ground-model';
+import { furnishGrounds } from './grounds';
+import { layGuideways } from './guideways';
 import {
   ENTITY_TAG,
   LANDFORM_LINES,
+  type SourceArea,
+  type SourceBuilding,
   type SourceFeatures,
   type SourceRoad,
   mergeFeatures,
   readFeatures,
   readOsm,
 } from './osm';
-import { bufferPolyline, difference, dropHairlines, intersection, offset, union } from './poly';
+import { overheadSpans } from './overhead';
+import {
+  bufferPolyline,
+  difference,
+  dropHairlines,
+  intersection,
+  offset,
+  polygonArea,
+  union,
+} from './poly';
 import {
   buildingDetails,
   carriageReach,
@@ -51,10 +78,11 @@ import {
   buildSurfaces,
   classifyRoads,
   deckHalf,
+  densify,
   findJunctions,
   isVehicular,
 } from './roads';
-import { GridIndex, PolygonIndex, PolygonSet, RoadIndex } from './spatial';
+import { GridIndex, PolygonIndex, PolygonSet, RoadIndex, ringBounds } from './spatial';
 import {
   RoadSurface,
   buildTerrain,
@@ -73,6 +101,7 @@ import type {
   CityModel,
   CitySource,
   CompileOptions,
+  Fence,
   Marking,
   Polygon,
   Prop,
@@ -89,7 +118,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '61';
+export const COMPILER_VERSION = '85';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -102,6 +131,22 @@ const NO_BUILD: AreaKind[] = [
   'school',
   'religious',
   'plaza',
+  'stadium',
+  'pitch',
+  'track',
+  'bus_station',
+  'cemetery',
+  'construction',
+  'quarry',
+  'harbour',
+  'military',
+  'marketplace',
+  'substation',
+  'power_plant',
+  'airport',
+  'apron',
+  'runway',
+  'taxiway',
 ];
 
 type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
@@ -118,6 +163,145 @@ const EMPTY: SourceFeatures = { roads: [], buildings: [], points: [], areas: [],
  * buildings / props / blocks by centroid, surfaces / markings / terrain by
  * geometry — so adjacent tiles join without gaps or duplicates.
  */
+/**
+ * The stretches of a line over a tile's core: cut at 5 m steps, a step kept
+ * where its middle is inside — neighbouring tiles' stretches meet end to end.
+ */
+function linePieces(points: Vec2[], inside: (p: Vec2) => boolean): Vec2[][] {
+  const pts = densify(points, 5);
+  const out: Vec2[][] = [];
+  let run: Vec2[] = [];
+  for (let k = 1; k < pts.length; k++) {
+    const a = pts[k - 1];
+    const b = pts[k];
+    if (inside([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2])) {
+      if (!run.length) run.push(a);
+      run.push(b);
+    } else if (run.length) {
+      out.push(run);
+      run = [];
+    }
+  }
+  if (run.length >= 2) out.push(run);
+  return out.filter((r) => r.length >= 2);
+}
+
+/** A wall as pieces of at most `max` metres along it (vertices kept, pieces share their ends). */
+function fencePieces(f: Fence, max: number): Fence[] {
+  const out: Fence[] = [];
+  let piece: Vec2[] = [f.points[0]];
+  let run = 0;
+  for (let k = 1; k < f.points.length; k++) {
+    const a = f.points[k - 1];
+    const b = f.points[k];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const n = Math.max(1, Math.ceil(len / max));
+    for (let i = 1; i <= n; i++) {
+      const p: Vec2 = [a[0] + ((b[0] - a[0]) * i) / n, a[1] + ((b[1] - a[1]) * i) / n];
+      piece.push(p);
+      run += len / n;
+      if (run >= max) {
+        out.push({ ...f, points: piece });
+        piece = [p];
+        run = 0;
+      }
+    }
+  }
+  if (piece.length >= 2) out.push({ ...f, points: piece });
+  return out;
+}
+
+/** Building types that, mapped round other buildings, are the grounds of a campus. */
+const CAMPUS_TYPES = new Set(['school', 'kindergarten', 'college', 'university', 'hospital']);
+
+/**
+ * A school / hospital "building" with other buildings standing inside it is
+ * its grounds mapped as a building (a whole lise campus as one 27 000 m²
+ * block of flats): it becomes the campus area — walled yard round the real
+ * buildings — instead of a building.
+ */
+function campusGrounds(f: SourceFeatures): SourceFeatures {
+  const isCampusType = (b: SourceBuilding) =>
+    CAMPUS_TYPES.has(b.tags.building ?? '') || CAMPUS_TYPES.has(b.tags.amenity ?? '');
+  const candidates = f.buildings.filter(isCampusType);
+  if (!candidates.length) return f;
+  const centres = f.buildings.map((b) => ({
+    b,
+    c: ringCentroid(b.polygons[0].outer),
+    area: b.polygons.reduce((s, p) => s + polygonArea(p), 0),
+  }));
+  const grounds = new Set<SourceBuilding>();
+  for (const cand of candidates) {
+    const holds = centres.some(
+      (o) =>
+        o.b !== cand &&
+        o.area >= 100 &&
+        cand.polygons.some(
+          (p) => pointInRing(o.c, p.outer) && !p.holes.some((h) => pointInRing(o.c, h)),
+        ),
+    );
+    if (holds) grounds.add(cand);
+  }
+  if (!grounds.size) return f;
+  return {
+    ...f,
+    buildings: f.buildings.filter((b) => !grounds.has(b)),
+    areas: [
+      ...f.areas,
+      ...[...grounds].map(
+        (b): SourceArea => ({
+          ref: b.ref,
+          source: b.source,
+          priority: b.priority,
+          tags: b.tags,
+          kind: 'school',
+          polygons: b.polygons,
+        }),
+      ),
+    ],
+  };
+}
+
+/** Overlap (intersection over union) from which two areas of a kind are one area. */
+const SAME_AREA = 0.85;
+
+/**
+ * Each area once: the same park or building site can come from two sources
+ * (a city layer and a raw OSM extract of the district), and drawn twice it
+ * doubles its walls, cranes and graves and fights itself on the ground. Of
+ * near-identical areas of a kind, the higher priority wins, then a city
+ * entity, then the first by ref.
+ */
+function distinctAreas(list: SourceArea[]): SourceArea[] {
+  const ordered = [...list].sort(
+    (a, b) =>
+      b.priority - a.priority ||
+      Number(!!b.tags[ENTITY_TAG]) - Number(!!a.tags[ENTITY_TAG]) ||
+      (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0),
+  );
+  const kept: { a: SourceArea; box: [number, number, number, number]; area: number }[] = [];
+  for (const a of ordered) {
+    const boxes = a.polygons.map((p) => ringBounds(p.outer));
+    const box: [number, number, number, number] = [
+      Math.min(...boxes.map((b) => b[0])),
+      Math.min(...boxes.map((b) => b[1])),
+      Math.max(...boxes.map((b) => b[2])),
+      Math.max(...boxes.map((b) => b[3])),
+    ];
+    const area = a.polygons.reduce((s, p) => s + polygonArea(p), 0);
+    const same = kept.some((k) => {
+      if (k.a.kind !== a.kind) return false;
+      if (k.box[2] < box[0] || k.box[0] > box[2] || k.box[3] < box[1] || k.box[1] > box[3])
+        return false;
+      if (Math.min(k.area, area) < SAME_AREA * Math.max(k.area, area)) return false;
+      const common = intersection(k.a.polygons, a.polygons).reduce((s, p) => s + polygonArea(p), 0);
+      return common / (k.area + area - common) >= SAME_AREA;
+    });
+    if (!same) kept.push({ a, box, area });
+  }
+  return kept.map((k) => k.a);
+}
+
 export function compileCity(src: CitySource, opts: CompileOptions = {}): CityModel {
   const started = Date.now();
   const { infill = true, decorate = true } = opts;
@@ -148,10 +332,14 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   const inCore = (p: Vec2) =>
     p[0] >= core.minX && p[0] < core.maxX && p[1] >= core.minY && p[1] < core.maxY;
 
-  const features = mergeFeatures(
-    src.osm ? readOsm(src.osm, proj) : EMPTY,
-    src.features ? readFeatures(src.features, proj) : EMPTY,
+  const features = campusGrounds(
+    mergeFeatures(
+      src.osm ? readOsm(src.osm, proj) : EMPTY,
+      src.features ? readFeatures(src.features, proj) : EMPTY,
+    ),
   );
+  // Rail lines, runways and taxiways (road-theme lines that are not roads).
+  const guide = layGuideways(features.roads);
   // Authoritative road network (e.g. the municipality's centrelines): other
   // sources' roads yield where it has data, so two networks never overlap.
   // Exceptions: national roads (motorway / trunk and their ramps, outside a
@@ -165,10 +353,20 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     ROAD_COVER_REACH,
   );
   const national = (r: SourceRoad) => /^(motorway|trunk)(_link)?$/.test(r.tags.highway ?? '');
-  const yielding = features.roads.filter(
-    (r) =>
-      !r.authoritative && !national(r) && roadCovered(r.points[Math.floor(r.points.length / 2)]),
+  // National roads yield only where the authoritative network has national
+  // roads itself (a register built from the whole network, e.g. a city
+  // delivered from OSM); a municipal register without them keeps the others'.
+  // Otherwise both copies of a highway and its viaducts were drawn.
+  const nationalCovered = authorityCoverage(
+    authoritativeRoads.filter(national).map((r) => ({ points: r.points, area: false })),
+    g,
+    ROAD_COVER_REACH,
   );
+  const yielding = features.roads.filter((r) => {
+    if (r.authoritative) return false;
+    const mid = r.points[Math.floor(r.points.length / 2)];
+    return national(r) ? nationalCovered(mid) : roadCovered(mid);
+  });
   const yieldingSet = new Set(yielding);
   const graded = transferGrades(authoritativeRoads, yielding.filter(isGraded));
   const sourceRoads = [
@@ -200,6 +398,19 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     terrain,
     features.lines.filter((l) => LANDFORM_LINES.has(l.tags.natural ?? '')),
   );
+  // Land the elevation model puts under the sea (reclaimed shore) stays land —
+  // before the streets are profiled: profiled first, a shore street kept the
+  // DEM's 0 m while the land around it rose to the floor, and the sea plane
+  // lay over it (Izmir, 2026-10-12).
+  raiseLandAboveSea(terrain, {
+    segments: roads.flatMap((r) =>
+      r.centerline.slice(1).map((b, k) => [r.centerline[k], b] as [Vec2, Vec2]),
+    ),
+    polygons: [
+      ...features.buildings.flatMap((b) => b.polygons),
+      ...features.areas.filter((a) => a.kind !== 'water').flatMap((a) => a.polygons),
+    ],
+  });
   // Street surface: terrain levelled to it; each conformed road keeps its
   // centreline profile (the viewer drapes the road surfaces on it).
   const conformed = roads.filter(
@@ -214,16 +425,6 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     })),
   );
   conformed.forEach((r, k) => (r.profile = profiles[k].map((z) => Math.round(z * 100) / 100)));
-  // Land the elevation model puts under the sea (reclaimed shore) stays land.
-  raiseLandAboveSea(terrain, {
-    segments: roads.flatMap((r) =>
-      r.centerline.slice(1).map((b, k) => [r.centerline[k], b] as [Vec2, Vec2]),
-    ),
-    polygons: [
-      ...features.buildings.flatMap((b) => b.polygons),
-      ...features.areas.filter((a) => a.kind !== 'water').flatMap((a) => a.polygons),
-    ],
-  });
   // Underpass ramps and tunnel mouths: where they cut the levelled terrain.
   const { cuttings, portals, tunnels, cut } = buildCuttings(roads, terrain);
   const cutGround = new CutGround(terrain, cut);
@@ -259,7 +460,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   );
   const roadIndex = new RoadIndex(roads);
 
-  const areas: Area[] = features.areas.flatMap((a) =>
+  const areas: Area[] = distinctAreas(features.areas).flatMap((a) =>
     intersection(a.polygons, [regionPoly]).map((polygon, i) => ({
       id: `a:${a.ref}${i ? `-${i}` : ''}`,
       kind: a.kind,
@@ -281,7 +482,47 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     (b) => !b.authoritative && b.polygons.some((p) => covered(ringCentroid(p.outer))),
   );
   const dropped = new Set(outranked);
-  const candidates = features.buildings.filter((b) => !dropped.has(b));
+  // A stadium's footprint mapped over the whole bowl: its stands are what is
+  // left around the pitch and track (they are areas of their own).
+  const field = [
+    ...areas.filter((a) => a.kind === 'pitch').map((a) => a.polygon),
+    ...trackGrounds(areas),
+  ];
+  // A plain building on a school / hospital campus is one of its blocks: it
+  // takes the campus's purpose (public facades, no balconies).
+  const campuses = features.areas
+    .filter((a) => a.kind === 'school')
+    .map((a) => ({ a, purpose: a.tags.amenity ?? a.tags.building ?? 'school' }))
+    .filter((c) => CAMPUS_TYPES.has(c.purpose));
+  const inCampus = (b: SourceBuilding): SourceBuilding => {
+    if (!campuses.length || b.tags.amenity) return b;
+    if (!['yes', 'residential', 'apartments', ''].includes(b.tags.building ?? '')) return b;
+    const c = ringCentroid(b.polygons[0].outer);
+    const campus = campuses.find((k) =>
+      k.a.polygons.some((p) => pointInRing(c, p.outer) && !p.holes.some((h) => pointInRing(c, h))),
+    );
+    return campus ? { ...b, tags: { ...b.tags, amenity: campus.purpose } } : b;
+  };
+  const candidates = features.buildings
+    .filter((b) => !dropped.has(b))
+    .flatMap((b) => {
+      // A roof over a pitch (covered halı saha, sports hall) is a hall, not a house.
+      const generic =
+        !b.tags.building || ['yes', 'roof', 'sports_centre'].includes(b.tags.building);
+      if (
+        generic &&
+        field.some((f) =>
+          b.polygons.some((p) => {
+            const c = ringCentroid(p.outer);
+            return pointInRing(c, f.outer) && !f.holes.some((h) => pointInRing(c, h));
+          }),
+        )
+      )
+        return [{ ...b, tags: { ...b.tags, building: 'sports_hall' } }];
+      if (!STADIUM_BUILDINGS.has(b.tags.building ?? '') || !field.length) return [inCampus(b)];
+      const polygons = difference(b.polygons, field).filter((p) => polygonArea(p) > 30);
+      return polygons.length ? [{ ...b, polygons }] : [];
+    });
 
   // Observed buildings (highest-priority source first), corrected against roads and each other.
   const bctx = { terrain, roads: roadIndex };
@@ -369,6 +610,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       2.5,
     ),
     areas.filter((a) => NO_BUILD.includes(a.kind)).map((a) => a.polygon),
+    guide.footprint,
     offset(pathSurface, 1),
     serviceRoads,
   );
@@ -413,7 +655,19 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   let buildings = [...observed, ...synthetic];
   const buildingIndex = new PolygonIndex<Building>();
   for (const b of buildings) buildingIndex.add(b, b.footprint);
-  layoutFacades(buildings, buildingIndex);
+  layoutFacades(buildings, buildingIndex, roadIndex);
+  // A mosque whose minarets the data maps as buildings of their own gets no
+  // generated ones (it would have two minarets side by side).
+  const minarets = buildings
+    .filter((b) => b.form === 'minaret')
+    .map((b) => ringCentroid(b.footprint.outer));
+  if (minarets.length)
+    for (const b of buildings) {
+      if (b.form !== 'mosque') continue;
+      const c = ringCentroid(b.footprint.outer);
+      const reach = Math.sqrt(b.area) + 25;
+      if (minarets.some((m) => Math.hypot(m[0] - c[0], m[1] - c[1]) < reach)) b.minarets = 0;
+    }
 
   // Hard ground (car parks, playgrounds, plazas, yards of institutions, dense blocks).
   // Kept off the street corridors, and off the carriageways that are not
@@ -423,12 +677,56 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   const looseCarriage = roads
     .filter((r) => r.grade === 'ground' && !r.formsBlocks && isVehicular(r.cls))
     .flatMap((r) => bufferPolyline(r.centerline, r.width / 2));
-  const hard = groundSurfaces(areas, blocks, buildings, net.corridor).map((sf) =>
-    looseCarriage.length ? { ...sf, polygons: difference(sf.polygons, looseCarriage) } : sf,
-  );
+  const hard = groundSurfaces(areas, blocks, buildings, net.corridor)
+    .map((sf) =>
+      sf.kind === 'airfield' && guide.airfield.length
+        ? { ...sf, polygons: union([...sf.polygons, ...guide.airfield]) }
+        : sf,
+    )
+    .map((sf) =>
+      looseCarriage.length ? { ...sf, polygons: difference(sf.polygons, looseCarriage) } : sf,
+    );
   const noTrees = hard
-    .filter((sf) => sf.kind === 'parking' || sf.kind === 'playground' || sf.kind === 'paving')
-    .flatMap((sf) => sf.polygons);
+    .filter((sf) =>
+      [
+        'parking',
+        'playground',
+        'paving',
+        'pitch',
+        'track',
+        'cemetery',
+        'earth',
+        'quarry',
+        'gravel',
+        'airfield',
+      ].includes(sf.kind),
+    )
+    .flatMap((sf) => sf.polygons)
+    .concat(guide.footprint)
+    // Stadium and bus station grounds (an open concourse / apron), cemeteries
+    // (their own cypresses), building sites, quarries, ports, markets: no
+    // garden trees scattered over them.
+    .concat(
+      areas
+        .filter((a) =>
+          [
+            'stadium',
+            'bus_station',
+            'cemetery',
+            'construction',
+            'quarry',
+            'harbour',
+            'marketplace',
+            'substation',
+            'power_plant',
+            'airport',
+            'apron',
+            'runway',
+            'taxiway',
+          ].includes(a.kind),
+        )
+        .map((a) => a.polygon),
+    );
 
   // Props.
   const pctx = { terrain, roads, roadIndex, buildings: buildingIndex, junctions, crossings };
@@ -454,7 +752,15 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   }
   // Car parks, playgrounds and garden walls (gates are props), placed with the rest.
   const parking = parkingLayout(areas, buildings, roadIndex, terrain);
-  const walls = gardenWalls(blocks, buildings, terrain, roadIndex);
+  const campus = campusWalls(areas, buildings, terrain, roadIndex);
+  const lots = gardenWalls(blocks, buildings, terrain, roadIndex, campus.inside);
+  const walls = {
+    fences: [...campus.fences, ...lots.fences],
+    gates: [...campus.gates, ...lots.gates],
+  };
+  // Cemeteries, building sites, harbours, military grounds, markets.
+  const grounds = furnishGrounds(areas, buildingIndex, terrain, roadIndex, inRegion);
+  walls.fences.push(...grounds.fences);
   props.push(...parking.props, ...playgroundLayout(areas, terrain), ...walls.gates);
   if (suggest) props.push(...suggestBusStops(pctx, props, inRegion));
   // Nothing generated may stand on a carriageway (e.g. a lamp of one street
@@ -468,9 +774,13 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   const placement = resolvePropPlacement(props, buildingIndex);
   props = placement.props;
   props.push(...buildingDetails(buildings));
+  // Laid out clear of buildings and roads by their own rules (rows of graves, stalls …).
+  props.push(...grounds.props.filter((p) => inRegion([p.position[0], p.position[1]])));
 
   let bridges = buildBridges(roads, terrain, roadIndex, cutGround, streetAt);
   props = clearOfBridges(props, bridges);
+  // Overhead lines between the pylons (turned to face along their line).
+  const overhead = overheadSpans(props.filter((p) => p.kind === 'pylon'));
   // Paved / gravel yards around buildings (outside the hard ground above); the
   // rest of each block stays green.
   const yards0 = difference(
@@ -524,9 +834,27 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     { kind: 'yard' as const, polygons: yards },
     ...hard,
   ];
-  const allMarkings = [...markings, ...parking.markings];
+  // A rail bed lies on the ground: where it runs along a median, a sidewalk
+  // or a square (a tram in its reserved strip), those raised surfaces give
+  // way, or they would cover the track.
+  const railBeds = guide.rails.flatMap((r) => bufferPolyline(r.points, r.width / 2, false));
+  if (railBeds.length)
+    outSurfaces = outSurfaces.map((sf) =>
+      ['island', 'sidewalk', 'paving', 'path'].includes(sf.kind)
+        ? { ...sf, polygons: dropHairlines(difference(sf.polygons, railBeds)) }
+        : sf,
+    );
+  const allMarkings = [
+    ...markings,
+    ...parking.markings,
+    ...pitchMarkings(areas),
+    ...runwayMarkings(areas),
+    ...guide.markings,
+  ];
   let outMarkings = allMarkings;
   let outFences = walls.fences;
+  let outOverhead = overhead;
+  let outRails = guide.rails;
   let outCrossings = crossings;
   let outJunctions = junctions;
   let outAreas = areas;
@@ -548,11 +876,26 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       polygons: dropHairlines(intersection(sf.polygons, [corePoly])),
     }));
     outMarkings = clipMarkings(allMarkings, inCore);
-    outFences = walls.fences.filter((f) => {
-      const a = f.points[0];
-      const b = f.points[f.points.length - 1];
-      return inCore([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
-    });
+    // A rail line crossing tiles: each tile lays the stretches over its core.
+    outRails = guide.rails.flatMap((r) =>
+      linePieces(r.points, inCore).map((points, i) => ({
+        ...r,
+        id: i ? `${r.id}~${i}` : r.id,
+        points,
+      })),
+    );
+    // Long walls (a campus, an airfield's fence) cut into short pieces, each
+    // drawn by the tile it stands in: on its own terrain, never past the margin.
+    outFences = walls.fences
+      .flatMap((f) => fencePieces(f, 40))
+      .filter((f) => {
+        const a = f.points[0];
+        const b = f.points[f.points.length - 1];
+        return inCore([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+      });
+    outOverhead = overhead.filter((sp) =>
+      inCore([(sp.a[0] + sp.b[0]) / 2, (sp.a[1] + sp.b[1]) / 2]),
+    );
     outCrossings = crossings.filter((c) => inCore(c.center));
     outJunctions = junctions.filter((j) => inCore(j.center));
     outAreas = areas.flatMap((a) =>
@@ -647,6 +990,8 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     surfaces: outSurfaces,
     markings: outMarkings,
     fences: outFences,
+    ...(outOverhead.length ? { overhead: outOverhead } : {}),
+    ...(outRails.length ? { rails: outRails } : {}),
     ...(outUtilities.length ? { utilities: outUtilities } : {}),
     ...(outNodes.length ? { utilityNodes: outNodes } : {}),
     ...(outFill.length ? { streetFill: outFill } : {}),
@@ -992,9 +1337,10 @@ function buildBridges(
       edgeLines: chain.some((r) => ['motorway', 'trunk', 'primary'].includes(r.cls)),
       piers: [],
     };
-    return { bridge, pts };
+    return { bridge, pts, layer };
   });
   settleJoinedDecks(decks);
+  matchDeckEnds(decks);
   spreadSplitDecks(decks);
   // Deck segments in a 20 m grid (a column checks only the decks around it).
   const deckSegs = new GridIndex<{ bridge: Bridge; a: Vec3; b: Vec3 }>(20);
@@ -1085,6 +1431,59 @@ function settleJoinedDecks(decks: { bridge: Bridge }[]): void {
       path.forEach((q, k) => (q[2] += delta[k]));
     }
     settled.push(bridge);
+  }
+}
+
+/**
+ * Decks meeting end to end without being chained into one (a layer change at
+ * the node, steps up to a footbridge at an angle, footbridge pieces drawn a
+ * metre or two apart in the source) each got their own height there: a ramp
+ * ended 5 m above the viaduct it joins, steps 4 m below their footbridge
+ * (İzmir, 2026-10-09). Ends at one node, or of the same layer within END_GAP
+ * of each other, form a joint and are brought to the highest of them; each
+ * lifted deck eases back to its own height over up to 60 m (at most 60 % of
+ * its length, so a far end that lands on the ground stays there).
+ */
+const END_GAP = 3;
+function matchDeckEnds(decks: { bridge: Bridge; pts: Vec2[]; layer: number }[]): void {
+  // `path` runs from the joint (index 0: the 1 m run-on, 1: the joint vertex).
+  const ends: { deck: number; at: Vec2; layer: number; path: Vec3[] }[] = [];
+  decks.forEach(({ bridge, pts, layer }, deck) => {
+    if (bridge.path.length < 4 || pts.length < 2) return;
+    ends.push({ deck, at: pts[0], layer, path: bridge.path });
+    ends.push({ deck, at: pts[pts.length - 1], layer, path: [...bridge.path].reverse() });
+  });
+  // Joints: ends linked through any chain of close pairs (union-find).
+  const root = ends.map((_, i) => i);
+  const find = (i: number): number => (root[i] === i ? i : (root[i] = find(root[i])));
+  for (let i = 0; i < ends.length; i++) {
+    for (let j = i + 1; j < ends.length; j++) {
+      if (ends[i].deck === ends[j].deck) continue;
+      const d = dist(ends[i].at, ends[j].at);
+      if (d < 0.75 || (d < END_GAP && ends[i].layer === ends[j].layer)) root[find(i)] = find(j);
+    }
+  }
+  const joints = new Map<number, Vec3[][]>();
+  ends.forEach((e, i) => joints.set(find(i), [...(joints.get(find(i)) ?? []), e.path]));
+  const ease = (x: number) => {
+    const c = Math.min(1, Math.max(0, x));
+    return 1 - c * c * (3 - 2 * c);
+  };
+  for (const paths of joints.values()) {
+    if (paths.length < 2) continue;
+    const target = Math.max(...paths.map((path) => path[1][2]));
+    for (const path of paths) {
+      const delta = target - path[1][2];
+      if (delta < 0.05) continue;
+      let walked = 0;
+      const at = path.map((q, k) => {
+        if (k > 1) walked += Math.hypot(q[0] - path[k - 1][0], q[1] - path[k - 1][1]);
+        return walked;
+      });
+      const span = Math.min(60, at[at.length - 1] * 0.6);
+      // Vec3s are shared with the deck's own path: lifting them lifts the deck.
+      path.forEach((q, k) => (q[2] += span > 0 ? delta * ease(at[k] / span) : 0));
+    }
   }
 }
 

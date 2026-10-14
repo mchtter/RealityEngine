@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { runwayMarkings } from '../src/amenities';
 import { compileCity } from '../src/compile';
 import { CutGround } from '../src/cuttings';
 import {
@@ -13,7 +14,8 @@ import {
 import { bufferPolyline, intersection, totalArea, union } from '../src/poly';
 import { PROP_RADIUS } from '../src/props';
 import { isVehicular } from '../src/roads';
-import { terrainHeightAt } from '../src/terrain';
+import { RoadIndex } from '../src/spatial';
+import { LAND_FLOOR, terrainHeightAt } from '../src/terrain';
 import type { CityModel, CitySource, OsmElement, Polygon, TerrainGrid } from '../src/types';
 import { validateCity } from '../src/validate';
 
@@ -216,6 +218,56 @@ describe('compileCity', () => {
     expect(along(open, -59)).toHaveLength(2);
   });
 
+  it('lets national roads yield only to a network that has national roads itself', () => {
+    const trunk = (ref: string, y: number, authoritative: boolean, highway = 'trunk') => ({
+      ref,
+      source: ref.split(':')[0],
+      priority: authoritative ? 10 : 0,
+      authoritative,
+      kind: 'road' as const,
+      geometry: {
+        type: 'LineString' as const,
+        coordinates: (
+          [
+            [-200, y],
+            [0, y],
+            [200, y],
+          ] as [number, number][]
+        ).map(([x, yy]) => ll(x, yy)),
+      },
+      tags: { highway, bridge: 'yes', layer: '1' },
+    });
+    const along = (m: CityModel) =>
+      m.roads.filter((r) => r.centerline.every(([, py]) => Math.abs(py - 141) < 6));
+    // Pieces of one road keep its ref with a ~n suffix.
+    const sources = (m: CityModel) =>
+      [...new Set(along(m).map((r) => r.ref?.split('~')[0]))].sort();
+    // A network delivered with its highways (e.g. built from OSM): the other copy goes.
+    const full = compileCity(
+      {
+        ...gridSource(),
+        osm: [],
+        features: [trunk('kurum:t', 140, true), trunk('osm:t', 142, false)],
+      },
+      { infill: false, decorate: false },
+    );
+    expect(sources(full)).toEqual(['kurum:t']);
+    // A municipal register without highways keeps the national road of the other source.
+    const municipal = compileCity(
+      {
+        ...gridSource(),
+        osm: [],
+        features: [trunk('kurum:s', 140, true, 'residential'), trunk('osm:t', 142, false)],
+      },
+      { infill: false, decorate: false },
+    );
+    expect(
+      along(municipal)
+        .map((r) => r.ref)
+        .sort(),
+    ).toEqual(['kurum:s', 'osm:t']);
+  });
+
   it('gives an authoritative road the grade of a bridge along it and keeps crossings', () => {
     const road = (
       ref: string,
@@ -347,6 +399,500 @@ describe('compileCity', () => {
     expect(inside).toHaveLength(0);
     // Blocks around it are still filled.
     expect(m.buildings.filter((b) => b.source === 'synthetic').length).toBeGreaterThan(0);
+  });
+
+  it('draws a stadium as stands round a lined pitch, with no trees on it', () => {
+    const area = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'area' as const,
+      geometry: {
+        type: 'Polygon' as const,
+        coordinates: [[...pts, pts[0]].map(([x, y]) => ll(x, y))],
+      },
+      tags,
+    });
+    const building = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ...area(ref, pts, tags),
+      kind: 'building' as const,
+    });
+    const box = (x: number, y: number): [number, number][] => [
+      [-x, -y],
+      [x, -y],
+      [x, y],
+      [-x, y],
+    ];
+    const m = compileCity(
+      {
+        ...gridSource(),
+        osm: [],
+        features: [
+          // The stadium footprint mapped over the whole bowl, and its pitch.
+          building('osm:stadium', box(80, 60), { building: 'stadium' }),
+          area('osm:pitch', box(52, 34), { leisure: 'pitch', sport: 'soccer' }),
+          area('osm:grounds', box(110, 90), { leisure: 'stadium' }),
+        ],
+      },
+      { infill: false, decorate: true },
+    );
+    const stands = m.buildings.filter((b) => b.ref === 'osm:stadium' || b.use === 'stadium');
+    expect(stands.length).toBeGreaterThan(0);
+    for (const b of stands) {
+      expect(b.use).toBe('stadium');
+      // No stand over the pitch, and no windows.
+      expect(
+        b.footprint.holes.length + (pointInRing([0, 0], b.footprint.outer) ? 0 : 1),
+      ).toBeGreaterThan(0);
+      expect(b.facades.every((f) => f.bays.length === 0)).toBe(true);
+    }
+    expect(m.surfaces.find((sf) => sf.kind === 'pitch')?.polygons.length).toBeGreaterThan(0);
+    expect(m.markings.filter((mk) => mk.kind === 'pitch').length).toBeGreaterThanOrEqual(5);
+    const onPitch = m.props.filter(
+      (p) => p.kind === 'tree' && Math.abs(p.position[0]) < 108 && Math.abs(p.position[1]) < 88,
+    );
+    expect(onPitch).toHaveLength(0);
+  });
+
+  it('draws a jogging loop round a park as a band, not the park under it', () => {
+    const area = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'area' as const,
+      geometry: {
+        type: 'Polygon' as const,
+        coordinates: [[...pts, pts[0]].map(([x, y]) => ll(x, y))],
+      },
+      tags,
+    });
+    const box = (x0: number, y0: number, x1: number, y1: number): [number, number][] => [
+      [x0, y0],
+      [x1, y0],
+      [x1, y1],
+      [x0, y1],
+    ];
+    const m = compileCity(
+      {
+        ...gridSource(),
+        osm: [],
+        features: [
+          area('osm:park', box(-90, -90, 90, 90), { leisure: 'park' }),
+          // The loop: a closed way with no pitch inside (OSM exports it as a polygon too).
+          area('osm:loop', box(-80, -80, 80, 80), { leisure: 'track', sport: 'running' }),
+          // A halı saha in the park, inside the loop: the loop is still no stadium track.
+          area('osm:halisaha', box(20, 20, 50, 40), { leisure: 'pitch', sport: 'soccer' }),
+          { ...area('osm:pavilion', box(-10, -10, 10, 10), { building: 'yes' }), kind: 'building' },
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    const track = m.surfaces.find((sf) => sf.kind === 'track');
+    const a = totalArea(track?.polygons ?? []);
+    // A 6 m band along a 640 m loop, not the 160 × 160 m it encloses.
+    expect(a).toBeGreaterThan(2500);
+    expect(a).toBeLessThan(5000);
+    // The pavilion inside stays a building of the park, not a sports hall.
+    const pavilion = m.buildings.find((b) => b.ref === 'osm:pavilion');
+    expect(pavilion?.form).not.toBe('shed');
+  });
+
+  it('furnishes cemeteries, building sites, markets, harbours and military grounds', () => {
+    const area = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'area' as const,
+      geometry: {
+        type: 'Polygon' as const,
+        coordinates: [[...pts, pts[0]].map(([x, y]) => ll(x, y))],
+      },
+      tags,
+    });
+    const box = (x0: number, y0: number, x1: number, y1: number): [number, number][] => [
+      [x0, y0],
+      [x1, y0],
+      [x1, y1],
+      [x0, y1],
+    ];
+    const m = compileCity(
+      {
+        ...gridSource(),
+        features: [
+          area('osm:cemetery', box(-195, -195, -65, -65), { landuse: 'cemetery' }),
+          // A morgue / mosque inside the cemetery: graves keep off it.
+          {
+            ...area('osm:morgue', box(-140, -140, -125, -125), { building: 'yes' }),
+            kind: 'building',
+          },
+          area('osm:site', box(65, -195, 195, -65), { landuse: 'construction' }),
+          area('osm:market', box(-195, 65, -65, 195), { amenity: 'marketplace' }),
+          area('osm:port', box(65, 65, 195, 195), { landuse: 'harbour' }),
+          area('osm:base', box(-50, -35, 50, 50), { landuse: 'military' }),
+        ],
+      },
+      { infill: true, decorate: true },
+    );
+    const of = (k: string) => m.props.filter((p) => p.kind === k);
+    expect(of('grave').length).toBeGreaterThan(300);
+    expect(of('cypress').length).toBeGreaterThan(5);
+    expect(of('crane').length).toBeGreaterThanOrEqual(1);
+    expect(of('stall').length).toBeGreaterThan(20);
+    expect(of('container').length).toBeGreaterThan(50);
+    const fenceHeights = new Set((m.fences ?? []).map((f) => f.height));
+    for (const h of [1.6, 2.2, 2.8]) expect(fenceHeights.has(h)).toBe(true);
+    for (const k of ['cemetery', 'earth'])
+      expect(totalArea(m.surfaces.find((sf) => sf.kind === k)?.polygons ?? [])).toBeGreaterThan(
+        5000,
+      );
+    // No synthetic infill on these grounds.
+    const synthetic = m.buildings.filter((b) => b.provenance.footprint !== 'observed');
+    const grounds = [
+      box(-195, -195, -65, -65),
+      box(65, -195, 195, -65),
+      box(-195, 65, -65, 195),
+      box(65, 65, 195, 195),
+      box(-50, -35, 50, 50),
+    ];
+    for (const b of synthetic) {
+      const c = ringCentroid(b.footprint.outer);
+      expect(grounds.some((g) => pointInRing(c, g))).toBe(false);
+    }
+    // No garden trees on the site, the market or the port (a cemetery has its own trees).
+    const civil = grounds.slice(1, 4);
+    const trees = m.props.filter((p) => p.kind === 'tree');
+    expect(
+      trees.filter((p) => civil.some((g) => pointInRing([p.position[0], p.position[1]], g))),
+    ).toEqual([]);
+    // Nothing laid out stands in a building or on a carriageway.
+    const road = carriageway(m);
+    for (const p of m.props.filter((q) =>
+      ['grave', 'cypress', 'crane', 'stall', 'container'].includes(q.kind),
+    )) {
+      const at: [number, number] = [p.position[0], p.position[1]];
+      expect(m.buildings.some((b) => pointInRing(at, b.footprint.outer))).toBe(false);
+      expect(road.some((r) => pointInRing(at, r.outer))).toBe(false);
+    }
+  });
+
+  it('draws an area given by two sources once', () => {
+    const area = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'area' as const,
+      geometry: {
+        type: 'Polygon' as const,
+        coordinates: [[...pts, pts[0]].map(([x, y]) => ll(x, y))],
+      },
+      tags,
+    });
+    const site: [number, number][] = [
+      [-160, -160],
+      [-70, -160],
+      [-70, -70],
+      [-160, -70],
+    ];
+    const m = compileCity(
+      {
+        ...gridSource(),
+        features: [
+          // A city layer's building site and the same site from a raw OSM extract.
+          area('osm:osm:w1', site, { landuse: 'construction' }),
+          area(
+            'osm:w1',
+            site.map(([x, y]) => [x + 0.4, y - 0.3] as [number, number]),
+            {
+              landuse: 'construction',
+            },
+          ),
+          // A different area of the same kind beside it stays.
+          area(
+            'osm:w2',
+            [
+              [70, -160],
+              [160, -160],
+              [160, -70],
+              [70, -70],
+            ],
+            { landuse: 'construction' },
+          ),
+        ],
+      },
+      { infill: false, decorate: true },
+    );
+    expect(m.areas.filter((a) => a.kind === 'construction')).toHaveLength(2);
+    expect(m.props.filter((p) => p.kind === 'crane')).toHaveLength(2);
+  });
+
+  it('builds towers, minarets and substations from the data', () => {
+    const area = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'area' as const,
+      geometry: {
+        type: 'Polygon' as const,
+        coordinates: [[...pts, pts[0]].map(([x, y]) => ll(x, y))],
+      },
+      tags,
+    });
+    const building = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ...area(ref, pts, tags),
+      kind: 'building' as const,
+    });
+    const box = (x0: number, y0: number, x1: number, y1: number): [number, number][] => [
+      [x0, y0],
+      [x1, y0],
+      [x1, y1],
+      [x0, y1],
+    ];
+    const m = compileCity(
+      {
+        ...gridSource(),
+        features: [
+          building('osm:mosque', box(-150, -150, -120, -120), {
+            building: 'mosque',
+            amenity: 'place_of_worship',
+          }),
+          building('osm:minaret', box(-116, -126, -113, -123), {
+            building: 'yes',
+            man_made: 'tower',
+            'tower:type': 'minaret',
+            height: '18',
+          }),
+          building('osm:works', box(-180, 100, -120, 140), {
+            building: 'industrial',
+            height: '10',
+          }),
+          building('osm:clock', box(-30, 20, -24, 26), {
+            building: 'yes',
+            man_made: 'tower',
+            'tower:type': 'clock_tower',
+          }),
+          building('osm:trt', box(100, 100, 112, 112), {
+            building: 'yes',
+            man_made: 'tower',
+            'tower:type': 'communication',
+            height: '120',
+          }),
+          area('osm:substation', box(80, -150, 150, -100), { power: 'substation' }),
+          area('osm:plant', box(80, 140, 170, 195), { power: 'plant', 'plant:source': 'gas' }),
+        ],
+      },
+      { infill: false, decorate: true },
+    );
+    const b = (ref: string) => m.buildings.find((x) => x.ref === ref)!;
+    const tall = (x: ReturnType<typeof b>) => x.topZ - x.floorZ;
+    expect(b('osm:minaret').form).toBe('minaret');
+    expect(tall(b('osm:minaret'))).toBeCloseTo(18, 0);
+    // The mosque does not get a second, generated minaret.
+    expect(b('osm:mosque').minarets).toBe(0);
+    // A tagged height is the height, whatever the form's usual storeys.
+    expect(tall(b('osm:works'))).toBeCloseTo(10, 0);
+    expect(b('osm:clock').form).toBe('clock');
+    expect(b('osm:trt').form).toBe('telecom');
+    expect(b('osm:trt').towerHeight).toBe(120);
+    expect(tall(b('osm:trt'))).toBeLessThan(10);
+    const of = (k: string) => m.props.filter((p) => p.kind === k);
+    expect(of('transformer').length).toBeGreaterThan(0);
+    expect(of('gantry').length).toBeGreaterThan(0);
+    expect(of('stack')).toHaveLength(1);
+    expect((m.fences ?? []).some((f) => f.style === 'mesh' && f.height === 2.4)).toBe(true);
+    expect(
+      totalArea(m.surfaces.find((sf) => sf.kind === 'gravel')?.polygons ?? []),
+    ).toBeGreaterThan(1500);
+  });
+
+  it('reads a school building with buildings inside it as the school grounds', () => {
+    const building = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'building' as const,
+      geometry: {
+        type: 'Polygon' as const,
+        coordinates: [[...pts, pts[0]].map(([x, y]) => ll(x, y))],
+      },
+      tags,
+    });
+    const box = (x0: number, y0: number, x1: number, y1: number): [number, number][] => [
+      [x0, y0],
+      [x1, y0],
+      [x1, y1],
+      [x0, y1],
+    ];
+    const m = compileCity(
+      {
+        ...gridSource(),
+        features: [
+          // The whole lise campus mapped as one "building", its two blocks inside it.
+          building('osm:campus', box(-190, -190, -70, -70), { building: 'school' }),
+          building('osm:block1', box(-170, -170, -130, -140), { building: 'yes' }),
+          building('osm:block2', box(-120, -120, -90, -80), { building: 'yes' }),
+        ],
+      },
+      { infill: false, decorate: true },
+    );
+    expect(m.buildings.find((b) => b.ref === 'osm:campus')).toBeUndefined();
+    const blocks = m.buildings.filter((b) => b.ref.startsWith('osm:block'));
+    expect(blocks).toHaveLength(2);
+    expect(m.areas.some((a) => a.kind === 'school')).toBe(true);
+    // Its blocks are school buildings: public, no balconies.
+    for (const b of blocks) {
+      expect(b.use).toBe('public');
+      for (const f of b.facades)
+        expect(f.bays.filter((k) => k === 'balcony' || k === 'glazed-balcony')).toEqual([]);
+    }
+  });
+
+  it('lays out an airfield: runway paint, taxiway and apron, a fence, no infill', () => {
+    const area = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'area' as const,
+      geometry: {
+        type: 'Polygon' as const,
+        coordinates: [[...pts, pts[0]].map(([x, y]) => ll(x, y))],
+      },
+      tags,
+    });
+    const box = (x0: number, y0: number, x1: number, y1: number): [number, number][] => [
+      [x0, y0],
+      [x1, y0],
+      [x1, y1],
+      [x0, y1],
+    ];
+    const m = compileCity(
+      {
+        ...gridSource(),
+        osm: [],
+        features: [
+          area('osm:airport', box(-198, -198, 198, 198), { aeroway: 'aerodrome' }),
+          // The fixture is too small for a runway's paint (≥ 600 m): that is checked below.
+          area('osm:taxiway', box(-180, -60, 180, -37), { aeroway: 'taxiway' }),
+          area('osm:apron', box(-150, 40, 150, 150), { aeroway: 'apron' }),
+        ],
+      },
+      { infill: true, decorate: true },
+    );
+    expect(
+      totalArea(m.surfaces.find((sf) => sf.kind === 'airfield')?.polygons ?? []),
+    ).toBeGreaterThan(7000);
+    expect(
+      totalArea(m.surfaces.find((sf) => sf.kind === 'concrete')?.polygons ?? []),
+    ).toBeGreaterThan(25000);
+    expect(m.buildings.filter((b) => b.provenance.footprint !== 'observed')).toEqual([]);
+    expect((m.fences ?? []).some((f) => f.style === 'mesh' && f.height === 2.8)).toBe(true);
+    // Runway paint on a full-size runway (3000 × 45 m).
+    const runway = runwayMarkings([
+      {
+        id: 'r',
+        kind: 'runway',
+        polygon: {
+          outer: [
+            [-1500, -22.5],
+            [1500, -22.5],
+            [1500, 22.5],
+            [-1500, 22.5],
+          ],
+          holes: [],
+        },
+        provenance: 'observed',
+      },
+    ]);
+    expect(runway.filter((k) => k.kind === 'runway-center')).toHaveLength(1);
+    expect(runway.filter((k) => k.kind === 'runway-edge')).toHaveLength(2);
+    expect(runway.filter((k) => k.kind === 'runway-bar').length).toBeGreaterThan(20);
+  });
+
+  it('lays a tram line through a square, the paving giving way to its bed', () => {
+    const feature = (
+      ref: string,
+      kind: 'area' | 'road',
+      geometry: { type: 'Polygon' | 'LineString'; coordinates: unknown },
+      tags: Record<string, string>,
+    ) => ({ ref, source: 'osm', priority: 0, kind, geometry, tags }) as never;
+    const m = compileCity(
+      {
+        ...gridSource(),
+        features: [
+          feature(
+            'osm:square',
+            'area',
+            {
+              type: 'Polygon',
+              coordinates: [
+                [
+                  [-50, -50],
+                  [50, -50],
+                  [50, 50],
+                  [-50, 50],
+                  [-50, -50],
+                ].map(([x, y]) => ll(x, y)),
+              ],
+            },
+            { place: 'square' },
+          ),
+          feature(
+            'izbb:tram',
+            'road',
+            { type: 'LineString', coordinates: [ll(-50, 0), ll(50, 0)] },
+            { highway: 'tram' },
+          ),
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    expect(m.rails?.map((r) => r.kind)).toEqual(['tram']);
+    const paving = m.surfaces.filter((sf) => sf.kind === 'paving').flatMap((sf) => sf.polygons);
+    expect(paving.some((p) => pointInRing([0, 0], p.outer))).toBe(false);
+    expect(paving.some((p) => pointInRing([0, 20], p.outer))).toBe(true);
+  });
+
+  it('keeps a shore street and the ground under it at the land floor, above the sea', () => {
+    const road = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'road' as const,
+      geometry: { type: 'LineString' as const, coordinates: pts.map(([x, y]) => ll(x, y)) },
+      tags,
+    });
+    const [west, south] = ll(-400, -400);
+    const [east, north] = ll(400, 400);
+    // The elevation model puts the whole shore at sea level (0 m).
+    const m = compileCity(
+      {
+        ...gridSource(),
+        osm: [],
+        terrain: {
+          source: 'test',
+          west,
+          east,
+          north,
+          south,
+          cols: 9,
+          rows: 9,
+          heights: new Array(81).fill(0),
+        },
+        features: [
+          road(
+            'osm:shore',
+            [
+              [-200, 0],
+              [200, 0],
+            ],
+            { highway: 'secondary' },
+          ),
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    const shore = m.roads.find((r) => r.ref === 'osm:shore')!;
+    expect(Math.min(...shore.profile!)).toBeGreaterThanOrEqual(LAND_FLOOR - 0.01);
+    expect(terrainHeightAt(m.terrain, 0, 0)).toBeGreaterThanOrEqual(LAND_FLOOR - 0.01);
   });
 
   it('cuts an underpass trench with walls and portals, and only portals into a hill', () => {
@@ -553,6 +1099,128 @@ describe('compileCity', () => {
       mk.points.some(([x, y]) => Math.abs(x) < 120 && Math.abs(y) < 6),
     );
     expect(under).toHaveLength(0);
+  });
+
+  it('joins deck ends a metre or two apart in the source at one height', () => {
+    const road = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'road' as const,
+      geometry: { type: 'LineString' as const, coordinates: pts.map(([x, y]) => ll(x, y)) },
+      tags,
+    });
+    const bridge = { highway: 'footway', bridge: 'yes', layer: '1' };
+    const m = compileCity(
+      {
+        ...gridSource(),
+        osm: [],
+        features: [
+          road(
+            'osm:a',
+            [
+              [-60, 0],
+              [-1, 0],
+            ],
+            bridge,
+          ),
+          // Drawn 1.5 m on from where the first piece stops (no shared node).
+          road(
+            'osm:b',
+            [
+              [0.5, 0],
+              [8, 0],
+            ],
+            bridge,
+          ),
+          // Steps up to the first piece's end at an angle: that end stays up.
+          road(
+            'osm:s',
+            [
+              [-1, 0],
+              [-1, -6],
+            ],
+            { highway: 'steps', bridge: 'yes', layer: '1' },
+          ),
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    const vertex = (x: number) =>
+      m.bridges
+        .flatMap((br) => br.path)
+        .reduce((a, b) =>
+          Math.abs(b[0] - x) + Math.abs(b[1]) < Math.abs(a[0] - x) + Math.abs(a[1]) ? b : a,
+        );
+    expect(Math.abs(vertex(-1)[2] - vertex(0.5)[2])).toBeLessThan(0.05);
+  });
+
+  it('meets at one height where decks of different layers join end to end', () => {
+    const road = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'road' as const,
+      geometry: { type: 'LineString' as const, coordinates: pts.map(([x, y]) => ll(x, y)) },
+      tags,
+    });
+    const m = compileCity(
+      {
+        ...gridSource(),
+        osm: [],
+        features: [
+          road(
+            'osm:in',
+            [
+              [-195, 0],
+              [-150, 0],
+            ],
+            { highway: 'trunk' },
+          ),
+          // The layer tag changes at the shared node (x = 0): not one chain.
+          road(
+            'osm:v1',
+            [
+              [-150, 0],
+              [0, 0],
+            ],
+            { highway: 'trunk', bridge: 'yes', layer: '1' },
+          ),
+          road(
+            'osm:v2',
+            [
+              [0, 0],
+              [150, 0],
+            ],
+            { highway: 'trunk', bridge: 'yes', layer: '2' },
+          ),
+          road(
+            'osm:out',
+            [
+              [150, 0],
+              [195, 0],
+            ],
+            { highway: 'trunk' },
+          ),
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    expect(m.bridges).toHaveLength(2);
+    // Height of each deck at its vertex on the joint.
+    const atJoint = m.bridges.map((br) => {
+      const q = br.path.reduce((a, b) => (Math.hypot(b[0], b[1]) < Math.hypot(a[0], a[1]) ? b : a));
+      return q[2];
+    });
+    expect(Math.abs(atJoint[0] - atJoint[1])).toBeLessThan(0.05);
+    // Both still come down to the ground road at their outer ends.
+    const ground = terrainHeightAt(m.terrain, -150, 0);
+    for (const br of m.bridges) {
+      const outer = br.path.reduce((a, b) =>
+        Math.hypot(b[0], b[1]) > Math.hypot(a[0], a[1]) ? b : a,
+      );
+      expect(outer[2] - ground).toBeLessThan(1);
+    }
   });
 
   it('keeps piers off the road underneath, props out of the deck, and meets a slip road at deck height', () => {
@@ -1031,6 +1699,37 @@ describe.skipIf(!existsSync(FIXTURE))('Zonguldak fixture', () => {
     // Dense blocks get hard ground.
     const concrete = m.surfaces.find((sf) => sf.kind === 'concrete');
     expect(totalArea(concrete?.polygons ?? [])).toBeGreaterThan(1000);
+  }, 180_000);
+
+  it('hangs no balcony over a carriageway', () => {
+    const m = compiledFixture();
+    const roads = new RoadIndex(m.roads.filter((r) => r.grade === 'ground' && isVehicular(r.cls)));
+    let balconies = 0;
+    const over: string[] = [];
+    for (const b of m.buildings) {
+      const ring = b.footprint.outer;
+      for (const f of b.facades) {
+        const a = ring[f.edge];
+        const c = ring[(f.edge + 1) % ring.length];
+        const len = Math.hypot(c[0] - a[0], c[1] - a[1]);
+        const n: [number, number] = [-(c[1] - a[1]) / len, (c[0] - a[0]) / len];
+        const kinds = new Set(f.bays.map((k, i) => [i, k] as const));
+        for (const [, i, k] of f.cells ?? []) kinds.add([i, k]);
+        kinds.forEach(([i, k]) => {
+          if (k !== 'balcony' && k !== 'glazed-balcony') return;
+          balconies++;
+          const t = (i + 0.5) / f.bays.length;
+          const mid: [number, number] = [a[0] + (c[0] - a[0]) * t, a[1] + (c[1] - a[1]) * t];
+          // The balcony's outer edge, on whichever side of the wall is outdoors.
+          const s = pointInRing([mid[0] + n[0] * 0.3, mid[1] + n[1] * 0.3], ring) ? -1 : 1;
+          const tip: [number, number] = [mid[0] + s * n[0] * 1.3, mid[1] + s * n[1] * 1.3];
+          const hit = roads.nearest(tip, 20);
+          if (hit && hit.d < hit.road.width / 2) over.push(b.id);
+        });
+      }
+    }
+    expect(balconies).toBeGreaterThan(500);
+    expect([...new Set(over)]).toEqual([]);
   }, 180_000);
 
   it('places no street furniture on a carriageway and no park tree in a street', () => {
