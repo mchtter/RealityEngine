@@ -212,13 +212,17 @@ export class CityTile {
     return this.buildingsById.get(id);
   }
 
-  /** Near sub-tiles get full 3D detail; far ones show shells with shader windows. */
-  updateDetail(camera: THREE.Vector3): void {
+  /**
+   * Near sub-tiles get full 3D detail; far ones show shells with shader
+   * windows. Distances count the camera's `height` above the ground: from
+   * high up, the tile below is far too (detail levels, detail-level.ts).
+   */
+  updateDetail(camera: THREE.Vector3, height = 0): void {
     this.local.copy(camera).sub(this.group.position);
     const b = this.summary.bounds;
     const dx = Math.max(b.minX - this.local.x, 0, this.local.x - b.maxX);
     const dz = Math.max(-b.maxY - this.local.z, 0, this.local.z + b.minY);
-    const tileDistance = Math.hypot(dx, dz);
+    const tileDistance = Math.hypot(dx, dz, height);
     const furniture = tileDistance < FURNITURE_RANGE;
     const small = tileDistance < SMALL_FURNITURE_RANGE;
     const inRange = (m: THREE.Mesh) => (SMALL_FURNITURE.test(m.name) ? small : furniture);

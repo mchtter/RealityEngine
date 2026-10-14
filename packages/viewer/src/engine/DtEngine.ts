@@ -33,6 +33,7 @@ import * as THREE from 'three/webgpu';
 import { CameraRig, type DtCameraMode } from './camera-modes';
 import { buildCityStates, disposeCityStates } from './city-states';
 import { CityTile, type DtInspect, FAR_SHADOW_LAYER, type TileLevel } from './city-tile';
+import { type DetailLevel, LEVEL_DWELL_MS, nextLevel } from './detail-level';
 import { toThree } from './geom';
 import { GroundAtlas } from './ground-atlas';
 import { HorizonLayer } from './horizon';
@@ -142,6 +143,8 @@ export interface DtEngineStats {
   triangles: number;
   /** Average CPU time of render() per frame (ms). */
   cpuMsPerFrame: number;
+  /** Detail level (1 street … 5 city). */
+  level: DetailLevel;
 }
 
 /** Inspect result with geographic position (for the UI). */
@@ -603,7 +606,8 @@ export class DtEngine {
     if (this.mode !== 'showcase') tile.setMode(this.mode);
     if (this.showFixes) tile.setShowFixes(true);
     if (this.underground.size) tile.setUnderground(this.underground);
-    tile.updateDetail(this.rig.lodEye(this.lodEye));
+    const eye = this.rig.lodEye(this.lodEye);
+    tile.updateDetail(eye, Math.max(0, eye.y - this.heightAt(eye.x, -eye.z)));
     this.tiles.set(key, tile);
     this.scene.add(tile.group);
     this.placeBackdrop();
@@ -885,9 +889,37 @@ export class DtEngine {
     return [e - this.world.originE, n - this.world.originN];
   }
 
+  private level: DetailLevel = 3;
+  private levelCandidate: { level: DetailLevel; since: number } | null = null;
+  private readonly levelListeners = new Set<(level: DetailLevel) => void>();
+
+  /** Detail level (L1 street … L5 city) from the camera's height above the ground. */
+  get detailLevel(): DetailLevel {
+    return this.level;
+  }
+
+  /** Subscribes to detail level changes (the tile plan follows them). */
+  onDetailLevel(cb: (level: DetailLevel) => void): () => void {
+    this.levelListeners.add(cb);
+    return () => this.levelListeners.delete(cb);
+  }
+
   private updateDetail(): void {
     const eye = this.rig.lodEye(this.lodEye);
-    for (const tile of this.tiles.values()) tile.updateDetail(eye);
+    // Height above the ground: detail falls off with the 3D distance, and
+    // the level (tiles to load) follows it, held LEVEL_DWELL_MS first.
+    const height = Math.max(0, eye.y - this.heightAt(eye.x, -eye.z));
+    const next = nextLevel(height, this.level);
+    const now = performance.now();
+    if (next === this.level) this.levelCandidate = null;
+    else if (!this.levelCandidate || this.levelCandidate.level !== next)
+      this.levelCandidate = { level: next, since: now };
+    else if (now - this.levelCandidate.since >= LEVEL_DWELL_MS) {
+      this.level = next;
+      this.levelCandidate = null;
+      this.levelListeners.forEach((cb) => cb(next));
+    }
+    for (const tile of this.tiles.values()) tile.updateDetail(eye, height);
   }
 
   /** Camera mode: map orbit, isometric, street level, free flight (all with WASD). */
@@ -2059,6 +2091,7 @@ export class DtEngine {
         drawCalls: info.drawCalls,
         triangles: info.triangles,
         cpuMsPerFrame: Math.round((this.cpuMs / Math.max(1, this.frames)) * 10) / 10,
+        level: this.level,
       });
       this.frames = 0;
       this.cpuMs = 0;
