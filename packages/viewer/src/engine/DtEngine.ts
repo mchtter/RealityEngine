@@ -6,6 +6,7 @@ import {
   utmInverse,
   utmZoneOf,
 } from '@opentwin/city-core';
+import type { LiveFeedChange, LiveObjectView } from '@opentwin/plugin-sdk';
 import type { CityObjectState, CityPlacement } from '@opentwin/shared';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
@@ -38,6 +39,7 @@ import { toThree } from './geom';
 import { GroundAtlas } from './ground-atlas';
 import { HorizonLayer } from './horizon';
 import { openLandAlbedo } from './landcover';
+import { LiveObjectLayer, type LiveRef, type LiveScreen } from './live-objects';
 import {
   type DtMaterials,
   SCENARIO_ALPHA,
@@ -161,6 +163,8 @@ export interface DtEngineEvents {
   onUtilities?: (stats: TileSummary['utilities']) => void;
   /** A placed model was clicked (null: a click elsewhere). */
   onSelectPlacement?: (id: string | null) => void;
+  /** A live object (plugin feed) was clicked (null: a click elsewhere). */
+  onSelectLive?: (sel: LiveRef | null) => void;
 }
 
 /** What the transform gizmo does to a placed model (W / E / R, as in Unreal). */
@@ -461,6 +465,7 @@ export class DtEngine {
     backdrop.name = 'backdrop';
     this.scene.add(backdrop);
     this.scene.add(this.vehicles.group);
+    this.scene.add(this.live.group);
     this.scene.add(this.placements.group);
     this.sea = backdrop;
 
@@ -574,10 +579,12 @@ export class DtEngine {
       if (!this.world) {
         this.world = { zone: frame.zone, originE: frame.originE, originN: frame.originN };
         this.updateClimate();
+        this.live.relocate();
       } else if (this.tiles.size === 0) {
         // Floating origin: after a long jump every old tile is gone; re-anchor the
         // world at this tile so coordinates stay small (float32 on the GPU).
         this.rebase(frame);
+        this.live.relocate();
       } else if (frame.zone !== this.world.zone) {
         return false;
       }
@@ -616,6 +623,7 @@ export class DtEngine {
     if (this.cityStates.length) this.rebuildCityStates();
     if (this.placementList.length) this.rebuildPlacements();
     if (this.vehicleList.length) this.setVehicles(this.vehicleList);
+    this.live.groundChanged();
     if (!this.placed) {
       this.placed = true;
       const [ox, oy] = this.offsetOf(payload.summary);
@@ -750,6 +758,7 @@ export class DtEngine {
     this.scenarioCounts.delete(key);
     this.scenarioHits.delete(key);
     this.emitUtilities();
+    this.live.groundChanged();
   }
 
   /**
@@ -1498,6 +1507,7 @@ export class DtEngine {
 
   /** Moves camera and target with the followed vehicle (same view, new place). */
   private follow(dt: number): void {
+    this.followLiveObject(dt);
     if (!this.followId || this.fly) return;
     const p = this.vehicles.scenePositionOf(this.followId);
     if (!p) {
@@ -1535,6 +1545,128 @@ export class DtEngine {
       },
     });
     this.scene.add(this.cityStatesGroup);
+  }
+
+  // ─── Live objects (plugin feeds) ────────────────────────────────────────
+
+  private readonly live = new LiveObjectLayer();
+  /** Live object the camera keeps following, and where it was last frame. */
+  private followLive: LiveRef | null = null;
+  private followLiveAt: THREE.Vector3 | null = null;
+
+  /**
+   * Replaces every live object (a fresh snapshot of all feeds). `staleMs`:
+   * the feed's stale time (objects fade towards it); `heard`: when an object
+   * was last heard of (ms).
+   */
+  setLiveObjects(
+    feeds: {
+      pluginId: string;
+      feedId: string;
+      staleMs: number;
+      objects: LiveObjectView[];
+      heard?: (id: string) => number | undefined;
+    }[],
+  ): void {
+    this.live.setAll(feeds);
+  }
+
+  /** Applies one change of a live feed (moves, adds, removes objects). */
+  applyLiveChange(change: LiveFeedChange, staleMs: number): void {
+    this.live.apply(change, staleMs);
+  }
+
+  /** Highlights a live object (null: none); its label follows `onLiveScreen`. */
+  selectLive(sel: LiveRef | null): void {
+    this.live.select(sel);
+  }
+
+  /** Screen position (px in the canvas) of the selected live object's label anchor. */
+  onLiveScreen(cb: (p: LiveScreen) => void): () => void {
+    return this.live.onScreen(cb);
+  }
+
+  /**
+   * Flies to a live object and keeps following it: an aircraft is seen from
+   * behind and above along its course, anything else from the current side.
+   * An object not in the scene yet (outside the loaded world) is flown to by
+   * its position `at` (the tiles there load). False when it could not be found.
+   */
+  focusLive(sel: LiveRef, at?: { lon: number; lat: number }): boolean {
+    const st = this.live.stateOf(sel);
+    if (!st) {
+      if (!at) return false;
+      const pad = 0.002;
+      this.flyToBounds([at.lon - pad, at.lat - pad, at.lon + pad, at.lat + pad]);
+      return true;
+    }
+    if (this.rig.mode !== 'orbit') {
+      this.flyTo(st.pos.x, -st.pos.z, 80);
+      return true;
+    }
+    const target = st.pos.clone();
+    let position: THREE.Vector3;
+    if (st.airborne) {
+      // Behind and a little above, looking along the course.
+      const h = st.heading * DEG;
+      const p = 14 * DEG;
+      const dist = 140;
+      const forward = new THREE.Vector3(Math.sin(h), 0, -Math.cos(h));
+      position = target
+        .clone()
+        .addScaledVector(forward, -dist * Math.cos(p))
+        .add(new THREE.Vector3(0, dist * Math.sin(p), 0));
+    } else {
+      const dist = {
+        vessel: 220,
+        rail: 160,
+        bus: 70,
+        cctv: 45,
+        parking: 45,
+        marker: 90,
+        aircraft: 120,
+      }[st.kind];
+      const dir = this.camera.position.clone().sub(this.controls.target).normalize();
+      if (dir.y < 0.45) dir.y = 0.45;
+      dir.normalize();
+      position = target.clone().add(dir.multiplyScalar(dist));
+    }
+    this.controls.maxDistance = Math.max(this.controls.maxDistance, position.distanceTo(target));
+    this.fly = {
+      from: [this.camera.position.clone(), this.controls.target.clone()],
+      to: [position, target],
+      t: 0,
+    };
+    this.followId = null;
+    this.followLive = sel;
+    this.followLiveAt = st.pos.clone();
+    return true;
+  }
+
+  /**
+   * Carries camera and target along with the followed live object: its move
+   * exactly (the view keeps its angle), plus an easing of the target onto it.
+   * During the fly-to the landing point moves with it.
+   */
+  private followLiveObject(dt: number): void {
+    if (!this.followLive) return;
+    const st = this.live.stateOf(this.followLive);
+    if (!st || !this.followLiveAt) {
+      this.followLive = null;
+      this.followLiveAt = null;
+      return;
+    }
+    const moved = st.pos.clone().sub(this.followLiveAt);
+    this.followLiveAt.copy(st.pos);
+    if (this.fly) {
+      this.fly.to[0].add(moved);
+      this.fly.to[1].add(moved);
+      return;
+    }
+    const k = 1 - Math.exp(-dt * 3);
+    const delta = moved.add(st.pos.clone().sub(this.controls.target).multiplyScalar(k));
+    this.controls.target.add(delta);
+    this.camera.position.add(delta);
   }
 
   private placePin: PlacePin | null = null;
@@ -1956,6 +2088,7 @@ export class DtEngine {
     this.placePin?.dispose();
     this.pinListeners.clear();
     this.vehicles.dispose();
+    this.live.dispose();
     this.placements.dispose();
     this.groundAtlas.dispose();
     this.horizon?.dispose();
@@ -2005,6 +2138,17 @@ export class DtEngine {
     }
     if (controlsOwnCamera) this.controls.update();
     this.updateDetail();
+    this.live.tick(
+      Math.min(dt, 0.25),
+      this.camera,
+      this.container.clientWidth,
+      this.container.clientHeight,
+      {
+        worldOf: (lon, lat) => this.worldOf(lon, lat),
+        heightAt: (x, y) => this.heightAt(x, y),
+        surfaceAt: (x, y) => this.surfaceAt(x, y),
+      },
+    );
 
     // Near plane follows the camera's height above ground: depth precision
     // scales with it, and with a fixed 1 m near plane ground layers a few cm
@@ -2114,8 +2258,10 @@ export class DtEngine {
     this.pointerDown = { x: e.clientX, y: e.clientY };
     // The gizmo handles its own pointer first (listening since before this one).
     this.downOnGizmo = !!this.gizmo.object && this.gizmo.axis !== null;
-    // Taking the camera ends following a vehicle.
+    // Taking the camera ends following a vehicle / live object.
     this.followId = null;
+    this.followLive = null;
+    this.followLiveAt = null;
   };
 
   private readonly onPointerUp = (e: PointerEvent) => {
@@ -2140,6 +2286,21 @@ export class DtEngine {
       resolve(this.groundPointAt(ray));
       return;
     }
+    // Live objects first: small and moving, picked on the screen (nearest within ~12 px).
+    const live = this.live.pick(
+      this.camera,
+      rect.width,
+      rect.height,
+      e.clientX - rect.left,
+      e.clientY - rect.top,
+    );
+    if (live) {
+      this.events.onSelect?.(null);
+      this.events.onSelectPlacement?.(null);
+      this.events.onSelectLive?.(live);
+      return;
+    }
+    this.events.onSelectLive?.(null);
     let best: { d: number; b: BuildingInfo } | null = null;
     for (const tile of this.tiles.values()) {
       const hit = tile.pick(ray);
