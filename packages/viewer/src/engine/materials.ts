@@ -8,12 +8,15 @@ import {
   dFdx,
   dFdy,
   color,
+  cos,
   dot,
   float,
   floor,
+  Fn,
   fract,
   fwidth,
   hash,
+  If,
   instanceIndex,
   int,
   ivec2,
@@ -23,6 +26,7 @@ import {
   max,
   min,
   mix,
+  mx_cell_noise_float,
   mx_noise_float,
   normalLocal,
   normalize,
@@ -258,6 +262,39 @@ function decal(material: THREE.Material, factor: number): void {
   material.polygonOffsetFactor = factor;
   material.polygonOffsetUnits = factor;
 }
+
+// ─── Street-level wear of the ground (L1) ───────────────────────────────────
+// Cracks, repairs, potholes, broken pavers and concrete spalls, all procedural
+// and deterministic from the world position. Only drawn near the camera: the
+// fades below are a pixel's ground footprint in metres (the longer side of the
+// pixel on the ground), detail fully on below the first value, gone above the
+// second — far views, where it would only shimmer, keep the plain surfaces.
+/** Hairline cracks, paver cracks, weeds in joints. */
+const WEAR_FINE_PX = [0.025, 0.07] as const;
+/** Repair patches, potholes, oil stains, concrete spalls. */
+const WEAR_COARSE_PX = [0.12, 0.4] as const;
+/** Relief of the wear (potholes, sunken pavers, crack grooves) in the ground normal. */
+const WEAR_BUMP = 0.35;
+/** View distance (m) past which the wear relief is flat (bumpedNormal fade). */
+const WEAR_BUMP_FAR = 40;
+/** Asphalt: one random repair patch / pothole / oil stain slot per cell of this size (m). */
+const ASPHALT_WEAR_CELL = 8;
+/** Asphalt: share of cells with a repair patch, a pothole, an oil stain. */
+const ASPHALT_PATCH_SHARE = 0.07;
+const ASPHALT_POTHOLE_SHARE = 0.02;
+const ASPHALT_OIL_SHARE = 0.1;
+/**
+ * Pavers: base share of missing, sunken (cumulative), displaced (cumulative)
+ * and cracked stones; scaled ×0.3…×2.5 by a dirt / wear noise so defects cluster.
+ */
+const PAVER_MISSING = 0.004;
+const PAVER_SUNKEN = 0.012;
+const PAVER_DISPLACED = 0.045;
+const PAVER_CRACKED = 0.03;
+/** Concrete bays: share with a corner crack, a crack across, spalled joint edges. */
+const BAY_CORNER_CRACK = 0.14;
+const BAY_MID_CRACK = 0.06;
+const BAY_SPALL = 0.22;
 
 export function createMaterials(): DtMaterials {
   const night = uniform(0);
@@ -611,14 +648,152 @@ export function createMaterials(): DtMaterials {
 
   // ─── Ground ───────────────────────────────────────────────────────────────
   const wp = positionWorld;
+
+  // Street-level wear (see WEAR_*): each worn surface has a `…Wear(on)` that
+  // returns its colour (xyz) and a relief height (w, for wearNormal). The work
+  // sits behind a dynamic branch on `on` × the near fade, so far fragments and
+  // other surface kinds of the merged ground skip it. Derivatives are taken
+  // here, outside any branch (WGSL derivative uniformity); inside the branches
+  // only toVar'd values from the function's top are reused.
+  type FloatNode = ReturnType<typeof float>;
+  type Vec4Node = ReturnType<typeof vec4>;
+  type Wear = (on: FloatNode) => Vec4Node;
+  const pxA = dFdx(wp).length();
+  const pxB = dFdy(wp).length();
+  /** Pixel footprint on the ground (m): geometric mean, the width lines are filtered over. */
+  const pxIso = pxA.mul(pxB).sqrt();
+  /** Longer side of the footprint (grazing views stretch it): drives the fades. */
+  const pxMax = max(pxA, pxB);
+  const fineNear = oneMinus(smoothstep(WEAR_FINE_PX[0], WEAR_FINE_PX[1], pxMax));
+  const coarseNear = oneMinus(smoothstep(WEAR_COARSE_PX[0], WEAR_COARSE_PX[1], pxMax));
+  /**
+   * Coverage of a line of half-width `w` (m) at distance `d` (m), filtered
+   * over `aa` (m). Darkness is conserved: a line thinner than a pixel turns
+   * fainter instead of flickering.
+   */
+  const lineAt = (d: FloatNode, w: number, aa: FloatNode) =>
+    oneMinus(smoothstep(float(w), aa.add(w), d)).mul(float(2 * w).div(aa.add(2 * w)));
+  const wearNormal = (height: FloatNode) => bumpedNormal(height, WEAR_BUMP, WEAR_BUMP_FAR);
+  /** Rough crack-tar seal / patch seam colour (darker than any asphalt). */
+  const sealColor = vec3(0.045, 0.045, 0.048);
+
   const asphalt = new THREE.MeshStandardNodeMaterial({ roughness: 0.93, metalness: 0 });
-  asphalt.colorNode = vec3(0.13, 0.135, 0.14)
+  const asphaltBase = vec3(0.13, 0.135, 0.14)
     .mul(
       float(0.88)
         .add(mx_noise_float(wp.mul(0.45)).mul(0.12))
         .add(mx_noise_float(wp.mul(9)).mul(0.05)),
     )
     .add(vec3(0.05).mul(smoothstep(0.35, 0.8, mx_noise_float(wp.mul(0.08)))));
+  // Asphalt wear. Per 8 m cell (ASPHALT_WEAR_CELL) one slot each for a repair
+  // patch (a re-laid rectangle 0.8–3 × 0.6–1.8 m at a random angle, fresh-dark
+  // or faded-grey, tar-sealed seam), a pothole (r 0.14–0.42 m, ragged rim) and
+  // an oil stain (r 0.25–0.7 m). Hairline cracks: long meandering cracks (zero
+  // lines of a slow noise, a few metres apart) in some districts, some of them
+  // sealed with tar; alligator (fatigue) cracking — two crossing sets of noise
+  // zero lines, ~0.2–0.4 m blocks — in other districts. Most asphalt stays clean.
+  const asphaltWear: Wear = (on) =>
+    Fn(() => {
+      const out = vec4(asphaltBase, 0).toVar();
+      const coarse = coarseNear.mul(on).toVar();
+      const fine = fineNear.mul(on).toVar();
+      const aa = pxIso.toVar();
+      const p = wp.xz.toVar();
+      If(coarse.greaterThan(0.001), () => {
+        const cell = floor(p.div(ASPHALT_WEAR_CELL));
+        const lp = p.sub(cell.mul(ASPHALT_WEAR_CELL));
+        const r = (k: number) => mx_cell_noise_float(vec3(cell, k));
+        const grit = mx_noise_float(p.mul(9)).toVar();
+        const ragged = mx_noise_float(p.mul(3.1).add(5.3)).toVar();
+        const col = out.xyz.toVar();
+        const height = float(0).toVar();
+        // Repair patch (rotated box; signed distance < 0 inside, metres).
+        const ang = r(1).mul(Math.PI);
+        const ca = cos(ang);
+        const sa = sin(ang);
+        const q0 = lp.sub(
+          vec2(r(2), r(3))
+            .mul(ASPHALT_WEAR_CELL - 3.6)
+            .add(1.8),
+        );
+        const qx = abs(q0.x.mul(ca).add(q0.y.mul(sa)));
+        const qy = abs(q0.y.mul(ca).sub(q0.x.mul(sa)));
+        const box = max(qx.sub(r(4).mul(1.1).add(0.4)), qy.sub(r(5).mul(0.6).add(0.3)));
+        const hasPatch = step(r(0), ASPHALT_PATCH_SHARE).mul(coarse);
+        const inPatch = oneMinus(smoothstep(aa.negate(), aa, box)).mul(hasPatch);
+        const patchTone = mix(float(0.74), float(1.2), step(0.5, r(6))).mul(grit.mul(0.06).add(1));
+        col.assign(mix(col, col.mul(patchTone), inPatch));
+        col.assign(mix(col, sealColor, lineAt(abs(box), 0.012, aa).mul(hasPatch).mul(0.75)));
+        height.addAssign(inPatch.mul(0.12));
+        // Pothole: a ragged bowl, dark broken bottom, a rim of loose lighter chippings.
+        const holeR = r(10).mul(0.28).add(0.14);
+        const hd = lp
+          .sub(
+            vec2(r(8), r(9))
+              .mul(ASPHALT_WEAR_CELL - 2)
+              .add(1),
+          )
+          .length()
+          .div(holeR)
+          .add(ragged.mul(0.3));
+        const hasHole = step(r(7), ASPHALT_POTHOLE_SHARE).mul(coarse);
+        const hole = oneMinus(smoothstep(oneMinus(aa.div(holeR)).sub(0.04), float(1), hd)).mul(
+          hasHole,
+        );
+        const rim = smoothstep(0.8, 1, hd)
+          .mul(oneMinus(smoothstep(1, 1.35, hd)))
+          .mul(hasHole);
+        col.assign(mix(col, col.mul(grit.mul(0.25).add(0.45)), hole));
+        col.assign(col.mul(rim.mul(0.18).add(1)));
+        height.subAssign(hole.mul(oneMinus(hd.mul(hd)).max(0).mul(0.8).add(0.2)));
+        // Oil stain: a soft dark ellipse with a ragged edge (same angle as the patch slot).
+        const o0 = lp.sub(
+          vec2(r(12), r(13))
+            .mul(ASPHALT_WEAR_CELL - 2)
+            .add(1),
+        );
+        const od = vec2(o0.x.mul(ca).add(o0.y.mul(sa)), o0.y.mul(ca).sub(o0.x.mul(sa)).mul(1.6))
+          .length()
+          .div(r(14).mul(0.45).add(0.25))
+          .add(ragged.mul(0.25));
+        const oil = oneMinus(smoothstep(0.3, 1, od))
+          .mul(step(r(11), ASPHALT_OIL_SHARE))
+          .mul(coarse);
+        col.assign(col.mul(oneMinus(oil.mul(0.38))));
+        // Hairline cracks (near only).
+        If(fine.greaterThan(0.001), () => {
+          // Districts: long cracks where `district` is high (sealed where higher
+          // still), alligator cracking where it is low; the middle stays clean.
+          const district = mx_noise_float(p.mul(0.045).add(11)).mul(0.5).add(0.5).toVar();
+          const longCracks = smoothstep(0.6, 0.64, district);
+          const sealed = smoothstep(0.69, 0.72, district);
+          // Distance to a noise zero line ≈ |n| / (frequency × ~1.5 mean slope).
+          const dLong = abs(mx_noise_float(p.mul(0.2).add(3.7)).add(grit.mul(0.012))).div(0.3);
+          const crack = lineAt(dLong, 0.003, aa).mul(longCracks).toVar();
+          const seal = lineAt(dLong, 0.016, aa).mul(sealed);
+          const fatigue = oneMinus(smoothstep(0.3, 0.34, district)).toVar();
+          If(fatigue.greaterThan(0.001), () => {
+            const a1 = abs(mx_noise_float(p.mul(2.4)).add(grit.mul(0.03))).div(2.4 * 1.5);
+            const a2 = abs(mx_noise_float(p.mul(3.9).add(17)).add(grit.mul(0.03))).div(3.9 * 1.5);
+            crack.assign(
+              max(crack, max(lineAt(a1, 0.0025, aa), lineAt(a2, 0.0025, aa)).mul(fatigue)),
+            );
+            // Fatigued asphalt is a little darker and more ravelled.
+            col.assign(col.mul(oneMinus(fatigue.mul(fine).mul(0.07))));
+          });
+          col.assign(mix(col, sealColor, seal.mul(fine).mul(0.8)));
+          col.assign(col.mul(oneMinus(crack.mul(fine).mul(0.72))));
+          height.subAssign(crack.mul(fine).mul(0.5));
+        });
+        out.assign(vec4(col, height));
+      });
+      return out;
+    })();
+  {
+    const w = asphaltWear(float(1));
+    asphalt.colorNode = w.xyz;
+    asphalt.normalNode = wearNormal(w.w);
+  }
   decal(asphalt, -1);
 
   // Sidewalks: interlocking concrete pavers (kilit taşı), 20 × 10 cm in a
@@ -626,6 +801,7 @@ export function createMaterials(): DtMaterials {
   // laid grey, grey and red, or mostly red; dirt and wear. Joints fade out
   // with distance (fwidth) instead of shimmering.
   const sidewalk = new THREE.MeshStandardNodeMaterial({ roughness: 0.88, metalness: 0 });
+  let sidewalkWear: Wear;
   {
     const v = wp.z.div(0.1);
     const row = floor(v);
@@ -660,7 +836,84 @@ export function createMaterials(): DtMaterials {
     const stone = mix(grey, red, isRed);
     const dirt = mx_noise_float(wp.mul(0.45)).mul(0.5).add(0.5);
     const worn = mix(float(0.84), float(1.04), dirt);
-    sidewalk.colorNode = mix(stone.mul(worn), vec3(0.33, 0.31, 0.28), joint.mul(0.85));
+    const sidewalkBase = mix(stone.mul(worn), vec3(0.33, 0.31, 0.28), joint.mul(0.85));
+    // Paver wear, stone by stone (faded with the joints): a few missing stones
+    // (bedding sand in a shadowed hole), sunken ones (darker, shadowed edge),
+    // displaced ones (tone shift, tilted, one edge in shadow), cracked ones (a
+    // straight break across the stone, the halves a little apart in tone), and
+    // weeds in the joints of the dirtiest stretches. Defects cluster where the
+    // dirt noise is high (tree roots, cars parked on the kerb).
+    sidewalkWear = (on) =>
+      Fn(() => {
+        const out = vec4(sidewalkBase, 0).toVar();
+        const gate = fade.mul(on).toVar();
+        const fine = fineNear.mul(on).toVar();
+        const aa = pxIso.toVar();
+        const pf = vec2(fu, fv).toVar();
+        const pid = vec2(floor(u), row).toVar();
+        const jointAt = joint.toVar();
+        const dirtAt = dirt.toVar();
+        If(gate.greaterThan(0.001), () => {
+          const r = (k: number) => mx_cell_noise_float(vec3(pid, k + 20));
+          const col = out.xyz.toVar();
+          const height = float(0).toVar();
+          const dens = mix(float(0.3), float(2.5), smoothstep(0.45, 0.8, dirtAt));
+          const pick = r(0).div(dens).toVar();
+          const missing = step(pick, PAVER_MISSING);
+          const sunken = step(pick, PAVER_SUNKEN).sub(missing);
+          const displaced = step(pick, PAVER_DISPLACED).sub(step(pick, PAVER_SUNKEN));
+          const cracked = step(oneMinus(dens.mul(PAVER_CRACKED)), r(0)).mul(fine);
+          // Stone-local metres from its centre, and to its nearest edge.
+          const lx = pf.x.sub(0.5).mul(0.2);
+          const ly = pf.y.sub(0.5).mul(0.1);
+          const edge = min(abs(lx).negate().add(0.1), abs(ly).negate().add(0.05)).toVar();
+          const rimShade = smoothstep(0, 0.03, edge);
+          // Missing: bedding sand, shadowed under the neighbours' edges.
+          const sand = vec3(0.41, 0.36, 0.28).mul(r(5).mul(0.15).add(0.85));
+          col.assign(mix(col, sand.mul(mix(float(0.45), float(1), rimShade)), missing.mul(gate)));
+          height.subAssign(missing.mul(smoothstep(0, 0.012, edge)));
+          // Sunken: darker, the edge in shadow.
+          col.assign(
+            col.mul(oneMinus(sunken.mul(gate).mul(oneMinus(rimShade.mul(0.5)).mul(0.36)))),
+          );
+          height.subAssign(sunken.mul(smoothstep(0, 0.01, edge)).mul(0.5));
+          // Displaced: its own tone, tilted across, the raised edge's shadow side dark.
+          const tilt = step(0.5, r(2)).mul(2).sub(1);
+          const shadowSide = mix(pf.y, oneMinus(pf.y), step(0.5, r(2))).mul(0.1);
+          col.assign(
+            col.mul(
+              mix(
+                float(1),
+                r(1)
+                  .mul(0.24)
+                  .add(0.88)
+                  .mul(oneMinus(oneMinus(smoothstep(0, 0.012, shadowSide)).mul(0.3))),
+                displaced.mul(gate),
+              ),
+            ),
+          );
+          height.addAssign(displaced.mul(ly.mul(tilt).mul(6)));
+          // Cracked: a straight break through the stone at a random angle.
+          const ang = r(3).mul(Math.PI);
+          const side = lx
+            .mul(cos(ang))
+            .add(ly.mul(sin(ang)))
+            .sub(r(4).sub(0.5).mul(0.04));
+          const crack = lineAt(abs(side), 0.0015, aa).mul(cracked);
+          col.assign(col.mul(step(0, side).mul(0.06).sub(0.03).mul(cracked).add(1)));
+          col.assign(col.mul(oneMinus(crack.mul(0.7))));
+          height.subAssign(crack.mul(0.4));
+          // Weeds: green tufts in some joints of the dirtiest stretches.
+          const weedy = smoothstep(0.68, 0.76, dirtAt).mul(step(r(6), 0.4));
+          const weed = mix(vec3(0.2, 0.3, 0.09), vec3(0.33, 0.37, 0.14), r(7));
+          col.assign(mix(col, weed, jointAt.mul(weedy).mul(fine).mul(0.9)));
+          out.assign(vec4(col, height.mul(gate)));
+        });
+        return out;
+      })();
+    const w = sidewalkWear(float(1));
+    sidewalk.colorNode = w.xyz;
+    sidewalk.normalNode = wearNormal(w.w);
     sidewalk.roughnessNode = mix(float(0.86), float(0.95), joint);
   }
   decal(sidewalk, -2);
@@ -755,6 +1008,7 @@ export function createMaterials(): DtMaterials {
   // Hard ground of dense blocks and institutional yards: cast concrete in
   // 3 m bays with joints, stains, cracks and patches of bare soil.
   const concrete = new THREE.MeshStandardNodeMaterial({ roughness: 0.9, metalness: 0 });
+  let concreteWear: Wear;
   {
     const g = wp.xz.div(3);
     const joint = max(step(0.985, fract(g.x)), step(0.985, fract(g.y)));
@@ -768,7 +1022,63 @@ export function createMaterials(): DtMaterials {
       .mul(bay)
       .mul(mix(float(0.8), float(1.05), stain));
     const earth = vec3(0.45, 0.37, 0.28).mul(float(0.85).add(mx_noise_float(wp.mul(4)).mul(0.15)));
-    concrete.colorNode = mix(mix(slab, slab.mul(0.62), joint), earth, soil.mul(0.75));
+    const concreteBase = mix(mix(slab, slab.mul(0.62), joint), earth, soil.mul(0.75));
+    // Bay wear: spalled joint edges (chips 2–8 cm deep in stretches along the
+    // joints, exposed darker aggregate), corner cracks (a jagged diagonal 0.3–0.9 m
+    // from a corner) and the odd crack straight across a bay. Not on the soil.
+    concreteWear = (on) =>
+      Fn(() => {
+        const out = vec4(concreteBase, 0).toVar();
+        const coarse = coarseNear
+          .mul(on)
+          .mul(oneMinus(soil.mul(0.75)))
+          .toVar();
+        const fine = fineNear.mul(coarse).toVar();
+        const aa = pxIso.toVar();
+        const gv = g.toVar();
+        If(coarse.greaterThan(0.001), () => {
+          const r = (k: number) => mx_cell_noise_float(vec3(floor(gv), k + 40));
+          const lm = fract(gv).mul(3).toVar();
+          const p = gv.mul(3);
+          const jag = mx_noise_float(p.mul(7.3)).toVar();
+          const col = out.xyz.toVar();
+          const height = float(0).toVar();
+          // Spalls: where the distance to a joint is under a ragged depth.
+          const e = min(min(lm.x, lm.x.negate().add(2.955)), min(lm.y, lm.y.negate().add(2.955)));
+          const stretch = smoothstep(
+            0.55,
+            0.7,
+            mx_noise_float(p.mul(1.3).add(17)).mul(0.5).add(0.5),
+          );
+          const depth = jag.mul(0.5).add(0.5).mul(0.06).add(0.02);
+          const spall = oneMinus(smoothstep(aa.negate(), aa, e.sub(depth)))
+            .mul(stretch)
+            .mul(step(r(0), BAY_SPALL))
+            .mul(coarse);
+          col.assign(mix(col, col.mul(vec3(0.8, 0.78, 0.74)).mul(jag.mul(0.12).add(1)), spall));
+          height.subAssign(spall.mul(0.8));
+          If(fine.greaterThan(0.001), () => {
+            // Corner crack: the diagonal dx + dy = L from a random corner, jagged.
+            const corner = vec2(step(0.5, r(1)), step(0.5, r(2))).mul(2.955);
+            const dc = abs(lm.sub(corner));
+            const reach = r(3).mul(0.6).add(0.3);
+            const dCorner = abs(dc.x.add(dc.y).sub(reach).add(jag.mul(0.03))).mul(0.7071);
+            const cornerCrack = lineAt(dCorner, 0.002, aa).mul(step(r(4), BAY_CORNER_CRACK));
+            // Crack across the bay, along x or y, wandering a few centimetres.
+            const across = mix(lm.y, lm.x, step(0.5, r(5)));
+            const dMid = abs(across.sub(r(6).mul(1.4).add(0.8)).add(jag.mul(0.04)));
+            const midCrack = lineAt(dMid, 0.002, aa).mul(step(r(7), BAY_MID_CRACK));
+            const crack = max(cornerCrack, midCrack).mul(fine);
+            col.assign(col.mul(oneMinus(crack.mul(0.6))));
+            height.subAssign(crack.mul(0.5));
+          });
+          out.assign(vec4(col, height));
+        });
+        return out;
+      })();
+    const w = concreteWear(float(1));
+    concrete.colorNode = w.xyz;
+    concrete.normalNode = wearNormal(w.w);
   }
   decal(concrete, -1);
 
@@ -878,12 +1188,22 @@ export function createMaterials(): DtMaterials {
       gravel,
       airfield,
     ];
+    // Worn surfaces gate their wear by their own kind, so the other kinds'
+    // fragments skip it; the relief of each is 0 off its kind.
+    const worn = new Map<number, Vec4Node>([
+      [0, asphaltWear(isKind(0))],
+      [2, sidewalkWear(isKind(2))],
+      [7, concreteWear(isKind(7))],
+    ]);
     const c = kinds
-      .map((m, k) => vec3(m.colorNode as never).mul(isKind(k)))
+      .map((m, k) => vec3((worn.get(k)?.xyz ?? m.colorNode) as never).mul(isKind(k)))
       .reduce((a, b) => a.add(b));
     const r = kinds.map((m, k) => float(m.roughness).mul(isKind(k))).reduce((a, b) => a.add(b));
     ground.colorNode = c;
     ground.roughnessNode = r;
+    ground.normalNode = wearNormal(
+      [...worn.values()].map((w) => w.w).reduce((a, b) => a.add(b)) as FloatNode,
+    );
   }
   decal(ground, -2);
 
