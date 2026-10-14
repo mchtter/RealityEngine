@@ -134,6 +134,8 @@ export const CITY_ROAD_CLASSES = [
   'tram',
   'runway',
   'taxiway',
+  'stopway',
+  'stand',
 ] as const;
 export type CityRoadClass = (typeof CITY_ROAD_CLASSES)[number];
 
@@ -586,6 +588,8 @@ const ROAD_CLASS_LABELS: Record<CityRoadClass, string> = {
   tram: 'Tramvay',
   runway: 'Pist (havalimanı)',
   taxiway: 'Taksi yolu (havalimanı)',
+  stopway: 'Pist uzatması / durma alanı (stopway)',
+  stand: 'Uçak park yeri çizgisi (apron)',
 };
 
 export const ROAD_CONTRACT_V2: CityThemeContract = {
@@ -641,6 +645,15 @@ export const ROAD_CONTRACT_V2: CityThemeContract = {
       description: 'Üst üste geçen yollarda: 0 zemin, 1 üst geçit, −1 alt geçit.',
     },
     { key: 'roundabout', type: 'boolean', label: 'Dönel kavşak', column: 'DONEL_KAV', dt: true },
+    {
+      key: 'ref',
+      type: 'string',
+      label: 'Numara / kod',
+      column: 'KOD',
+      dt: true,
+      description:
+        'Yol numarası; pistte iki ucun adı (ör. 16L/34R) — eşik rakamları buradan yazılır.',
+    },
     {
       key: 'sidewalk',
       type: 'boolean',
@@ -1300,6 +1313,47 @@ export interface CityCorrectionInput {
 export interface CitySearchResponse {
   query: string;
   hits: CitySearchHit[];
+}
+
+// ─── Special areas ──────────────────────────────────────────────────────────
+
+/**
+ * Area kinds that are places of their own — an airport, a harbour, a
+ * cemetery — listed and pinned in the DT (parks, grass, pitches are not).
+ */
+export const SPECIAL_AREA_KINDS = [
+  'airport',
+  'harbour',
+  'military',
+  'power_plant',
+  'substation',
+  'bus_station',
+  'stadium',
+  'school',
+  'marketplace',
+  'cemetery',
+  'quarry',
+  'construction',
+  'industrial',
+] as const;
+export type SpecialAreaKind = (typeof SPECIAL_AREA_KINDS)[number];
+
+/** One special area: where to pin it (a point inside, its centre where that is inside) and its box. */
+export interface CitySpecialArea {
+  /** City entity id of the record. */
+  ref: string;
+  kind: SpecialAreaKind;
+  name?: string;
+  lon: number;
+  lat: number;
+  bbox: [number, number, number, number];
+  /** Ground area (m²). */
+  areaM2: number;
+}
+
+/** GET /city/special-areas */
+export interface CitySpecialAreasResponse {
+  areas: CitySpecialArea[];
 }
 
 // ─── Locate ─────────────────────────────────────────────────────────────────
