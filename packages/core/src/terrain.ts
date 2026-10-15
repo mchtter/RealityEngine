@@ -514,17 +514,26 @@ export function sharpenLandforms(
 }
 
 /**
- * The terrain under the street surface: every grid node next to a street
- * (any sample of the surface within one cell) sits 0.3 m below the lowest
- * surface point around it. The compiler applies it once to a tile's terrain
- * (`CityModel.terrainConformed`): what is drawn and what everything stands
- * on (props, fences, the camera) are the same ground. The grid's triangles interpolate between
- * nodes; one spanning a road and a higher median would otherwise rise through
- * the asphalt between them.
+ * The terrain under and beside the street surface: every grid node next to a
+ * street (any sample of the surface within one cell) sits `STREET_CONFORM`
+ * below the street at its nearest sample — level with the asphalt's top
+ * there. The compiler applies it once to a tile's terrain
+ * (`CityModel.terrainConformed`): what is drawn and what everything stands on
+ * (props, fences, the camera) are the same ground.
+ *
+ * It took the lowest sample around the node, 0.3 m lower still, while the
+ * terrain was drawn under the street surfaces (a grid triangle spanning a road
+ * and a higher median rose through the asphalt). The one ground layer draws
+ * no terrain under a surface (D-004), and that lowering sank verges and
+ * medians into pits beside sloping streets: 1.479 street edges with a step
+ * over 0.5 m in 12 Kızılay tiles (2026-10-16, street.edge-step). The viewer
+ * closes the step either way (kerb face down, retaining face up).
  */
+export const STREET_CONFORM = 0.1;
+
 export function conformTerrainToStreets(t: TerrainGrid, surface: RoadSurface): TerrainGrid {
   // Surface sampled once on a half-cell grid (NaN off the streets), then the
-  // minimum over the 5 × 5 samples around each node.
+  // nearest of the 5 × 5 samples around each node.
   const sc = (t.cols - 1) * 2 + 1;
   const sr = (t.rows - 1) * 2 + 1;
   const half = t.cellSize / 2;
@@ -542,17 +551,24 @@ export function conformTerrainToStreets(t: TerrainGrid, surface: RoadSurface): T
   const floor = t.seaLevel + LAND_FLOOR;
   for (let j = 0; j < t.rows; j++) {
     for (let i = 0; i < t.cols; i++) {
-      let low = Infinity;
+      // Nearest sample (squared half-cell distance); the lower one on a tie.
+      let near = Infinity;
+      let street = Infinity;
       for (let b = Math.max(0, 2 * j - 2); b <= Math.min(sr - 1, 2 * j + 2); b++) {
         for (let a = Math.max(0, 2 * i - 2); a <= Math.min(sc - 1, 2 * i + 2); a++) {
           const z = samples[b * sc + a];
-          if (z < low) low = z;
+          if (Number.isNaN(z)) continue;
+          const d = (a - 2 * i) ** 2 + (b - 2 * j) ** 2;
+          if (d < near || (d === near && z < street)) {
+            near = d;
+            street = z;
+          }
         }
       }
-      if (low === Infinity) continue;
+      if (street === Infinity) continue;
       const idx = j * t.cols + i;
       // Land above the sea's floor stays above it (a shore street's verge).
-      let lowered = low - 0.3;
+      let lowered = street - STREET_CONFORM;
       if (heights[idx] >= floor) lowered = Math.max(lowered, floor);
       heights[idx] = Math.min(heights[idx], lowered);
     }

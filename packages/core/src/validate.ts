@@ -23,6 +23,7 @@ import type {
   Prop,
   PropKind,
   Road,
+  SurfaceKind,
   Vec2,
   Vec3,
 } from './types';
@@ -83,6 +84,8 @@ export const RULES = {
   'fence.float': 'Bahçe duvarı / çit tabanı ile zemin arasında boşluk (> 3 cm, havada)',
   'building.float': 'Bina duvarının dibi ile zemin arasında boşluk (> 3 cm, havada)',
   'terrain.spike': 'Arazide tek düğümlük sivri tepe / çukur (dört komşusundan > 1,5 m)',
+  'street.edge-step':
+    'Sokak kenarında bordürden yüksek basamak (> 0,5 m): yandaki zemin çukurda ya da sokağın üstünde',
 } as const;
 
 export type RuleId = keyof typeof RULES;
@@ -430,6 +433,8 @@ export function validateCity(model: CityModel): ValidationReport {
 const CONTACT_GAP = 0.03;
 /** Step (m) of the ground checks along fences and building walls. */
 const CONTACT_STEP = 0.5;
+/** A step (m) between a street surface's top and the ground beside it taller than a kerb. */
+const STREET_STEP = 0.5;
 /** A terrain node this much (m) above / below all four neighbours is a spike / pit. */
 const SPIKE = 1.5;
 
@@ -509,6 +514,65 @@ function groundContactRules(
     }
     if (at) add('building.float', at, `${b.form ?? 'bina'} ${worst.toFixed(2)} m`);
   }
+  // Street surfaces drawn on the street profile meet the ground beside them
+  // with a vertical face (kerb down, retaining face up — the viewer closes
+  // either); one taller than a kerb is a pit or a cut the ground should not
+  // have (the terrain lowered too far under a sloping street, 2026-10-16).
+  for (const sf of model.surfaces) {
+    if (!STREET_SURFACES.has(sf.kind)) continue;
+    for (const poly of sf.polygons)
+      for (const [h, ring] of [poly.outer, ...poly.holes].entries()) {
+        let area2 = 0;
+        for (let k = 0; k < ring.length; k++) {
+          const p = ring[k];
+          const q = ring[(k + 1) % ring.length];
+          area2 += p[0] * q[1] - q[0] * p[1];
+        }
+        // Away from the surface: right of a counter-clockwise outer ring, left of a hole.
+        const out = area2 > 0 === (h === 0) ? 1 : -1;
+        let long = 0;
+        let worst = 0;
+        let rise = 0;
+        let at: Vec2 | null = null;
+        for (let k = 0; k < ring.length; k++) {
+          const a = ring[k];
+          const c = ring[(k + 1) % ring.length];
+          const len = dist(a, c);
+          if (len < 1e-6) continue;
+          const n: Vec2 = [((c[1] - a[1]) / len) * out, (-(c[0] - a[0]) / len) * out];
+          const steps = Math.max(1, Math.ceil(len));
+          for (let i = 0; i < steps; i++) {
+            const t = (i + 0.5) / steps;
+            const x = a[0] + (c[0] - a[0]) * t;
+            const y = a[1] + (c[1] - a[1]) * t;
+            const inside = ground.supportAt(x - n[0] * 0.1, y - n[1] * 0.1);
+            const outside = ground.supportAt(x + n[0] * 0.1, y + n[1] * 0.1);
+            if (!STREET_SURFACES.has(inside as SurfaceKind)) continue;
+            if (STREET_SURFACES.has(outside as SurfaceKind)) continue;
+            if (outside === 'trench' || outside === 'lid') continue;
+            const top =
+              ground.streetAt(x - n[0] * 0.1, y - n[1] * 0.1) + SURFACE_LIFT[inside as SurfaceKind];
+            const step = ground.baseAt(x + n[0] * 0.1, y + n[1] * 0.1) - top;
+            if (Math.abs(step) > STREET_STEP) {
+              long += len / steps;
+              if (Math.abs(step) > worst) {
+                worst = Math.abs(step);
+                rise = step;
+                at = [x, y];
+              }
+            }
+          }
+        }
+        if (at)
+          add(
+            'street.edge-step',
+            at,
+            `${sf.kind} ${long.toFixed(0)} m, en çok ${worst.toFixed(2)} m ` +
+              (rise > 0 ? '(zemin üstte)' : '(zemin altta)'),
+          );
+      }
+  }
+
   const t = model.terrain;
   if (!t) return;
   const h = (i: number, j: number) => t.heights[j * t.cols + i];
