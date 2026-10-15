@@ -12,7 +12,6 @@ import {
   mix,
   min,
   modelViewMatrix,
-  mrt,
   modelWorldMatrix,
   oneMinus,
   positionLocal,
@@ -127,13 +126,13 @@ export function airfieldLightMaterial(
   const tint = attribute<'vec3'>('lightColor', 'vec3');
   const light = attribute<'vec4'>('light', 'vec4');
 
-  // Billboard in view space: lamp radius, at least ~2 px; pulled toward the
-  // camera by its size so the ground does not cut the lower half off.
+  // Billboard in view space at the lamp's own size, so lamps shrink with
+  // distance like everything else; never under ~1.5 px (a runway still reads
+  // as lines of light from afar, without shimmer), never over 3 m. Pulled
+  // toward the camera by its size so the ground does not cut the lower half off.
   const view = modelViewMatrix.mul(vec4(positionLocal, 1));
   const distance = view.z.negate();
-  // Never under ~2 px, never over 4 m: thousands of lamps far off must not
-  // add up to one blinding blob.
-  const size = max(corner.z, min(distance.mul(0.0032), 4));
+  const size = min(max(corner.z, distance.mul(0.0015)), 3);
   m.vertexNode = cameraProjectionMatrix.mul(
     vec4(view.xy.add(corner.xy.mul(size)), view.z.add(size), view.w),
   );
@@ -170,24 +169,22 @@ export function airfieldLightMaterial(
   const steady = float(1).sub(isFlash).sub(isReil);
   const power = vertexStage(
     steady
-      .mul(3)
+      .mul(8)
       .add(isFlash.mul(flash))
       .add(isReil.mul(strobe))
       .mul(seen)
       .mul(night)
-      // Like the city's other lights, they fade out with distance (2.5 → 6 km).
-      .mul(smoothstep(6000, 2500, distance)),
+      // An airfield reads from far off at night; past 8 km they fade (gone at 15).
+      // (smoothstep needs low < high: reversed edges are undefined on the GPU.)
+      .mul(oneMinus(smoothstep(8000, 15000, distance))),
   );
 
   // A bright core and a soft halo (bloom spreads it further).
   const r = corner.xy.length();
   const core = exp(r.mul(r).mul(-14));
   const halo = exp(r.mul(-4)).mul(0.25);
-  // The scene pass also writes view normals (for AO): a lamp adds nothing
-  // there (additive), so the ground's normals under it stay as they are.
-  m.mrtNode = mrt({ normal: vec3(0, 0, 0) });
   m.colorNode = colour
-    .mul(power)
+    .mul(max(power, 0))
     .mul(core.add(halo))
     .mul(oneMinus(smoothstep(0.8, 1, r)));
   return m;

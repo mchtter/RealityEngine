@@ -1290,7 +1290,7 @@ export function createMaterials(): DtMaterials {
     const rock = mix(strata, vec3(0.2, 0.17, 0.13), clamp(joint, 0, 1).mul(0.7));
     g = mix(g, rock, smoothstep(0.42, 0.58, slope));
     // Sand only on the waterline (low-lying city ground near the sea is not a beach).
-    const shore = smoothstep(1.0, 0.3, wp.y);
+    const shore = oneMinus(smoothstep(0.3, 1.0, wp.y));
     g = mix(g, vec3(0.62, 0.57, 0.45), shore);
     // Ground footprint of a pixel (m): a noise octave finer than about two
     // pixels only shimmers as the camera moves (the "crackle" on the terrain
@@ -1414,7 +1414,13 @@ export function createMaterials(): DtMaterials {
     ac = mix(ac, base.mul(0.6), sideVent);
     ac = ac.mul(mix(float(0.72), float(1), bevel.mul(front).add(oneMinus(front))));
     // Rust-brown drip below the unit and dust settled on the lower part.
-    ac = mix(ac, ac.mul(vec3(0.78, 0.7, 0.6)), smoothstep(-0.05, -0.28, lp.y).mul(grime).mul(0.6));
+    ac = mix(
+      ac,
+      ac.mul(vec3(0.78, 0.7, 0.6)),
+      oneMinus(smoothstep(-0.28, -0.05, lp.y))
+        .mul(grime)
+        .mul(0.6),
+    );
 
     // 2 · Satellite dish (dish centre at (0, 0.75, 0.05)): rings, a darker rim, weathered spots.
     const dr = lp.sub(vec3(0, 0.75, 0.05)).length();
