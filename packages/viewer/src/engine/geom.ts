@@ -5,6 +5,7 @@ import {
   terrainHeightAt,
   triangulate,
 } from '@opentwin/city-core';
+import { drapeOnTerrain as drapeKernel, kentosGeoReady } from '@opentwin/kentos-geo';
 import * as THREE from 'three/webgpu';
 
 /**
@@ -249,6 +250,31 @@ export function drapeOnTerrain(
   step = 1,
   onFullCell?: (i: number, j: number) => void,
 ): void {
+  // The Rust kernel (crates/kentos-geo as WebAssembly) once the worker has
+  // loaded it: the same algorithm ~5× faster on Ankara tiles, and exact where
+  // the boolean path here lost or doubled area round holes (2026-10-15, D-008).
+  if (kentosGeoReady()) {
+    const { vertices, triangles, cells, data } = drapeKernel(terrain, poly, lift, step);
+    const up: [number, number, number] = [0, 1, 0];
+    const base = mb.vertexCount;
+    for (let k = 0; k < vertices; k++) {
+      const x = data[3 + k * 3];
+      const y = data[4 + k * 3];
+      mb.vertex(toThree(x, y, data[5 + k * 3]), up, undefined, x, y);
+    }
+    const ix = 3 + vertices * 3;
+    for (let k = 0; k < triangles; k++)
+      mb.triangle(
+        base + data[ix + k * 3],
+        base + data[ix + k * 3 + 1],
+        base + data[ix + k * 3 + 2],
+      );
+    if (onFullCell) {
+      const c0 = ix + triangles * 3;
+      for (let k = 0; k < cells; k++) onFullCell(data[c0 + k * 2], data[c0 + k * 2 + 1]);
+    }
+    return;
+  }
   drapeCells(
     mb,
     poly,

@@ -1,0 +1,24 @@
+{
+  "name": "@opentwin/kentos-geo",
+  "version": "0.1.0",
+  "description": "KentOS geometry kernels (Rust, crates/kentos-geo) as WebAssembly for the browser",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./kentos_geo_bg.wasm": "./pkg/kentos_geo_bg.wasm"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "pkg"
+  ],
+  "scripts": {
+    "build:wasm": "bash build.sh"
+  }
+}
