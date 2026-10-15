@@ -664,13 +664,14 @@ export function buildGround(
               base + layer.indices[q + 2],
             );
           if (!street) return;
-          // A street surface stands above the terrain lowered under it: a kerb
-          // face down along every edge of its region (outer rings CCW, holes CW).
+          // A street surface meets the ground beside it with a face along every
+          // edge of its region (outer rings CCW, holes CW): a kerb down to the
+          // ground, a retaining face up where the ground stands higher.
           overlay.setAttribute('surf', [SURF_KERB]);
           for (const { ring, hole } of layer.rings) {
             const ccw = ringSigned(ring) > 0;
             const oriented = ccw === !hole ? ring : [...ring].reverse();
-            drapeRingWall(overlay, oriented, streetAt, LIFT[kind], -1.0, true, 6, kerbSkip);
+            drapeRingWall(overlay, oriented, streetAt, LIFT[kind], -1.0, true, 6, kerbSkip, shown);
           }
         });
         // Surfaces over a tunnel-mouth lid lie on the lid's own ground.
@@ -725,6 +726,7 @@ export function buildGround(
                   true,
                   6,
                   nearCut ? (a, b) => onCut(a, b) || onHoleEdge(a, b) : onCut,
+                  grid,
                 );
               }
             }

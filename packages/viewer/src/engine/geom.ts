@@ -298,6 +298,12 @@ export function drapeRingWall(
   step = 2,
   /** Edges to leave out (e.g. cuts along a ground chunk border). */
   skip?: (a: [number, number], b: [number, number]) => boolean,
+  /**
+   * The ground drawn beside the ring: the face reaches down to it where it
+   * lies lower than `bottom`, and a retaining face (towards the ring) rises to
+   * it where it stands above `top` — no gap between the two either way.
+   */
+  beside?: HeightSource,
 ): void {
   for (let k = 0; k < ring.length; k++) {
     const a = ring[k];
@@ -305,34 +311,82 @@ export function drapeRingWall(
     if (skip?.(a, b)) continue;
     const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
     if (len < 0.05) continue;
-    const n = Math.max(1, Math.ceil(len / step));
+    const at = (f: number): [number, number] => [
+      a[0] + (b[0] - a[0]) * f,
+      a[1] + (b[1] - a[1]) * f,
+    ];
+    // Metre samples of the ground beside: where it reaches the top the face
+    // follows it metre by metre (the ground bends between the long steps).
+    const metres = Math.max(1, Math.ceil(len));
+    let rises = false;
+    if (beside)
+      for (let s = 0; s <= metres && !rises; s++) {
+        const p = at(s / metres);
+        rises = heightOf(beside, p[0], p[1]) > heightOf(terrain, p[0], p[1]) + top - 0.02;
+      }
+    const n = rises ? metres : Math.max(1, Math.ceil(len / step));
     const dx = (b[0] - a[0]) / len;
     const dy = (b[1] - a[1]) / len;
     // CCW outer ring: outward normal is the right-hand side.
     const nx = outward ? dy : -dy;
     const ny = outward ? -dx : dx;
+    const per = Math.max(1, Math.round(metres / n));
     for (let s = 0; s < n; s++) {
-      const p0: [number, number] = [a[0] + (b[0] - a[0]) * (s / n), a[1] + (b[1] - a[1]) * (s / n)];
-      const p1: [number, number] = [
-        a[0] + (b[0] - a[0]) * ((s + 1) / n),
-        a[1] + (b[1] - a[1]) * ((s + 1) / n),
-      ];
+      const p0 = at(s / n);
+      const p1 = at((s + 1) / n);
       const z0 = heightOf(terrain, p0[0], p0[1]);
       const z1 = heightOf(terrain, p1[0], p1[1]);
+      let low = Infinity;
+      let g0 = -Infinity;
+      let g1 = -Infinity;
+      if (beside) {
+        g0 = heightOf(beside, p0[0], p0[1]);
+        g1 = heightOf(beside, p1[0], p1[1]);
+        // The face's foot below the lowest ground along the piece (it is hidden there).
+        for (let m = 0; m <= per; m++) {
+          const q = at((s + m / per) / n);
+          low = Math.min(low, heightOf(beside, q[0], q[1]) - 0.05);
+        }
+      }
+      const b0 = Math.min(z0 + bottom, low);
+      const b1 = Math.min(z1 + bottom, low);
       const pts: [number, number, number][] = outward
         ? [
-            [p0[0], p0[1], z0 + bottom],
-            [p1[0], p1[1], z1 + bottom],
+            [p0[0], p0[1], b0],
+            [p1[0], p1[1], b1],
             [p1[0], p1[1], z1 + top],
             [p0[0], p0[1], z0 + top],
           ]
         : [
-            [p1[0], p1[1], z1 + bottom],
-            [p0[0], p0[1], z0 + bottom],
+            [p1[0], p1[1], b1],
+            [p0[0], p0[1], b0],
             [p0[0], p0[1], z0 + top],
             [p1[0], p1[1], z1 + top],
           ];
       mb.quad(pts, [nx, ny, 0], undefined, [
+        [0, 0],
+        [1, 0],
+        [1, 1],
+        [0, 1],
+      ]);
+      if (!(g0 > z0 + top || g1 > z1 + top)) continue;
+      // Retaining face: from the surface's top up to the ground, facing the surface.
+      const t0 = Math.max(g0, z0 + top);
+      const t1 = Math.max(g1, z1 + top);
+      const up: [number, number, number][] = outward
+        ? [
+            [p1[0], p1[1], z1 + top],
+            [p0[0], p0[1], z0 + top],
+            [p0[0], p0[1], t0],
+            [p1[0], p1[1], t1],
+          ]
+        : [
+            [p0[0], p0[1], z0 + top],
+            [p1[0], p1[1], z1 + top],
+            [p1[0], p1[1], t1],
+            [p0[0], p0[1], t0],
+          ];
+      mb.quad(up, [-nx, -ny, 0], undefined, [
         [0, 0],
         [1, 0],
         [1, 1],
