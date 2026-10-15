@@ -46,6 +46,32 @@ export interface BuildingContext {
   roads: RoadIndex;
 }
 
+/**
+ * Lowest terrain round a footprint — its corners, its centroid and every
+ * metre along its walls, on them and 0.5 m to either side: the drawn ground
+ * its walls must reach down to (corners alone missed the folds of the ground
+ * between them, leaving the wall's foot in the air).
+ */
+export function lowestGroundAround(ring: Vec2[], terrain: TerrainGrid): number {
+  const c = ringCentroid(ring);
+  let low = terrainHeightAt(terrain, c[0], c[1]);
+  for (let k = 0; k < ring.length; k++) {
+    const a = ring[k];
+    const b = ring[(k + 1) % ring.length];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (len < 1e-6) continue;
+    const n: Vec2 = [-(b[1] - a[1]) / len, (b[0] - a[0]) / len];
+    const steps = Math.max(1, Math.ceil(len));
+    for (let i = 0; i < steps; i++) {
+      const x = a[0] + ((b[0] - a[0]) * i) / steps;
+      const y = a[1] + ((b[1] - a[1]) * i) / steps;
+      for (const o of [-0.5, 0, 0.5])
+        low = Math.min(low, terrainHeightAt(terrain, x + n[0] * o, y + n[1] * o));
+    }
+  }
+  return low;
+}
+
 /** Stands of a stadium (`building=`): drawn as stands, not as a block of flats. */
 export const STADIUM_BUILDINGS: ReadonlySet<string> = new Set(['stadium', 'grandstand']);
 
@@ -185,10 +211,7 @@ export function makeBuilding(
   // Only blocks (and a mall's ground floor) have shopfronts; only blocks a raised ground floor.
   const block = form === 'block';
 
-  const heights = ring.map((p) => terrainHeightAt(ctx.terrain, p[0], p[1]));
-  const c = ringCentroid(ring);
-  heights.push(terrainHeightAt(ctx.terrain, c[0], c[1]));
-  const baseZ = Math.min(...heights) - 0.3;
+  const baseZ = lowestGroundAround(ring, ctx.terrain) - 0.3;
   const fe = edgeOutward(ring, front.edge);
   const street = terrainHeightAt(ctx.terrain, fe.mid[0] + fe.out[0] * 2, fe.mid[1] + fe.out[1] * 2);
 

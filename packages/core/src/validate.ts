@@ -1,4 +1,5 @@
 import { TWIN_MEDIAN } from './cuttings';
+import { FENCE_FOOT, fenceProfile } from './fence-profile';
 import { closestOnSegment, dist, pointInRing } from './geo';
 import { GroundModel, STREET_SURFACES, SURFACE_LIFT, type Support } from './ground-model';
 import {
@@ -78,6 +79,10 @@ export const RULES = {
   'utility.clash': 'İki farklı altyapı hattı kesişiminde duvarlar arası < 0,3 m (çakışma)',
   'utility.cover': 'Boru / kablo üstü örtü derinliği türü için az (gaz < 0,6 m, su < 0,8 m …)',
   'utility.building': 'Ana hat bina altından geçiyor (bağlantı hattı değil)',
+  // Everything meets the ground it is drawn on
+  'fence.float': 'Bahçe duvarı / çit tabanı ile zemin arasında boşluk (> 3 cm, havada)',
+  'building.float': 'Bina duvarının dibi ile zemin arasında boşluk (> 3 cm, havada)',
+  'terrain.spike': 'Arazide tek düğümlük sivri tepe / çukur (dört komşusundan > 1,5 m)',
 } as const;
 
 export type RuleId = keyof typeof RULES;
@@ -416,7 +421,110 @@ export function validateCity(model: CityModel): ValidationReport {
     if (under) add('utility.building', [under[0], under[1]], u.kind);
   }
 
+  groundContactRules(model, ground, add);
+
   return { counts, samples, ms: Date.now() - started };
+}
+
+/** Largest gap (m) still drawn as touching the ground. */
+const CONTACT_GAP = 0.03;
+/** Step (m) of the ground checks along fences and building walls. */
+const CONTACT_STEP = 0.5;
+/** A terrain node this much (m) above / below all four neighbours is a spike / pit. */
+const SPIKE = 1.5;
+
+/**
+ * Nothing hangs over the ground it is drawn on: garden boundaries (their
+ * drawn profile, sunk by its foot), building walls (from `baseZ - 0.6`, as
+ * the viewer draws them) against the drawn ground — terrain, trench and
+ * street surfaces with their lifts — on both sides; no single terrain node
+ * sticks out of its neighbours.
+ */
+function groundContactRules(
+  model: CityModel,
+  ground: GroundModel,
+  add: (rule: RuleId, at: Vec2, note?: string) => void,
+): void {
+  const drawn = (x: number, y: number) => ground.surfaceAt(x, y).z;
+  for (const f of model.fences ?? []) {
+    const pts = fenceProfile(f, (x, y) => ground.cut.heightAt(x, y));
+    const foot = FENCE_FOOT[f.style];
+    const half = FENCE_WIDTH[f.style] / 2;
+    let worst = CONTACT_GAP;
+    let at: Vec2 | null = null;
+    for (let k = 1; k < pts.length; k++) {
+      const a = pts[k - 1];
+      const b = pts[k];
+      const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (len < 1e-6) continue;
+      const n: Vec2 = [-(b[1] - a[1]) / len, (b[0] - a[0]) / len];
+      const steps = Math.max(1, Math.ceil(len / CONTACT_STEP));
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const x = a[0] + (b[0] - a[0]) * t;
+        const y = a[1] + (b[1] - a[1]) * t;
+        const bottom = a[2] + (b[2] - a[2]) * t - foot;
+        for (const o of [-half, 0, half]) {
+          const gap = bottom - drawn(x + n[0] * o, y + n[1] * o);
+          if (gap > worst) {
+            worst = gap;
+            at = [x, y];
+          }
+        }
+      }
+    }
+    if (at) add('fence.float', at, `${f.style} ${worst.toFixed(2)} m`);
+  }
+  for (const b of model.buildings) {
+    if (b.underside !== undefined || b.form === 'canopy') continue;
+    const ring = b.footprint.outer;
+    let area2 = 0;
+    for (let k = 0; k < ring.length; k++) {
+      const p = ring[k];
+      const q = ring[(k + 1) % ring.length];
+      area2 += p[0] * q[1] - q[0] * p[1];
+    }
+    // Outward: to the right of a counter-clockwise ring.
+    const out = area2 > 0 ? 1 : -1;
+    const bottom = b.baseZ - 0.6;
+    let worst = CONTACT_GAP;
+    let at: Vec2 | null = null;
+    for (let k = 0; k < ring.length; k++) {
+      const a = ring[k];
+      const c = ring[(k + 1) % ring.length];
+      const len = dist(a, c);
+      if (len < 1e-6) continue;
+      const n: Vec2 = [((c[1] - a[1]) / len) * out, (-(c[0] - a[0]) / len) * out];
+      const steps = Math.max(1, Math.ceil(len / CONTACT_STEP));
+      for (let i = 0; i < steps; i++) {
+        const t = i / steps;
+        const x = a[0] + (c[0] - a[0]) * t + n[0] * 0.15;
+        const y = a[1] + (c[1] - a[1]) * t + n[1] * 0.15;
+        const gap = bottom - drawn(x, y);
+        if (gap > worst) {
+          worst = gap;
+          at = [x, y];
+        }
+      }
+    }
+    if (at) add('building.float', at, `${b.form ?? 'bina'} ${worst.toFixed(2)} m`);
+  }
+  const t = model.terrain;
+  if (!t) return;
+  const h = (i: number, j: number) => t.heights[j * t.cols + i];
+  for (let j = 1; j < t.rows - 1; j++)
+    for (let i = 1; i < t.cols - 1; i++) {
+      const z = h(i, j);
+      const n = [h(i - 1, j), h(i + 1, j), h(i, j - 1), h(i, j + 1)];
+      const up = Math.min(...n.map((v) => z - v));
+      const down = Math.min(...n.map((v) => v - z));
+      if (up > SPIKE || down > SPIKE)
+        add(
+          'terrain.spike',
+          [t.minX + i * t.cellSize, t.minY + j * t.cellSize],
+          `${(up > SPIKE ? up : -down).toFixed(1)} m`,
+        );
+    }
 }
 
 /** Kerb-line rules on the city blocks (the land between street corridors). */

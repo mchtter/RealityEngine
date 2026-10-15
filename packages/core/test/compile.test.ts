@@ -1696,6 +1696,109 @@ describe('compileCity', () => {
   });
 });
 
+describe('ground contact rules', () => {
+  it('a compiled tile touches its ground; a raised building, a fence over a sunk street and a spike are caught', () => {
+    const m = compileCity(gridSource());
+    const clean = validateCity(m).counts;
+    expect(clean['fence.float'] ?? 0).toBe(0);
+    expect(clean['building.float'] ?? 0).toBe(0);
+    expect(clean['terrain.spike'] ?? 0).toBe(0);
+
+    const b = m.buildings.find((x) => x.form !== 'canopy' && x.underside === undefined)!;
+    const raised = validateCity({
+      ...m,
+      buildings: [{ ...b, baseZ: b.baseZ + 1 }],
+    }).counts;
+    expect(raised['building.float']).toBe(1);
+
+    // The land 1 m higher, the street (its own profile) where it was: a wall
+    // crossing the street hangs over it.
+    const t = m.terrain;
+    const sunk = validateCity({
+      ...m,
+      terrain: { ...t, heights: t.heights.map((h) => h + 1) },
+      buildings: [],
+      fences: [
+        {
+          points: [
+            [-130, -75],
+            [-130, -45],
+          ],
+          style: 'wall',
+          height: 1.5,
+          color: '#ccc',
+        },
+      ],
+    });
+    expect(sunk.counts['fence.float']).toBe(1);
+    const at = sunk.samples.find((v) => v.rule === 'fence.float')!.at;
+    expect(Math.abs(at[1] + 60)).toBeLessThan(6);
+
+    const heights = [...t.heights];
+    const i = Math.floor(t.cols / 2);
+    const j = Math.floor(t.rows / 2);
+    heights[j * t.cols + i] += 3;
+    const spiked = validateCity({ ...m, terrain: { ...t, heights } }).counts;
+    expect(spiked['terrain.spike']).toBe(1);
+  });
+
+  it('a building above a street on a slope reaches down to the land lowered for the street', () => {
+    const [west, south] = ll(-400, -400);
+    const [east, north] = ll(400, 400);
+    const feature = (ref: string, kind: 'road' | 'building', geometry: object, tags: object) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind,
+      geometry,
+      tags,
+    });
+    // Rising 30 % to the north; the street runs along the contour at y = 0.
+    const m = compileCity(
+      {
+        ...gridSource(),
+        osm: [],
+        terrain: {
+          source: 'test',
+          west,
+          east,
+          north,
+          south,
+          cols: 9,
+          rows: 9,
+          heights: Array.from(
+            { length: 81 },
+            (_, k) => 200 + 0.3 * (400 - Math.floor(k / 9) * 100),
+          ),
+        },
+        features: [
+          feature(
+            'osm:street',
+            'road',
+            {
+              type: 'LineString',
+              coordinates: [ll(-200, 0), ll(200, 0)],
+            },
+            { highway: 'residential' },
+          ),
+          feature(
+            'osm:house',
+            'building',
+            {
+              type: 'Polygon',
+              coordinates: [[ll(-10, 9), ll(10, 9), ll(10, 21), ll(-10, 21), ll(-10, 9)]],
+            },
+            { building: 'yes' },
+          ),
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    expect(m.buildings.some((b) => b.ref === 'osm:house')).toBe(true);
+    expect(validateCity(m).counts['building.float'] ?? 0).toBe(0);
+  });
+});
+
 describe('terrainHeightAt', () => {
   it('reproduces grid heights at vertices and is linear inside a triangle', () => {
     const t: TerrainGrid = {

@@ -1,4 +1,4 @@
-import { type CityModel, CutGround, type Fence } from '@opentwin/city-core';
+import { type CityModel, CutGround, FENCE_FOOT, fenceProfile } from '@opentwin/city-core';
 import * as THREE from 'three/webgpu';
 import { MeshBuilder } from './geom';
 import type { DtMaterials } from './materials';
@@ -37,32 +37,33 @@ export function buildFences(model: CityModel, mats: DtMaterials): THREE.Mesh | n
   for (const f of fences) {
     ids.push(`fence||${STYLE[f.style] ?? f.style}, ${f.height.toFixed(1)} m`);
     mb.setOwner(ids.length - 1);
-    const pts = sample(f, (x, y) => ground.heightAt(x, y));
+    const pts = fenceProfile(f, (x, y) => ground.heightAt(x, y)) as P3[];
     if (pts.length < 2) continue;
     const wall = new THREE.Color(f.color);
     const h = f.height;
+    const foot = -FENCE_FOOT[f.style];
     switch (f.style) {
       case 'wall-rail': {
         const w = Math.min(0.65, h * 0.42);
-        strip(mb, pts, 0.24, -0.3, w, wall, FK.plaster);
+        strip(mb, pts, 0.24, foot, w, wall, FK.plaster);
         strip(mb, pts, 0.3, w, w + 0.06, CAP, FK.cap);
         panel(mb, pts, w + 0.06, h, RAIL, FK.railing, true);
         piers(mb, pts, 3, 0.36, h + 0.08, wall, FK.plaster);
         break;
       }
       case 'wall':
-        strip(mb, pts, 0.22, -0.3, h, wall, FK.plaster);
+        strip(mb, pts, 0.22, foot, h, wall, FK.plaster);
         strip(mb, pts, 0.28, h, h + 0.06, CAP, FK.cap);
         break;
       case 'stone':
-        strip(mb, pts, 0.42, -0.3, h, STONE, FK.stone);
+        strip(mb, pts, 0.42, foot, h, STONE, FK.stone);
         strip(mb, pts, 0.46, h, h + 0.07, CAP, FK.cap);
         break;
       case 'hedge':
-        strip(mb, pts, 0.5, -0.1, h, HEDGE, FK.hedge);
+        strip(mb, pts, 0.5, foot, h, HEDGE, FK.hedge);
         break;
       case 'mesh':
-        strip(mb, pts, 0.18, -0.3, 0.3, wall, FK.plaster);
+        strip(mb, pts, 0.18, foot, 0.3, wall, FK.plaster);
         panel(mb, pts, 0.3, h, MESH, FK.mesh, false);
         piers(mb, pts, 2.5, 0.06, h + 0.05, RAIL, FK.metal);
         break;
@@ -76,59 +77,6 @@ export function buildFences(model: CityModel, mats: DtMaterials): THREE.Mesh | n
   mesh.userData.pick = { ids, owners: mb.triangleOwner };
   mesh.userData.role = 'ground:near';
   return mesh;
-}
-
-/**
- * Points along the fence on the ground: every metre where the ground bends,
- * only the corners where it runs straight (a 1 m sampling of every wall held
- * more GPU memory than the buildings in a dense tile: 35 MB).
- */
-function sample(f: Fence, heightAt: (x: number, y: number) => number): P3[] {
-  const fine: { p: P3; corner: boolean; s: number }[] = [];
-  let s = 0;
-  for (let k = 0; k < f.points.length; k++) {
-    const a = f.points[k];
-    if (k > 0) {
-      const b = f.points[k - 1];
-      const len = Math.hypot(a[0] - b[0], a[1] - b[1]);
-      const n = Math.ceil(len / 1);
-      for (let i = 1; i < n; i++) {
-        const x = b[0] + ((a[0] - b[0]) * i) / n;
-        const y = b[1] + ((a[1] - b[1]) * i) / n;
-        fine.push({ p: [x, y, heightAt(x, y)], corner: false, s: s + (len * i) / n });
-      }
-      s += len;
-    }
-    fine.push({ p: [a[0], a[1], heightAt(a[0], a[1])], corner: true, s });
-  }
-  // Keep corners, and the points where the ground leaves the straight line
-  // between kept points by more than 4 cm (Douglas–Peucker on the profile).
-  const keep = fine.map((q) => q.corner);
-  const split = (i: number, j: number) => {
-    if (j - i < 2) return;
-    let worst = -1;
-    let dev = 0.04;
-    for (let m = i + 1; m < j; m++) {
-      const t = (fine[m].s - fine[i].s) / (fine[j].s - fine[i].s || 1);
-      const z = fine[i].p[2] + (fine[j].p[2] - fine[i].p[2]) * t;
-      const d = Math.abs(fine[m].p[2] - z);
-      if (d > dev) {
-        dev = d;
-        worst = m;
-      }
-    }
-    if (worst < 0) return;
-    keep[worst] = true;
-    split(i, worst);
-    split(worst, j);
-  };
-  let last = 0;
-  for (let m = 1; m < fine.length; m++) {
-    if (!keep[m]) continue;
-    split(last, m);
-    last = m;
-  }
-  return fine.filter((_, m) => keep[m]).map((q) => q.p);
 }
 
 /** Mitred left normals per point (as the bridge strips). */

@@ -64,3 +64,4 @@ export {
   objectIdOf,
   segmentOutline,
 } from './locate';
+export { FENCE_FOOT, fenceProfile } from './fence-profile';

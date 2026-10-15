@@ -20,6 +20,7 @@ import {
   STADIUM_BUILDINGS,
   layoutFacades,
   makeBuilding,
+  lowestGroundAround,
   placeObservedBuildings,
 } from './buildings';
 import { CutGround, buildCuttings, settleTrenchRims } from './cuttings';
@@ -122,7 +123,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '95';
+export const COMPILER_VERSION = '96';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -623,6 +624,11 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   for (let i = 0; i < terrain.heights.length; i++) terrain.heights[i] = lowered.heights[i];
   // Trench wall tops from the street beside them; the ground there kept below.
   settleTrenchRims(cuttings, terrain, streetAt, SURFACE_LIFT.sidewalk);
+  // The data's buildings took their base from the terrain before that
+  // lowering: their walls reach down to the land cut to a street beside them
+  // (they hung up to 0.5 m over it, Ankara 2026-10-16: building.float).
+  for (const b of observed)
+    b.baseZ = Math.min(b.baseZ, lowestGroundAround(b.footprint.outer, terrain) - 0.3);
   const pathSurface = net.surfaces.find((sf) => sf.kind === 'path')?.polygons ?? [];
   const serviceRoads = roads
     .filter((r) => r.cls === 'service' || r.cls === 'track')
