@@ -1125,7 +1125,7 @@ export class DtEngine {
   private levelCandidate: { level: DetailLevel; since: number } | null = null;
   private readonly levelListeners = new Set<(level: DetailLevel) => void>();
 
-  /** Detail level (L1 street … L5 city) from the camera's height above the ground. */
+  /** Detail level (L1 over the city … L5 street) from the camera's height above the ground. */
   get detailLevel(): DetailLevel {
     return this.level;
   }
@@ -1152,7 +1152,7 @@ export class DtEngine {
       this.levelListeners.forEach((cb) => cb(next));
     }
     for (const tile of this.tiles.values()) tile.updateDetail(eye, height);
-    // Street wear (cracks, potholes, broken pavers) only at street height (L1).
+    // Street wear (cracks, potholes, broken pavers) only at street height (L5).
     this.mats.streetDetail.value = 1 - THREE.MathUtils.smoothstep(height, 10, 14);
   }
 

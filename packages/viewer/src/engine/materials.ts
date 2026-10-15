@@ -144,7 +144,7 @@ function disposeVariants(base: THREE.Material): void {
  */
 export interface DtMaterials {
   night: THREE.UniformNode<'float', number>;
-  /** 1 with the camera at street height (L1, under 10 m), 0 from 14 m up: street-level wear (see WEAR_*). */
+  /** 1 with the camera at street height (L5, under 10 m), 0 from 14 m up: street-level wear (see WEAR_*). */
   streetDetail: THREE.UniformNode<'float', number>;
   /** 1 while a scenario colours the buildings (see `scenario`). */
   scenarioOn: THREE.UniformNode<'float', number>;
@@ -265,7 +265,7 @@ function decal(material: THREE.Material, factor: number): void {
   material.polygonOffsetUnits = factor;
 }
 
-// ─── Street-level wear of the ground (L1) ───────────────────────────────────
+// ─── Street-level wear of the ground (L5) ───────────────────────────────────
 // Cracks, repairs, potholes, broken pavers and concrete spalls, all procedural
 // and deterministic from the world position. Only drawn near the camera: the
 // fades below are a pixel's ground footprint in metres (the longer side of the
@@ -273,7 +273,7 @@ function decal(material: THREE.Material, factor: number): void {
 // second — far views, where it would only shimmer, keep the plain surfaces.
 // Walking distance: from a 1.7 m eye, hairline detail is full to ~6 m and gone
 // by ~10 m, patches / potholes full to ~8 m and gone by ~14 m. On top of that
-// the `streetDetail` uniform keeps it to a camera at walking height (L1).
+// the `streetDetail` uniform keeps it to a camera at walking height (L5).
 /** Hairline cracks, paver cracks, weeds in joints. */
 const WEAR_FINE_PX = [0.0144, 0.04] as const;
 /** Repair patches, potholes, oil stains, concrete spalls. */
