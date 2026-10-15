@@ -185,6 +185,8 @@ export interface DtEngineEvents {
    * the viewer), null when none / the map is not up.
    */
   onMapHover?: (hover: { pick: OverviewPick; x: number; y: number } | null) => void;
+  /** A click on open ground in the city view (nothing picked there): where it landed. */
+  onGroundClick?: (at: LonLat) => void;
 }
 
 /** Douglas–Peucker tolerance of the work area's rings (m): provinces have tens of thousands of vertices. */
@@ -833,6 +835,7 @@ export class DtEngine {
       (dist * 2 * Math.tan((this.camera.fov * Math.PI) / 360)) /
       Math.max(1, this.container.clientHeight);
     m.setScale(mpp, mpp * 1.5);
+    if (k > 0) m.declutter(this.camera, this.container.clientWidth, this.container.clientHeight);
     if (this.quakes && k > 0) {
       const now = performance.now();
       if (now - this.quakesAt > MAP_QUAKES_MS) {
@@ -2883,5 +2886,9 @@ export class DtEngine {
     }
     this.events.onSelectPlacement?.(null);
     this.events.onSelect?.(best?.b ?? null);
+    if (!best) {
+      const at = this.groundPointAt(ray);
+      if (at) this.events.onGroundClick?.(at);
+    }
   };
 }

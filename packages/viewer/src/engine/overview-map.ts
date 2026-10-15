@@ -5,6 +5,8 @@ import {
   cameraViewMatrix,
   float,
   fract,
+  length,
+  mix,
   mrt,
   oneMinus,
   positionLocal,
@@ -54,7 +56,6 @@ export interface OverviewData {
   lakes: { name: string | null; polygons: Polygon[] }[];
   /** `size`: 1 open sea … smaller for narrow ones. */
   seas: { name: string; label: [number, number]; angle: number; size?: number }[];
-  towns: { name: string; at: [number, number]; pop: number }[];
 }
 
 /** A province under the pointer. */
@@ -71,15 +72,15 @@ export interface OverviewPick {
 const MAP_PX = 4096;
 /** Parchment, sea and ink. */
 const PAPER = '#f6e7c1';
-const PAPER_DARK = '#e2cc9a';
-const NEIGHBOUR = '#e6d4ab';
+/** Under the sheet: a dark table it lies on. */
+const TABLE = '#3b2e21';
+/** Neighbouring countries: paler, greyer paper (not part of the map's subject, not clickable). */
+const NEIGHBOUR = '#ebe5d6';
 const SEA = '#b4c6ae';
 const SEA_INK = '#6d8571';
 const INK = '#4a3520';
 const DATA_GREEN = new THREE.Color('#2fbf71');
 const NO_DATA_RED = new THREE.Color('#e5484d');
-/** Towns show once a pixel covers less than this (m). */
-const TOWNS_BELOW_MPP = 260;
 
 const groundNormalMrt = () => mrt({ normal: cameraViewMatrix.mul(vec4(0, 1, 0, 0)).xyz });
 
@@ -90,7 +91,8 @@ interface Label {
   /** Screen letter height range (px). */
   minPx: number;
   maxPx: number;
-  town: boolean;
+  /** Higher keeps its place when names collide on screen. */
+  priority: number;
 }
 
 export class OverviewMap {
@@ -101,6 +103,12 @@ export class OverviewMap {
   private readonly plane: THREE.Mesh;
   private readonly planeMat: THREE.MeshBasicNodeMaterial;
   private readonly labels: Label[] = [];
+  /** `labels`, highest priority first (built once all are in). */
+  private labelsByPriority: Label[] = [];
+  /** Province seat dots. */
+  private readonly capitals: THREE.Mesh[] = [];
+  private readonly capitalGeo = new THREE.CircleGeometry(1, 20).rotateX(-Math.PI / 2);
+  private capitalMat: THREE.MeshBasicNodeMaterial | null = null;
   private readonly lineMats: { mat: THREE.MeshBasicNodeMaterial; px: number }[] = [];
   /** Metres per screen pixel at the camera target (line widths, name sizes). */
   readonly mpp = uniform(500);
@@ -127,25 +135,19 @@ export class OverviewMap {
       const [pe, pn] = utmForward(lon, lat, zone);
       return [pe - this.anchorE, pn - this.anchorN];
     };
-    // Extent: the bbox's edges sampled (UTM bends them).
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
+    // Extent: the largest rectangle inside the bbox as UTM bends it (its
+    // meridians lean, its parallels curve) — the data is cut along those
+    // bent edges, which would show as a skewed border inside the sheet.
+    let minX = -Infinity;
+    let minY = -Infinity;
+    let maxX = Infinity;
+    let maxY = Infinity;
     for (let k = 0; k <= 40; k++) {
       const f = k / 40;
-      for (const [lon, lat] of [
-        [w + (e - w) * f, s],
-        [w + (e - w) * f, n],
-        [w, s + (n - s) * f],
-        [e, s + (n - s) * f],
-      ]) {
-        const [x, y] = this.project(lon, lat);
-        minX = Math.min(minX, x);
-        maxX = Math.max(maxX, x);
-        minY = Math.min(minY, y);
-        maxY = Math.max(maxY, y);
-      }
+      minX = Math.max(minX, this.project(w, s + (n - s) * f)[0]);
+      maxX = Math.min(maxX, this.project(e, s + (n - s) * f)[0]);
+      minY = Math.max(minY, this.project(w + (e - w) * f, s)[1]);
+      maxY = Math.min(maxY, this.project(w + (e - w) * f, n)[1]);
     }
     this.extent = [minX, minY, maxX, maxY];
 
@@ -164,10 +166,10 @@ export class OverviewMap {
     this.plane.name = 'overview-plane';
     this.plane.renderOrder = 20;
     this.group.add(this.plane);
-    // Paper beyond the map (the camera is kept over it; this only hides the void at the edges).
+    // The table the sheet lies on (the camera is kept over the sheet; this fills the view beyond it).
     const outer = new THREE.Mesh(
       new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicNodeMaterial({ color: PAPER_DARK }),
+      new THREE.MeshBasicNodeMaterial({ color: TABLE }),
     );
     (outer.material as THREE.MeshBasicNodeMaterial).fog = false;
     (outer.material as THREE.MeshBasicNodeMaterial).mrtNode = groundNormalMrt();
@@ -182,7 +184,7 @@ export class OverviewMap {
     this.group.add(
       this.lines(
         data.countries.flatMap((c) => c.polygons.flat()),
-        { px: 1.6, color: INK, opacity: 0.75 },
+        { px: 1.4, color: INK, opacity: 0.35 },
       ),
     );
     this.group.add(
@@ -220,9 +222,13 @@ export class OverviewMap {
     for (const p of data.provinces)
       this.hasData.set(p.code, !!area && overlaps(p.polygons, area, areaSamples));
 
-    // Names written on the map.
+    // Province seats: a small ink dot each.
+    for (const p of data.provinces) this.capital(p.capital);
+
+    // Names written on the map (crowded ones give way: see `declutter`).
     for (const p of data.provinces)
       this.label(p.name.toLocaleUpperCase('tr'), p.label, p.labelAngle, {
+        priority: 100 + 100 * p.labelSize,
         base: 4500 + 9000 * p.labelSize,
         minPx: 10,
         maxPx: 30,
@@ -233,16 +239,18 @@ export class OverviewMap {
       });
     for (const c of data.countries)
       this.label(c.name.toLocaleUpperCase('tr'), c.label, 0, {
+        priority: 50,
         base: 14000,
         minPx: 11,
         maxPx: 26,
         font: '600 96px Georgia, "Times New Roman", serif',
-        color: 'rgba(74,53,32,0.55)',
-        halo: 'rgba(240,226,190,0.6)',
+        color: 'rgba(74,53,32,0.36)',
+        halo: null,
         spacing: '0.3em',
       });
     for (const sea of data.seas)
       this.label(sea.name.toLocaleUpperCase('tr'), sea.label, sea.angle, {
+        priority: 1000,
         base: 26000 * (sea.size ?? 1),
         minPx: 8 + 4 * (sea.size ?? 1),
         maxPx: 40 * (sea.size ?? 1),
@@ -250,18 +258,6 @@ export class OverviewMap {
         color: 'rgba(52,78,64,0.7)',
         halo: null,
         spacing: '0.45em',
-      });
-    for (const t of data.towns)
-      this.label(t.name, t.at, 0, {
-        base: 2200,
-        minPx: 9,
-        maxPx: 14,
-        font: '600 80px Georgia, "Times New Roman", serif',
-        color: 'rgba(74,53,32,0.85)',
-        halo: 'rgba(245,232,200,0.85)',
-        spacing: '0.04em',
-        town: true,
-        dot: true,
       });
   }
 
@@ -314,8 +310,8 @@ export class OverviewMap {
 
   /**
    * Metres per screen pixel at the camera target: line widths and the size of
-   * names follow it (names stay on the map, between a least and a largest
-   * screen size); towns show only close in.
+   * names and seat dots follow it (names stay on the map, between a least
+   * and a largest screen size).
    */
   setScale(metresPerPixel: number, liftM: number): void {
     this.mpp.value = metresPerPixel;
@@ -324,7 +320,51 @@ export class OverviewMap {
       const h = THREE.MathUtils.clamp(l.base, metresPerPixel * l.minPx, metresPerPixel * l.maxPx);
       l.mesh.scale.setScalar(h);
       l.mesh.position.y = liftM * 1.5;
-      if (l.town) l.mesh.visible = metresPerPixel < TOWNS_BELOW_MPP;
+    }
+    for (const dot of this.capitals) {
+      dot.scale.setScalar(metresPerPixel * 3.2);
+      dot.position.y = liftM * 1.2;
+    }
+  }
+
+  /**
+   * Names that would overlap on screen give way, by priority (seas, larger
+   * provinces, smaller ones, countries): the hidden ones come back as the
+   * camera closes in. `width` / `height`: the viewport (px).
+   */
+  declutter(camera: THREE.Camera, width: number, height: number): void {
+    this.group.updateMatrixWorld();
+    const placed: [number, number, number, number][] = [];
+    const corner = new THREE.Vector3();
+    for (const l of this.labelsByPriority) {
+      const box = l.mesh.geometry.boundingBox!;
+      let x0 = Infinity;
+      let y0 = Infinity;
+      let x1 = -Infinity;
+      let y1 = -Infinity;
+      for (const [cx, cz] of [
+        [box.min.x, box.min.z],
+        [box.max.x, box.min.z],
+        [box.min.x, box.max.z],
+        [box.max.x, box.max.z],
+      ]) {
+        corner.set(cx, 0, cz).applyMatrix4(l.mesh.matrixWorld).project(camera);
+        const sx = ((corner.x + 1) / 2) * width;
+        const sy = ((1 - corner.y) / 2) * height;
+        x0 = Math.min(x0, sx);
+        x1 = Math.max(x1, sx);
+        y0 = Math.min(y0, sy);
+        y1 = Math.max(y1, sy);
+      }
+      // The text fills ~70 % of its quad (padding, tilt): a little slack.
+      const padX = (x1 - x0) * 0.12;
+      const padY = (y1 - y0) * 0.18;
+      const r: [number, number, number, number] = [x0 + padX, y0 + padY, x1 - padX, y1 - padY];
+      const offscreen = r[2] < 0 || r[0] > width || r[3] < 0 || r[1] > height;
+      const clash =
+        !offscreen && placed.some((q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1]);
+      l.mesh.visible = !clash;
+      if (!clash && !offscreen) placed.push(r);
     }
   }
 
@@ -454,20 +494,22 @@ export class OverviewMap {
     const offsets: number[] = [];
     const uvs: number[] = [];
     const index: number[] = [];
-    for (const ring of rings) {
-      const pts = ring.map(([lon, lat]) => this.project(lon, lat));
+    for (const { pts, closed } of this.runsOnSheet(rings)) {
       const n = pts.length;
       if (n < 2) continue;
       const base = positions.length / 3;
+      const last = closed ? n : n - 1;
+      const at = (i: number) =>
+        closed ? pts[((i % n) + n) % n] : pts[Math.min(n - 1, Math.max(0, i))];
       let along = 0;
-      for (let i = 0; i <= n; i++) {
-        const [x, y] = pts[i % n];
+      for (let i = 0; i <= last; i++) {
+        const [x, y] = at(i);
         if (i > 0) {
-          const [px, py] = pts[i - 1];
+          const [px, py] = at(i - 1);
           along += Math.hypot(x - px, y - py);
         }
-        const [ax, ay] = pts[(i - 1 + n) % n];
-        const [bx, by] = pts[(i + 1) % n];
+        const [ax, ay] = at(i - 1);
+        const [bx, by] = at(i + 1);
         const n1 = leftNormal(x - ax, y - ay);
         const n2 = leftNormal(bx - x, by - y);
         let mx = n1[0] + n2[0];
@@ -484,7 +526,7 @@ export class OverviewMap {
           offsets.push(mx * k * side * 0.5, 0, -my * k * side * 0.5);
           uvs.push(along, side === 1 ? 0 : 1);
         }
-        if (i < n) {
+        if (i < last) {
           const a = base + i * 2;
           index.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
         }
@@ -525,6 +567,40 @@ export class OverviewMap {
     return mesh;
   }
 
+  /** Whether a projected point lies on the sheet. */
+  private onSheet([x, y]: [number, number]): boolean {
+    const [w, s, e, n] = this.extent;
+    return x >= w && x <= e && y >= s && y <= n;
+  }
+
+  /**
+   * Rings projected and cut to the sheet: a ring wholly on it stays closed;
+   * one running off it becomes the open runs that stay on it (data beyond
+   * the sheet — the bbox's bent edges — is not drawn on the table).
+   */
+  private runsOnSheet(rings: Ring[]): { pts: [number, number][]; closed: boolean }[] {
+    const out: { pts: [number, number][]; closed: boolean }[] = [];
+    for (const ring of rings) {
+      const pts = ring.map(([lon, lat]) => this.project(lon, lat));
+      const off = pts.findIndex((p) => !this.onSheet(p));
+      if (off < 0) {
+        out.push({ pts, closed: true });
+        continue;
+      }
+      let run: [number, number][] = [];
+      for (let k = 1; k <= pts.length; k++) {
+        const p = pts[(off + k) % pts.length];
+        if (this.onSheet(p)) run.push(p);
+        else {
+          if (run.length >= 2) out.push({ pts: run, closed: false });
+          run = [];
+        }
+      }
+      if (run.length >= 2) out.push({ pts: run, closed: false });
+    }
+    return out;
+  }
+
   /** A province's area as a translucent fill in the highlight colour. */
   private fill(polygons: Polygon[]): THREE.Mesh {
     const positions: number[] = [];
@@ -563,11 +639,33 @@ export class OverviewMap {
   }
 
   /** A name lying on the map at `at` (lon/lat), turned `angleDeg` from east. */
+  /** A province seat: an ink dot with a pale rim. */
+  private capital(at: [number, number]): void {
+    if (!this.capitalMat) {
+      const mat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false });
+      mat.fog = false;
+      const r = length(uv().sub(0.5).mul(2));
+      const rim = smoothstep(0.55, 0.65, r);
+      mat.colorNode = mix(vec3(0.29, 0.21, 0.13), vec3(0.96, 0.91, 0.78), rim);
+      mat.opacityNode = oneMinus(smoothstep(0.9, 1, r)).mul(this.fade);
+      mat.mrtNode = groundNormalMrt();
+      this.capitalMat = mat;
+    }
+    const dot = new THREE.Mesh(this.capitalGeo, this.capitalMat);
+    const [x, y] = this.project(at[0], at[1]);
+    dot.position.set(x, 0, -y);
+    dot.frustumCulled = false;
+    dot.renderOrder = 24;
+    this.group.add(dot);
+    this.capitals.push(dot);
+  }
+
   private label(
     text: string,
     at: [number, number],
     angleDeg: number,
     o: {
+      priority: number;
       base: number;
       minPx: number;
       maxPx: number;
@@ -575,18 +673,31 @@ export class OverviewMap {
       color: string;
       halo: string | null;
       spacing: string;
-      town?: boolean;
-      dot?: boolean;
     },
   ): void {
     const mesh = textLabel(text, o, this.fade);
     const [x, yN] = this.project(at[0], at[1]);
+    // Off the sheet (a neighbour's name beyond its edge): not written.
+    if (!this.onSheet([x, yN])) {
+      mesh.geometry.dispose();
+      (mesh.material as THREE.MeshBasicNodeMaterial).map?.dispose();
+      (mesh.material as THREE.MeshBasicNodeMaterial).dispose();
+      return;
+    }
     mesh.position.set(x, 0, -yN);
     mesh.rotation.y = (angleDeg * Math.PI) / 180;
     mesh.frustumCulled = false;
-    mesh.renderOrder = o.town ? 23 : 25;
+    mesh.renderOrder = 25;
+    mesh.geometry.computeBoundingBox();
     this.group.add(mesh);
-    this.labels.push({ mesh, base: o.base, minPx: o.minPx, maxPx: o.maxPx, town: !!o.town });
+    this.labels.push({
+      mesh,
+      base: o.base,
+      minPx: o.minPx,
+      maxPx: o.maxPx,
+      priority: o.priority,
+    });
+    this.labelsByPriority = [...this.labels].sort((a, b) => b.priority - a.priority);
   }
 }
 
