@@ -566,7 +566,12 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
     commands: ['charger.set_power'],
     standards: ['OCPP 2.0.1', 'OCPI'],
   }),
-  c('mobility.fuel_station', 'Akaryakıt istasyonu', 'site', 'polygon'),
+  c('mobility.fuel_station', 'Akaryakıt istasyonu', 'site', 'point', {
+    theme: t('asset', { kind: 'fuel_station' }),
+  }),
+  c('mobility.fuel_station_area', 'Akaryakıt istasyonu alanı', 'site', 'polygon', {
+    theme: t('area', { kind: 'fuel' }),
+  }),
   c('mobility.variable_message_sign', 'Değişken mesaj levhası (VMS)', 'street', 'point', {
     capabilities: ['state', 'command'],
     commands: ['display.message'],

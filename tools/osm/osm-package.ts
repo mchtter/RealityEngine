@@ -390,6 +390,7 @@ export function areaKind(t: Record<string, string>): string | null {
   if (t.landuse === 'harbour' || t.landuse === 'port' || t.industrial === 'port') return 'harbour';
   if (t.landuse === 'military' || MILITARY_GROUNDS.has(t.military ?? '')) return 'military';
   if (t.amenity === 'marketplace') return 'marketplace';
+  if (t.amenity === 'fuel') return 'fuel';
   // Surface car parks (a multi-storey / underground one is a building or nothing to see).
   if (
     t.amenity === 'parking' &&
@@ -477,6 +478,7 @@ export function osmTheme(t: Record<string, string>, g: Geometry): OsmTheme | nul
                 t.highway === 'traffic_signals' ||
                 t.amenity === 'bench' ||
                 t.amenity === 'waste_basket' ||
+                t.amenity === 'fuel' ||
                 t.power === 'pole' ||
                 t.power === 'tower' ||
                 t.man_made === 'mast' ||
@@ -533,6 +535,10 @@ export function buildingUse(t: Record<string, string>): string | undefined {
       : undefined)
   );
 }
+
+/** A fuel station's brand: OSM `brand`, else its `operator` (many stations carry only one). */
+const fuelBrand = (t: Record<string, string>) =>
+  t.amenity === 'fuel' ? (t.brand ?? t.operator) : undefined;
 
 /** The row of an OSM feature in its theme, or why it is left out. */
 export function osmRow(
@@ -605,18 +611,24 @@ export function osmRow(
             ? 'bench'
             : t.amenity === 'waste_basket'
               ? 'waste_basket'
-              : t.power === 'tower'
-                ? 'power_tower'
-                : t.man_made === 'mast'
-                  ? t['tower:type'] === 'lighting'
-                    ? 'floodlight'
-                    : 'mast'
-                  : t.man_made === 'flagpole'
-                    ? 'flagpole'
-                    : 'power_pole';
-    return { id, geometry: g, attrs: { kind, name: t.name, country: t.country } };
+              : t.amenity === 'fuel'
+                ? 'fuel_station'
+                : t.power === 'tower'
+                  ? 'power_tower'
+                  : t.man_made === 'mast'
+                    ? t['tower:type'] === 'lighting'
+                      ? 'floodlight'
+                      : 'mast'
+                    : t.man_made === 'flagpole'
+                      ? 'flagpole'
+                      : 'power_pole';
+    return {
+      id,
+      geometry: g,
+      attrs: { kind, name: t.name, brand: fuelBrand(t), country: t.country },
+    };
   }
-  return { id, geometry: g, attrs: { kind: areaKind(t), name: t.name } };
+  return { id, geometry: g, attrs: { kind: areaKind(t), name: t.name, brand: fuelBrand(t) } };
 }
 
 // ─── Reading an osmium export ───────────────────────────────────────────────

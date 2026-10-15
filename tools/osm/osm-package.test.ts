@@ -63,6 +63,7 @@ describe('areaKind', () => {
     assert.equal(areaKind({ landuse: 'railway' }), 'industrial');
     assert.equal(areaKind({ landuse: 'retail' }), 'residential');
     assert.equal(areaKind({ landuse: 'farmland' }), null);
+    assert.equal(areaKind({ amenity: 'fuel', landuse: 'retail' }), 'fuel');
     // Order: a park in a residential landuse polygon is a park.
     assert.equal(areaKind({ leisure: 'park', landuse: 'residential' }), 'park');
   });
@@ -111,6 +112,33 @@ describe('osmTheme', () => {
     assert.ok(!('drop' in crossing) && crossing.attrs.type === 'uncontrolled');
     const mast = osmRow('asset', 'm', pt(0, 0), { man_made: 'mast', 'tower:type': 'lighting' });
     assert.ok(!('drop' in mast) && mast.attrs.kind === 'floodlight');
+  });
+
+  it('carries fuel stations as assets (points) and areas (grounds) with name and brand', () => {
+    const tags = { amenity: 'fuel', name: 'Merkez', operator: 'Opet' };
+    assert.equal(osmTheme(tags, pt(0, 0)), 'asset');
+    assert.equal(osmTheme(tags, poly(square(0, 0, 1, 1))), 'area');
+    const station = osmRow('asset', 's', pt(0, 0), tags);
+    assert.ok(!('drop' in station));
+    assert.deepEqual(
+      [station.attrs.kind, station.attrs.name, station.attrs.brand],
+      ['fuel_station', 'Merkez', 'Opet'],
+    );
+    const grounds = osmRow('area', 'g', poly(square(0, 0, 1, 1)), { ...tags, brand: 'Shell' });
+    assert.ok(!('drop' in grounds));
+    assert.deepEqual([grounds.attrs.kind, grounds.attrs.brand], ['fuel', 'Shell']);
+    const dir = mkdtempSync(join(tmpdir(), 'osm-package-'));
+    try {
+      const file = new PackageWriter(dir, 'Test (ODbL)').writeLayer('asset', 'osm', [station], {
+        source: 's',
+        read: 1,
+        dropped: {},
+      });
+      const props = JSON.parse(readFileSync(join(dir, file), 'utf8')).features[0].properties;
+      assert.deepEqual([props.TUR, props.AD, props.MARKA], ['fuel_station', 'Merkez', 'Opet']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

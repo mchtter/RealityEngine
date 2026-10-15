@@ -322,6 +322,14 @@ const enumKnown = (code: string, label: string): CityRuleDef => ({
 });
 
 const NAME: CityAttributeDef = { key: 'name', type: 'string', label: 'Ad', column: 'AD' };
+const BRAND: CityAttributeDef = {
+  key: 'brand',
+  type: 'string',
+  label: 'Marka',
+  column: 'MARKA',
+  dt: true,
+  description: 'Akaryakıt istasyonlarında dağıtım şirketi (marka).',
+};
 
 /** Utility networks (same names as the compiler's UtilityKind). */
 export const CITY_UTILITY_NETWORKS = ['gas', 'water', 'sewer', 'power', 'telecom', 'heat'] as const;
@@ -733,6 +741,7 @@ const AREA_KINDS: Record<string, string> = {
   harbour: 'Liman / konteyner sahası',
   military: 'Askeri alan',
   marketplace: 'Pazar yeri',
+  fuel: 'Akaryakıt istasyonu alanı',
   substation: 'Trafo merkezi / şalt sahası',
   power_plant: 'Enerji santrali',
   airport: 'Havalimanı / hava üssü alanı',
@@ -761,6 +770,7 @@ export const AREA_CONTRACT_V1: CityThemeContract = {
       dt: true,
     },
     { ...NAME, dt: false },
+    BRAND,
   ],
   rules: [
     ...BASE_RULES('Poligon', 'Polygon ya da MultiPolygon'),
@@ -879,6 +889,7 @@ const ASSET_KINDS: Record<string, string> = {
   mast: 'Anten / verici direği',
   floodlight: 'Projektör direği (apron, stadyum, kavşak)',
   flagpole: 'Bayrak direği',
+  fuel_station: 'Akaryakıt istasyonu',
 };
 
 export const ASSET_CONTRACT_V1: CityThemeContract = {
@@ -888,7 +899,7 @@ export const ASSET_CONTRACT_V1: CityThemeContract = {
   file: 'kent_donatisi',
   label: 'Kent donatısı',
   description:
-    'Sokak lambaları, trafik ışıkları, duraklar, banklar, çöp kutuları, elektrik ve yüksek gerilim direkleri, anten ve bayrak direkleri.',
+    'Sokak lambaları, trafik ışıkları, duraklar, banklar, çöp kutuları, elektrik ve yüksek gerilim direkleri, anten ve bayrak direkleri, akaryakıt istasyonları.',
   dtUse:
     'Konumunda 3B nesne; taşıt yolunun üstüne düşen nesne bordüre çekilir. Verisi olmayan sokaklara DT görsel amaçlı lamba ekleyebilir; bunlar kayıt sayılmaz.',
   geometry: ['Point'],
@@ -904,6 +915,7 @@ export const ASSET_CONTRACT_V1: CityThemeContract = {
       dt: true,
     },
     { ...NAME, dt: false, description: 'Duraklarda durak adı.' },
+    BRAND,
     {
       key: 'country',
       type: 'string',
