@@ -22,6 +22,7 @@ import {
   triangulate,
   unionPolygons,
 } from '@opentwin/city-core';
+import { groundChunk, kentosGeoReady } from '@opentwin/kentos-geo';
 import * as THREE from 'three/webgpu';
 import { buildAirfieldLights } from './airfield-lights';
 import { MeshBuilder, drapeCells, drapeOnTerrain, drapeRingWall, toThree } from './geom';
@@ -119,6 +120,17 @@ function drapeShaded(mb: MeshBuilder, poly: Polygon, grid: TerrainGrid): void {
     const n = gridNormal(grid, mb.positions[v * 3], -mb.positions[v * 3 + 2]);
     mb.normals.splice(v * 3, 3, ...n);
   }
+}
+
+/** Twice the signed area of a ring (positive: counter-clockwise). */
+function ringSigned(r: [number, number][]): number {
+  let s = 0;
+  for (let k = 0; k < r.length; k++) {
+    const p = r[k];
+    const q = r[(k + 1) % r.length];
+    s += p[0] * q[1] - q[0] * p[1];
+  }
+  return s;
 }
 
 /** Grid cells (index of their lower-left node) that a footprint overlaps. */
@@ -551,10 +563,14 @@ export function buildGround(
         const y = t.minY + cj * t.cellSize;
         cellsHere.push(rectPolygon(x, y, x + t.cellSize, y + t.cellSize));
       }
+      // One ground layer (D-004): see `oneLayer` below; it draws the carved
+      // cells' bare ground itself.
+      const oneLayer = !opts.far && kentosGeoReady();
       if (cellsHere.length && !opts.far) {
         const patch = new MeshBuilder();
         const area = unionPolygons(cellsHere);
-        for (const poly of subtractPolygons(area, holes)) drapeShaded(patch, poly, shown);
+        if (!oneLayer)
+          for (const poly of subtractPolygons(area, holes)) drapeShaded(patch, poly, shown);
         for (const poly of clipPolygons(area, lids)) drapeShaded(patch, poly, ground.lid);
         if (patch.indices.length) {
           const mesh = new THREE.Mesh(patch.build(), terrainMat);
@@ -599,7 +615,90 @@ export function buildGround(
           : [[polys, t]];
       /** Street corridor surfaces drape on the street surface (off the lids). */
       const STREET = new Set<SurfaceKind>(['asphalt', 'sidewalk', 'island', 'paving']);
-      for (const surface of opts.far ? [] : model.surfaces) {
+      // One ground layer (D-004, crates/kentos-geo ground.rs): the surfaces made
+      // disjoint by priority (the higher lift on top, as drawn before), the bare
+      // ground only in the cells they touch, the terrain mesh in the rest. The
+      // old layering drew ~38 % of a dense tile twice (centimetre lifts that
+      // z-fight from afar). Trenches and lids cut it all (a mask on top); the
+      // surfaces over a lid are drawn on the lid below.
+      const touchedCells = new Set<number>();
+      const kerbSkip = nearCut
+        ? (a: [number, number], b: [number, number]) => onCut(a, b) || onHoleEdge(a, b)
+        : onCut;
+      if (oneLayer) {
+        const ordered = model.surfaces
+          .map((surface, k) => ({ surface, k }))
+          .sort((a, b) => LIFT[b.surface.kind] - LIFT[a.surface.kind] || a.k - b.k)
+          .map(({ surface }) => surface);
+        const masked = nearCut ? 1 : 0;
+        const out = groundChunk(
+          shown,
+          [i0, j0, i1, j1],
+          [
+            ...(nearCut ? [{ polygons: holes, lift: 0, deferred: false, mask: true }] : []),
+            ...ordered.map((surface) => ({
+              polygons: surface.polygons,
+              // Street surfaces keep their kerb heights on the street profile;
+              // the others now lie on the terrain itself (nothing under them).
+              lift: STREET.has(surface.kind) ? LIFT[surface.kind] : 0,
+              deferred: STREET.has(surface.kind),
+            })),
+          ],
+        );
+        const up: [number, number, number] = [0, 1, 0];
+        out.layers.slice(masked).forEach((layer, k) => {
+          const kind = ordered[k].kind;
+          const street = STREET.has(kind);
+          overlay.setAttribute('surf', [SURF[kind]]);
+          const base = overlay.vertexCount;
+          for (let v = 0; v < layer.vertices; v++) {
+            const x = layer.positions[v * 3];
+            const y = layer.positions[v * 3 + 1];
+            const z = street ? streetAt(x, y) + LIFT[kind] : layer.positions[v * 3 + 2];
+            overlay.vertex(toThree(x, y, z), up, undefined, x, y);
+          }
+          for (let q = 0; q < layer.triangles * 3; q += 3)
+            overlay.triangle(
+              base + layer.indices[q],
+              base + layer.indices[q + 1],
+              base + layer.indices[q + 2],
+            );
+          if (!street) return;
+          // A street surface stands above the terrain lowered under it: a kerb
+          // face down along every edge of its region (outer rings CCW, holes CW).
+          overlay.setAttribute('surf', [SURF_KERB]);
+          for (const { ring, hole } of layer.rings) {
+            const ccw = ringSigned(ring) > 0;
+            const oriented = ccw === !hole ? ring : [...ring].reverse();
+            drapeRingWall(overlay, oriented, streetAt, LIFT[kind], -1.0, true, 6, kerbSkip);
+          }
+        });
+        // Surfaces over a tunnel-mouth lid lie on the lid's own ground.
+        if (nearCut && lids.length)
+          for (const surface of ordered) {
+            const polys = clipPolygons(toChunk(surface.polygons), lids);
+            overlay.setAttribute('surf', [SURF[surface.kind]]);
+            for (const poly of polys) drapeOnTerrain(overlay, poly, ground.lid, LIFT[surface.kind]);
+          }
+        for (const c of out.covered) covered.add(c);
+        for (const c of out.touched) touchedCells.add(c);
+        if (out.bare.triangles) {
+          const bare = new MeshBuilder();
+          for (let v = 0; v < out.bare.vertices; v++) {
+            const x = out.bare.positions[v * 3];
+            const y = out.bare.positions[v * 3 + 1];
+            bare.vertex(toThree(x, y, out.bare.positions[v * 3 + 2]), gridNormal(shown, x, y));
+          }
+          for (let q = 0; q < out.bare.triangles * 3; q += 3)
+            bare.triangle(out.bare.indices[q], out.bare.indices[q + 1], out.bare.indices[q + 2]);
+          const mesh = new THREE.Mesh(bare.build(), terrainMat);
+          mesh.receiveShadow = true;
+          mesh.name = 'terrain-bare';
+          mesh.userData.role = 'ground:near';
+          chunk.add(mesh);
+        }
+      }
+      for (const surface of opts.far || oneLayer ? [] : model.surfaces) {
         const clipped = toChunk(surface.polygons);
         if (!clipped.length) continue;
         for (const [polys, grid] of onGrids(clipped)) {
@@ -636,7 +735,10 @@ export function buildGround(
       // ground there (one thin layer, like a photogrammetry mesh); edge cells
       // keep their terrain under the surface's edge.
       if (!opts.far) {
-        const skip = covered.size ? new Set([...carved, ...covered]) : carved;
+        const skip =
+          covered.size || touchedCells.size
+            ? new Set([...carved, ...covered, ...touchedCells])
+            : carved;
         const terrain = terrainMesh(
           shown,
           terrainMat,

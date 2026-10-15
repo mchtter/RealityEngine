@@ -38,6 +38,31 @@ export class Terrain {
     return v4;
   }
   /**
+   * One ground chunk (ground.rs `ground_chunk`). `cells`: [i0, j0, i1, j1).
+   * `layers`: per layer [lift, 0 / 1 deferred / 2 mask, polygon count], highest
+   * priority first. `polys`: every polygon in order as [outer length, hole
+   * count, hole lengths …, outer x, y …, holes' x, y …].
+   * Returns `[L, per layer: v, t, c, per contour: (n, hole 0 / 1), x, y, z …,
+   * i …, contour x, y …; bare: v, t, x, y, z …, i …; covered count, cells …;
+   * touched count, cells …]` (cells row-major `j * cols + i`).
+   * @param {Uint32Array} cells
+   * @param {Float64Array} layers
+   * @param {Float64Array} polys
+   * @returns {Float32Array}
+   */
+  ground(cells, layers, polys) {
+    const ptr0 = passArray32ToWasm0(cells, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(layers, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArrayF64ToWasm0(polys, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.terrain_ground(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+    var v4 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v4;
+  }
+  /**
    * @param {Float32Array} heights
    * @param {number} cols
    * @param {number} rows

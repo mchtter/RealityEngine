@@ -20,3 +20,34 @@ export function drapeOnTerrain(
   lift: number,
   step?: number,
 ): { vertices: number; triangles: number; cells: number; data: Float32Array };
+
+export interface GroundLayerInput {
+  polygons: { outer: [number, number][]; holes?: [number, number][][] }[];
+  /** Metres above the height source. */
+  lift: number;
+  /** Heights come back NaN for the caller to fill. */
+  deferred: boolean;
+  /** Cuts the layers below and the bare ground but draws nothing (a trench, a lid). */
+  mask?: boolean;
+}
+
+export interface GroundMesh {
+  vertices: number;
+  triangles: number;
+  /** x, y, z per vertex (model metres, z up). */
+  positions: Float32Array;
+  /** Vertex indices (as floats). */
+  indices: Float32Array;
+}
+
+/** One ground chunk with every surface layer made disjoint; see index.js. */
+export function groundChunk(
+  grid: KentosGrid,
+  cells: [number, number, number, number],
+  layers: GroundLayerInput[],
+): {
+  layers: (GroundMesh & { rings: { ring: [number, number][]; hole: boolean }[] })[];
+  bare: GroundMesh;
+  covered: Float32Array;
+  touched: Float32Array;
+};

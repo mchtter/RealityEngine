@@ -80,6 +80,47 @@ impl Grid<'_> {
     }
 }
 
+/// Which grid cells a drape may emit (bare ground only where surfaces leave
+/// some): a summed-area table answers "any cell in this square" in O(1).
+pub struct CellFilter {
+    cols: usize,
+    rows: usize,
+    /// (cols + 1) x (rows + 1) prefix sums.
+    sums: Vec<u32>,
+}
+
+impl CellFilter {
+    /// `mask`: row-major over the grid's nodes (cell (i, j) at j * cols + i).
+    pub fn new(mask: &[bool], cols: usize, rows: usize) -> CellFilter {
+        let w = cols + 1;
+        let mut sums = vec![0u32; w * (rows + 1)];
+        for j in 0..rows {
+            for i in 0..cols {
+                let v = mask[j * cols + i] as u32;
+                sums[(j + 1) * w + i + 1] = v + sums[j * w + i + 1] + sums[(j + 1) * w + i] - sums[j * w + i];
+            }
+        }
+        CellFilter { cols, rows, sums }
+    }
+
+    pub fn cell(&self, i: i64, j: i64) -> bool {
+        self.any(i, j, 1)
+    }
+
+    /// Any accepted cell in the n x n square from (i, j).
+    pub fn any(&self, i: i64, j: i64, n: i64) -> bool {
+        let w = self.cols + 1;
+        let a = i.clamp(0, self.cols as i64) as usize;
+        let b = j.clamp(0, self.rows as i64) as usize;
+        let c = (i + n).clamp(0, self.cols as i64) as usize;
+        let d = (j + n).clamp(0, self.rows as i64) as usize;
+        if a >= c || b >= d {
+            return false;
+        }
+        self.sums[d * w + c] + self.sums[b * w + a] > self.sums[b * w + c] + self.sums[d * w + a]
+    }
+}
+
 /// Triangles in model coordinates (x east, y north, z up), indexed.
 #[derive(Default)]
 pub struct Mesh {
@@ -306,6 +347,7 @@ impl<F: Fn(f64, f64) -> f64> Emitter<'_, '_, F> {
 }
 
 /// geom.ts `drapeCells` with a height function.
+#[allow(clippy::too_many_arguments)]
 pub fn drape_cells<F: Fn(f64, f64) -> f64>(
     mesh: &mut Mesh,
     poly: &Piece,
@@ -315,6 +357,24 @@ pub fn drape_cells<F: Fn(f64, f64) -> f64>(
     lift: f64,
     step: usize,
     on_full_cell: &mut dyn FnMut(i64, i64),
+) {
+    drape_cells_filtered(mesh, poly, origin, cell_size, height_at, lift, step, None, on_full_cell, &mut |_, _| {});
+}
+
+/// `drape_cells`, emitting only the cells `filter` accepts (all without one);
+/// `on_part_cell`: every cell the polygon covers in part (cut along its edge).
+#[allow(clippy::too_many_arguments)]
+pub fn drape_cells_filtered<F: Fn(f64, f64) -> f64>(
+    mesh: &mut Mesh,
+    poly: &Piece,
+    origin: (f64, f64),
+    cell_size: f64,
+    height_at: &F,
+    lift: f64,
+    step: usize,
+    filter: Option<&CellFilter>,
+    on_full_cell: &mut dyn FnMut(i64, i64),
+    on_part_cell: &mut dyn FnMut(i64, i64),
 ) {
     let cs = cell_size * step as f64;
     let (ox, oy) = origin;
@@ -330,7 +390,14 @@ pub fn drape_cells<F: Fn(f64, f64) -> f64>(
         n *= 2;
     }
     let root = vec![Piece { outer: ccw(&poly.outer), holes: poly.holes.iter().map(|h| ccw(h)).collect() }];
-    visit(&mut em, &root, i0, j0, n, ox, oy, cs, on_full_cell);
+    let mut cb = Callbacks { filter, on_full_cell, on_part_cell };
+    visit(&mut em, &root, i0, j0, n, ox, oy, cs, &mut cb);
+}
+
+struct Callbacks<'a, 'b, 'c> {
+    filter: Option<&'a CellFilter>,
+    on_full_cell: &'b mut dyn FnMut(i64, i64),
+    on_part_cell: &'c mut dyn FnMut(i64, i64),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -343,10 +410,15 @@ fn visit<F: Fn(f64, f64) -> f64>(
     ox: f64,
     oy: f64,
     cs: f64,
-    on_full_cell: &mut dyn FnMut(i64, i64),
+    cb: &mut Callbacks,
 ) {
     if pieces.is_empty() {
         return;
+    }
+    if let Some(f) = cb.filter {
+        if !f.any(i0, j0, n) {
+            return;
+        }
     }
     let x0 = ox + i0 as f64 * cs;
     let y0 = oy + j0 as f64 * cs;
@@ -354,11 +426,14 @@ fn visit<F: Fn(f64, f64) -> f64>(
     if pieces_area(pieces) >= side * side * (1.0 - 1e-6) {
         for j in j0..j0 + n {
             for i in i0..i0 + n {
+                if cb.filter.is_some_and(|f| !f.cell(i, j)) {
+                    continue;
+                }
                 let a = ox + i as f64 * cs;
                 let b = oy + j as f64 * cs;
                 em.emit([a, b], [a + cs, b], [a + cs, b + cs]);
                 em.emit([a, b], [a + cs, b + cs], [a, b + cs]);
-                on_full_cell(i, j);
+                (cb.on_full_cell)(i, j);
             }
         }
         return;
@@ -371,6 +446,9 @@ fn visit<F: Fn(f64, f64) -> f64>(
         em.triangulate_pieces(&lower);
         let upper = clip_pieces(pieces, &[[x0, y0], [x1, y1], [x0, y1]], wb, false);
         em.triangulate_pieces(&upper);
+        if !lower.is_empty() || !upper.is_empty() {
+            (cb.on_part_cell)(i0, j0);
+        }
         return;
     }
     let h = n >> 1;
@@ -380,7 +458,7 @@ fn visit<F: Fn(f64, f64) -> f64>(
         let ex = sx + h as f64 * cs;
         let ey = sy + h as f64 * cs;
         let sub = clip_pieces(pieces, &[[sx, sy], [ex, sy], [ex, ey], [sx, ey]], [sx, sy, ex, ey], true);
-        visit(em, &sub, i0 + di, j0 + dj, h, ox, oy, cs, on_full_cell);
+        visit(em, &sub, i0 + di, j0 + dj, h, ox, oy, cs, cb);
     }
 }
 
