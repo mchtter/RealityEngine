@@ -580,6 +580,29 @@ export class LiveObjectLayer {
     return this.entries.has(refKey(ref.pluginId, ref.feedId, ref.objectId));
   }
 
+  /** Key of the highlighted object (`plugin/feed/object`), null: none. */
+  get selectedKey(): string | null {
+    return this.selected;
+  }
+
+  /** Key (`plugin/feed/object`) of a reference. */
+  keyOf(ref: LiveRef): string {
+    return refKey(ref.pluginId, ref.feedId, ref.objectId);
+  }
+
+  /** Latest view of an object (null: not in any feed). */
+  viewOf(ref: LiveRef): LiveObjectView | null {
+    return this.entries.get(refKey(ref.pluginId, ref.feedId, ref.objectId))?.view ?? null;
+  }
+
+  /** The objects of a class with their keys (e.g. earthquakes for the overview map). */
+  ofClass(classId: string): { key: string; view: LiveObjectView }[] {
+    const out: { key: string; view: LiveObjectView }[] = [];
+    for (const [key, e] of this.entries)
+      if (e.view.classId === classId) out.push({ key, view: e.view });
+    return out;
+  }
+
   /** Scene position, kind and heading of an object (camera focus / follow). */
   stateOf(
     ref: LiveRef,

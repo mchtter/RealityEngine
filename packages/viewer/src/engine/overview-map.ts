@@ -97,14 +97,14 @@ export class OverviewMap {
   readonly group = new THREE.Group();
   readonly anchorE: number;
   readonly anchorN: number;
-  private readonly project: (lon: number, lat: number) => [number, number];
+  readonly project: (lon: number, lat: number) => [number, number];
   private readonly plane: THREE.Mesh;
   private readonly planeMat: THREE.MeshBasicNodeMaterial;
   private readonly labels: Label[] = [];
   private readonly lineMats: { mat: THREE.MeshBasicNodeMaterial; px: number }[] = [];
   /** Metres per screen pixel at the camera target (line widths, name sizes). */
-  private readonly mpp = uniform(500);
-  private readonly fade = uniform(1);
+  readonly mpp = uniform(500);
+  readonly fade = uniform(1);
   private readonly highlightColor = uniform(new THREE.Color());
   private readonly fills = new Map<number, THREE.Mesh>();
   private readonly outlines = new Map<number, THREE.Mesh>();
@@ -579,54 +579,7 @@ export class OverviewMap {
       dot?: boolean;
     },
   ): void {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d')!;
-    ctx.font = o.font;
-    (ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = o.spacing;
-    const metrics = ctx.measureText(text);
-    const fontPx = Number(/(\d+)px/.exec(o.font)?.[1] ?? 96);
-    const dot = o.dot ? fontPx * 0.9 : 0;
-    const padX = fontPx * 0.4;
-    canvas.width = Math.ceil(metrics.width + padX * 2 + dot);
-    canvas.height = Math.ceil(fontPx * 1.5);
-    ctx.font = o.font;
-    (ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = o.spacing;
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = 'left';
-    const y = canvas.height / 2;
-    if (o.dot) {
-      ctx.fillStyle = o.color;
-      ctx.beginPath();
-      ctx.arc(padX * 0.6 + dot * 0.25, y, fontPx * 0.18, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    if (o.halo) {
-      ctx.strokeStyle = o.halo;
-      ctx.lineWidth = fontPx * 0.16;
-      ctx.lineJoin = 'round';
-      ctx.strokeText(text, padX + dot, y);
-    }
-    ctx.fillStyle = o.color;
-    ctx.fillText(text, padX + dot, y);
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.anisotropy = 8;
-    // Unit letter height: the quad is (width / height) × 1, scaled per frame.
-    const aspect = canvas.width / canvas.height;
-    const g = new THREE.PlaneGeometry(aspect * 1.5, 1.5);
-    g.rotateX(-Math.PI / 2);
-    // A town's dot sits on its point; other names are centred on theirs.
-    if (o.dot) g.translate(aspect * 0.75 - ((padX * 0.6 + dot * 0.25) / canvas.height) * 1.5, 0, 0);
-    const mat = new THREE.MeshBasicNodeMaterial({
-      map: texture,
-      transparent: true,
-      depthWrite: false,
-    });
-    mat.fog = false;
-    // The map's alpha is kept; this scales it.
-    mat.opacityNode = this.fade;
-    mat.mrtNode = groundNormalMrt();
-    const mesh = new THREE.Mesh(g, mat);
+    const mesh = textLabel(text, o, this.fade);
     const [x, yN] = this.project(at[0], at[1]);
     mesh.position.set(x, 0, -yN);
     mesh.rotation.y = (angleDeg * Math.PI) / 180;
@@ -641,4 +594,73 @@ export class OverviewMap {
 function leftNormal(dx: number, dy: number): [number, number] {
   const l = Math.hypot(dx, dy);
   return l < 1e-9 ? [0, 0] : [-dy / l, dx / l];
+}
+
+/** Look of a name written on the map. */
+export interface TextLabelStyle {
+  font: string;
+  color: string;
+  halo: string | null;
+  spacing: string;
+  /** A dot before the text, sitting on the label's point. */
+  dot?: boolean;
+}
+
+/**
+ * A text quad lying flat (unit letter height, scaled by the caller), centred
+ * on its origin — or with its dot there. `fade` scales its alpha.
+ */
+export function textLabel(
+  text: string,
+  o: TextLabelStyle,
+  fade: THREE.UniformNode<'float', number>,
+): THREE.Mesh {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d')!;
+  ctx.font = o.font;
+  (ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = o.spacing;
+  const metrics = ctx.measureText(text);
+  const fontPx = Number(/(\d+)px/.exec(o.font)?.[1] ?? 96);
+  const dot = o.dot ? fontPx * 0.9 : 0;
+  const padX = fontPx * 0.4;
+  canvas.width = Math.ceil(metrics.width + padX * 2 + dot);
+  canvas.height = Math.ceil(fontPx * 1.5);
+  ctx.font = o.font;
+  (ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = o.spacing;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  const y = canvas.height / 2;
+  if (o.dot) {
+    ctx.fillStyle = o.color;
+    ctx.beginPath();
+    ctx.arc(padX * 0.6 + dot * 0.25, y, fontPx * 0.18, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  if (o.halo) {
+    ctx.strokeStyle = o.halo;
+    ctx.lineWidth = fontPx * 0.16;
+    ctx.lineJoin = 'round';
+    ctx.strokeText(text, padX + dot, y);
+  }
+  ctx.fillStyle = o.color;
+  ctx.fillText(text, padX + dot, y);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 8;
+  // Unit letter height: the quad is (width / height) × 1, scaled per frame.
+  const aspect = canvas.width / canvas.height;
+  const g = new THREE.PlaneGeometry(aspect * 1.5, 1.5);
+  g.rotateX(-Math.PI / 2);
+  // A town's dot sits on its point; other names are centred on theirs.
+  if (o.dot) g.translate(aspect * 0.75 - ((padX * 0.6 + dot * 0.25) / canvas.height) * 1.5, 0, 0);
+  const mat = new THREE.MeshBasicNodeMaterial({
+    map: texture,
+    transparent: true,
+    depthWrite: false,
+  });
+  mat.fog = false;
+  // The map's alpha is kept; this scales it.
+  mat.opacityNode = fade;
+  mat.mrtNode = groundNormalMrt();
+  return new THREE.Mesh(g, mat);
 }

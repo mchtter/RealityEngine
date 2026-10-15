@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { type Polygon, insidePolygon, overlaps, thinRing } from './overview-geo';
+import {
+  type Polygon,
+  greatCircle,
+  haversineKm,
+  insidePolygon,
+  overlaps,
+  quakeZoneKm,
+  thinRing,
+} from './overview-geo';
 
 const square = (w: number, s: number, e: number, n: number): Polygon => [
   [
@@ -41,5 +49,26 @@ describe('overview map geometry', () => {
     const province = [square(32, 39, 34, 41)];
     const district = [square(32.8, 39.8, 33, 40)];
     expect(overlaps(province, district)).toBe(true);
+  });
+});
+
+describe('earthquake helpers', () => {
+  it('measures great-circle distances', () => {
+    // Ankara – İstanbul (Kızılay – Taksim) ≈ 350 km.
+    expect(haversineKm([32.854, 39.92], [28.985, 41.037])).toBeGreaterThan(340);
+    expect(haversineKm([32.854, 39.92], [28.985, 41.037])).toBeLessThan(360);
+  });
+
+  it('runs a great circle through both ends', () => {
+    const arc = greatCircle([31.6, 40.7], [32.85, 39.93], 16);
+    expect(arc).toHaveLength(17);
+    expect(arc[0][0]).toBeCloseTo(31.6, 6);
+    expect(arc[16][1]).toBeCloseTo(39.93, 6);
+  });
+
+  it('sizes the zone by the Dobrovolsky radius', () => {
+    expect(quakeZoneKm(5.8)).toBeGreaterThan(300);
+    expect(quakeZoneKm(5.8)).toBeLessThan(320);
+    expect(quakeZoneKm(1)).toBeCloseTo(2.69, 1);
   });
 });

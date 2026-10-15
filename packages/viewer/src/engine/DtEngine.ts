@@ -37,6 +37,7 @@ import {
   PolygonIndex,
   clampStep,
   densifyRing,
+  interiorPoint,
   outerRings,
   simplifyRing,
 } from './boundary-geo';
@@ -61,6 +62,7 @@ import {
 import { type OverviewData, OverviewMap, type OverviewPick } from './overview-map';
 import { PlacePin, type PinScreen } from './place-pin';
 import { PlacementLayer } from './placements';
+import { type QuakeCity, QuakeOverlay } from './quake-overlay';
 import { SlotAllocator } from './slot-allocator';
 import {
   type BuildingInfo,
@@ -205,6 +207,10 @@ const ORBIT_MAX_POLAR = 1.43;
 const MAP_MAX_POLAR = 0.95;
 /** Where a click on a province brings the camera (m from its target). */
 const PROVINCE_ENTRY_DISTANCE = 1800;
+/** Live class drawn on the overview map as earthquakes (zone rings, arc to the city). */
+const QUAKE_CLASS = 'hazard.earthquake';
+/** The overview map's quakes are refreshed from the feeds this often (ms). */
+const MAP_QUAKES_MS = 500;
 
 /** What the transform gizmo does to a placed model (W / E / R, as in Unreal). */
 export type PlacementGizmoMode = 'translate' | 'rotate' | 'scale';
@@ -768,12 +774,16 @@ export class DtEngine {
   private mapPointer: { x: number; y: number } | null = null;
   private mapPointerDirty = false;
   private mapHoverCode: number | null = null;
+  /** Earthquakes on the overview map (in its group). */
+  private quakes: QuakeOverlay | null = null;
+  private quakesAt = 0;
 
   /** Country map data (Natural Earth, /dt/l0/turkey.json); null removes the map. */
   setOverviewData(data: OverviewData | null): void {
     this.overviewData = data;
     this.overview?.dispose();
     this.overview = null;
+    this.quakes = null;
   }
 
   /** The full overview map covers the city (L0, the camera high above it). */
@@ -787,9 +797,13 @@ export class DtEngine {
     if (this.overview && this.overview.zone === this.world.zone) return this.overview;
     this.overview?.dispose();
     const area = this.boundaryRings?.map((ring) => [ring as [number, number][]]) ?? null;
-    this.overview = new OverviewMap(this.overviewData, this.world.zone, area);
-    this.scene.add(this.overview.group);
-    return this.overview;
+    const m = new OverviewMap(this.overviewData, this.world.zone, area);
+    this.overview = m;
+    this.quakes = new QuakeOverlay(m.project, m.mpp, m.fade);
+    this.quakesAt = 0;
+    m.group.add(this.quakes.group);
+    this.scene.add(m.group);
+    return m;
   }
 
   /**
@@ -819,6 +833,27 @@ export class DtEngine {
       (dist * 2 * Math.tan((this.camera.fov * Math.PI) / 360)) /
       Math.max(1, this.container.clientHeight);
     m.setScale(mpp, mpp * 1.5);
+    if (this.quakes && k > 0) {
+      const now = performance.now();
+      if (now - this.quakesAt > MAP_QUAKES_MS) {
+        this.quakesAt = now;
+        const selected = this.live.selectedKey;
+        this.quakes.update(
+          this.live.ofClass(QUAKE_CLASS).map(({ key, view }) => ({
+            key,
+            lon: view.lon,
+            lat: view.lat,
+            magnitude:
+              typeof view.attrs?.magnitude === 'number' && Number.isFinite(view.attrs.magnitude)
+                ? view.attrs.magnitude
+                : null,
+          })),
+          selected,
+          this.cityPoint(),
+        );
+      }
+      this.quakes.setScale(mpp, mpp * 1.5);
+    }
     // Far plane out past the map's far edge.
     const far = Math.max(70000, dist * 4);
     if (Math.abs(far - this.camera.far) > this.camera.far * 0.1) {
@@ -838,6 +873,26 @@ export class DtEngine {
       this.mapPointerDirty = false;
       this.hoverMap();
     } else if (!this.mapMode && this.mapHoverCode !== null) this.hoverMap();
+  }
+
+  /**
+   * The tenant's city on the overview map: the capital of the province its
+   * work area covers, else a point inside the work area.
+   */
+  private cityPoint(): QuakeCity | null {
+    const m = this.overview;
+    const p = m?.data.provinces.find((pr) => m.provinceHasData(pr.code));
+    if (p) return { name: p.name, at: p.capital };
+    const inner = this.boundaryRings ? interiorPoint(this.boundaryRings) : null;
+    return inner ? { name: '', at: [inner[0], inner[1]] } : null;
+  }
+
+  /** Whether a lon/lat point lies outside the work area (false without one). */
+  private outsideWorkArea(lon: number, lat: number): boolean {
+    const b = this.boundary;
+    if (!b) return false;
+    const [e, n] = utmForward(lon, lat, b.zone);
+    return !b.index.contains(e - b.anchorE, n - b.anchorN);
   }
 
   /** The orbit target kept over the map's extent (the camera moved with it). */
@@ -976,6 +1031,7 @@ export class DtEngine {
     // Provinces with data follow the work area.
     this.overview?.dispose();
     this.overview = null;
+    this.quakes = null;
   }
 
   /** Tiles the tile service reported outside the work area (kept until the boundary changes). */
@@ -2050,6 +2106,29 @@ export class DtEngine {
    * its position `at` (the tiles there load). False when it could not be found.
    */
   focusLive(sel: LiveRef, at?: { lon: number; lat: number }): boolean {
+    // Beyond the city (a quake in another province): up to the overview map,
+    // the object and the city framed together — not the boundary.
+    const view = this.live.viewOf(sel);
+    const where = view ? { lon: view.lon, lat: view.lat } : at;
+    if (where && this.overviewData && this.outsideWorkArea(where.lon, where.lat)) {
+      const city = this.cityPoint();
+      const lons = [where.lon, ...(city ? [city.at[0]] : [])];
+      const lats = [where.lat, ...(city ? [city.at[1]] : [])];
+      const pad = 0.35;
+      this.followLive = null;
+      this.followLiveAt = null;
+      this.flyToBounds(
+        [
+          Math.min(...lons) - pad,
+          Math.min(...lats) - pad,
+          Math.max(...lons) + pad,
+          Math.max(...lats) + pad,
+        ],
+        MAP_MAX_DISTANCE,
+        MAP_FADE_TO * 2,
+      );
+      return true;
+    }
     const st = this.live.stateOf(sel);
     if (!st) {
       if (!at) return false;
@@ -2280,7 +2359,13 @@ export class DtEngine {
    * UTM zone (or before the first tile) is kept as the pending view: the
    * tiles there are requested and the camera lands once they arrive.
    */
-  flyToBounds(bbox: [number, number, number, number]): void {
+  flyToBounds(
+    bbox: [number, number, number, number],
+    /** Farthest (m) the fit may back off; the overview map passes its own. */
+    maxDistance = FIT_MAX_DISTANCE,
+    /** Nearest (m): a fit onto the overview map stays above it. */
+    minDistance = 0,
+  ): void {
     const [w, s, e, n] = bbox;
     const lon = (w + e) / 2;
     const lat = (s + n) / 2;
@@ -2291,8 +2376,8 @@ export class DtEngine {
     const hFov = 2 * Math.atan(Math.tan(vFov / 2) * this.camera.aspect);
     const distance = THREE.MathUtils.clamp(
       (radius / Math.sin(Math.min(vFov, hFov) / 2)) * 1.1,
-      this.controls.minDistance * 4,
-      FIT_MAX_DISTANCE,
+      Math.max(this.controls.minDistance * 4, minDistance),
+      maxDistance,
     );
     // The user may zoom out as far as the fit went.
     this.controls.maxDistance = Math.max(this.controls.maxDistance, distance);
@@ -2736,6 +2821,19 @@ export class DtEngine {
     if (!start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 4) return;
     if (this.downOnGizmo) return;
     if (this.mapMode) {
+      // A live object on the map (a quake) first, else the province under it.
+      const rect = this.renderer.domElement.getBoundingClientRect();
+      const live = this.live.pick(
+        this.camera,
+        rect.width,
+        rect.height,
+        e.clientX - rect.left,
+        e.clientY - rect.top,
+      );
+      if (live) {
+        this.events.onSelectLive?.(live);
+        return;
+      }
       const pick = this.mapPickAt(e.clientX, e.clientY);
       if (pick?.hasData) this.enterProvince(pick);
       return;

@@ -119,3 +119,52 @@ export function overlaps(
   ).length;
   return covered >= own.length * 0.15;
 }
+
+const RAD = Math.PI / 180;
+/** Mean Earth radius (km). */
+const EARTH_KM = 6371;
+
+/** Great-circle distance (km) between two lon/lat points. */
+export function haversineKm(a: [number, number], b: [number, number]): number {
+  const dLat = (b[1] - a[1]) * RAD;
+  const dLon = (b[0] - a[0]) * RAD;
+  const h =
+    Math.sin(dLat / 2) ** 2 + Math.cos(a[1] * RAD) * Math.cos(b[1] * RAD) * Math.sin(dLon / 2) ** 2;
+  return 2 * EARTH_KM * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/** `n + 1` points along the great circle from `a` to `b` (lon/lat), both ends included. */
+export function greatCircle(a: [number, number], b: [number, number], n: number): Ring {
+  const vec = ([lon, lat]: [number, number]) => [
+    Math.cos(lat * RAD) * Math.cos(lon * RAD),
+    Math.cos(lat * RAD) * Math.sin(lon * RAD),
+    Math.sin(lat * RAD),
+  ];
+  const p = vec(a);
+  const q = vec(b);
+  const omega = Math.acos(Math.min(1, Math.max(-1, p[0] * q[0] + p[1] * q[1] + p[2] * q[2])));
+  const out: Ring = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const [ka, kb] =
+      omega < 1e-9
+        ? [1 - t, t]
+        : [Math.sin((1 - t) * omega) / Math.sin(omega), Math.sin(t * omega) / Math.sin(omega)];
+    const x = ka * p[0] + kb * q[0];
+    const y = ka * p[1] + kb * q[1];
+    const z = ka * p[2] + kb * q[2];
+    out.push([Math.atan2(y, x) / RAD, Math.atan2(z, Math.hypot(x, y)) / RAD]);
+  }
+  return out;
+}
+
+/**
+ * Radius (km) of an earthquake's zone drawn on the overview map: the
+ * Dobrovolsky radius R = 10^(0.43·M) km (Dobrovolsky, Zubkov & Miachkin
+ * 1979, "Estimation of the size of earthquake preparation zones", Pure Appl.
+ * Geophys. 117, doi:10.1007/BF00876083) — the zone of the quake's crustal
+ * deformation, an indication of its reach, not its felt area.
+ */
+export function quakeZoneKm(magnitude: number): number {
+  return 10 ** (0.43 * magnitude);
+}
