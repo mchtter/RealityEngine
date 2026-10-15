@@ -158,7 +158,7 @@ export interface DtEngineStats {
   triangles: number;
   /** Average CPU time of render() per frame (ms). */
   cpuMsPerFrame: number;
-  /** Detail level (1 street … 5 city). */
+  /** Detail level (0 map, 1 over the city … 5 street). */
   level: DetailLevel;
 }
 
