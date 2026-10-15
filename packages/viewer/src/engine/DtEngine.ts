@@ -2,6 +2,7 @@ import {
   type GeoTerrainGrid,
   type LonLat,
   type UtilityKind,
+  tileKey,
   utmForward,
   utmInverse,
   utmZoneOf,
@@ -31,7 +32,16 @@ import {
   vibrance,
 } from 'three/tsl';
 import * as THREE from 'three/webgpu';
+import {
+  type FlatRing,
+  PolygonIndex,
+  clampStep,
+  densifyRing,
+  outerRings,
+  simplifyRing,
+} from './boundary-geo';
 import { CameraRig, type DtCameraMode } from './camera-modes';
+import { BoundaryWall } from './city-boundary';
 import { buildCityStates, disposeCityStates } from './city-states';
 import { CityTile, type DtInspect, FAR_SHADOW_LAYER, type TileLevel } from './city-tile';
 import { type DetailLevel, LEVEL_DWELL_MS, nextLevel } from './detail-level';
@@ -165,7 +175,20 @@ export interface DtEngineEvents {
   onSelectPlacement?: (id: string | null) => void;
   /** A live object (plugin feed) was clicked (null: a click elsewhere). */
   onSelectLive?: (sel: LiveRef | null) => void;
+  /** The camera ran into the city's boundary (at most every few seconds). */
+  onBoundary?: () => void;
 }
+
+/** Douglas–Peucker tolerance of the work area's rings (m): provinces have tens of thousands of vertices. */
+const BOUNDARY_SIMPLIFY_M = 60;
+/** Longest wall segment (m): the wall's foot follows the terrain between ring vertices. */
+const BOUNDARY_SEGMENT_M = 250;
+/** How far inside the boundary the camera is pulled back to (m). */
+const BOUNDARY_MARGIN_M = 30;
+/** Least time between two boundary notices (ms). */
+const BOUNDARY_NOTICE_MS = 4000;
+/** Least time between two re-samplings of the wall's foot while tiles stream (ms). */
+const BOUNDARY_GROUND_MS = 1500;
 
 /** What the transform gizmo does to a placed model (W / E / R, as in Unreal). */
 export type PlacementGizmoMode = 'translate' | 'rotate' | 'scale';
@@ -268,6 +291,32 @@ export class DtEngine {
   private horizon: HorizonLayer | null = null;
   /** Geographic centre of the horizon grid. */
   private horizonAt: LonLat | null = null;
+
+  /** The city's work area as given (GeoJSON), its outer rings ([lon, lat]). */
+  private boundaryInput: unknown = null;
+  private boundaryRings: [number, number][][] | null = null;
+  /**
+   * The work area in the world's UTM zone, in metres from an anchor (whole km):
+   * its index (inside tests, nearest point) and wall. Rebuilt only when the
+   * zone changes; a moved world origin only moves the wall.
+   */
+  private boundary: {
+    zone: number;
+    anchorE: number;
+    anchorN: number;
+    index: PolygonIndex;
+    wall: BoundaryWall;
+  } | null = null;
+  /** Zone the boundary was last built for (also when nothing of it fell in that zone). */
+  private boundaryZone: number | null = null;
+  private boundaryGroundDirty = false;
+  private boundaryGroundAt = 0;
+  /** Where the clamp last found the camera inside (skips the test while nothing moved). */
+  private readonly boundaryChecked = new THREE.Vector3(Number.NaN, 0, 0);
+  private boundaryPulling = false;
+  private boundaryNoticeAt = -Infinity;
+  /** Tiles the tile service reported outside the work area (red hatch on the horizon). */
+  private outsideTiles = new Set<string>();
 
   /** Ground pictures of the loaded tiles (ground-atlas.ts). */
   private readonly groundAtlas: GroundAtlas;
@@ -604,6 +653,7 @@ export class DtEngine {
       payload.ground ? this.groundAtlas.add(payload.ground) : -1,
     );
     this.horizon?.setTile(key, 'loaded');
+    this.boundaryGroundDirty = true;
     // Always written: a reused slot must not keep a previous building's colour / selection.
     const painted = this.paintScenario(tile);
     if (this.scenarioColor) {
@@ -677,7 +727,174 @@ export class DtEngine {
     this.horizonAt = at;
     for (const key of this.pendingTiles) this.horizon.setTile(key, 'pending');
     for (const key of this.tiles.keys()) this.horizon.setTile(key, 'loaded');
+    this.horizon.setOutsideTiles(this.outsideTiles);
+    this.applyRestricted();
+    this.boundaryGroundDirty = true;
     this.scene.add(this.horizon.mesh);
+  }
+
+  // ─── City boundary (work area) ─────────────────────────────────────────────
+
+  /**
+   * The city's work area (GeoJSON Polygon / MultiPolygon, EPSG:4326; null
+   * clears it): a wall of light along its outer rings, the camera kept
+   * inside, the land outside hatched red on the horizon. Applied once the
+   * world frame is known (the first tile), in the world's UTM zone — ring
+   * points of another zone are skipped.
+   */
+  setCityBoundary(geometry: unknown): void {
+    if (geometry === this.boundaryInput) return;
+    this.boundaryInput = geometry;
+    const rings = geometry ? outerRings(geometry) : [];
+    this.boundaryRings = rings.length ? rings : null;
+    this.dropBoundary();
+    this.outsideTiles = new Set();
+    this.horizon?.setOutsideTiles(this.outsideTiles);
+    this.syncBoundary();
+  }
+
+  /** Tiles the tile service reported outside the work area (kept until the boundary changes). */
+  markOutsideTiles(keys: Iterable<string>): void {
+    for (const key of keys) {
+      if (this.outsideTiles.has(key)) continue;
+      this.outsideTiles.add(key);
+      this.horizon?.setTile(key, 'restricted');
+    }
+  }
+
+  private dropBoundary(): void {
+    this.boundary?.wall.dispose();
+    this.boundary = null;
+    this.boundaryZone = null;
+    this.boundaryPulling = false;
+    this.boundaryChecked.set(Number.NaN, 0, 0);
+    this.horizon?.setRestricted(null);
+  }
+
+  /** Builds the boundary for the world's zone when needed and places its wall for the origin. */
+  private syncBoundary(): void {
+    if (!this.boundaryRings || !this.world) return;
+    const world = this.world;
+    if (this.boundaryZone !== world.zone) {
+      this.dropBoundary();
+      this.boundaryZone = world.zone;
+      let anchor: [number, number] | null = null;
+      const rings: FlatRing[] = [];
+      for (const ring of this.boundaryRings) {
+        const flat: FlatRing = [];
+        for (const [lon, lat] of ring) {
+          if (utmZoneOf(lon) !== world.zone) continue;
+          const [e, n] = utmForward(lon, lat, world.zone);
+          anchor ??= [Math.floor(e / 1000) * 1000, Math.floor(n / 1000) * 1000];
+          flat.push(e - anchor[0], n - anchor[1]);
+        }
+        // GeoJSON repeats the first point at the end.
+        const k = flat.length;
+        if (k >= 4 && flat[0] === flat[k - 2] && flat[1] === flat[k - 1]) flat.length = k - 2;
+        if (flat.length >= 6) rings.push(simplifyRing(flat, BOUNDARY_SIMPLIFY_M));
+      }
+      if (!anchor || !rings.length) return;
+      const wall = new BoundaryWall(rings.map((r) => densifyRing(r, BOUNDARY_SEGMENT_M)));
+      this.boundary = {
+        zone: world.zone,
+        anchorE: anchor[0],
+        anchorN: anchor[1],
+        index: new PolygonIndex(rings),
+        wall,
+      };
+      this.scene.add(wall.mesh);
+      this.boundaryGroundDirty = true;
+      this.boundaryGroundAt = 0;
+      this.applyRestricted();
+    }
+    const b = this.boundary;
+    if (!b) return;
+    b.wall.mesh.position.set(...toThree(b.anchorE - world.originE, b.anchorN - world.originN, 0));
+  }
+
+  /** Horizon cells whose centre lies outside the work area are hatched red. */
+  private applyRestricted(): void {
+    const b = this.boundary;
+    const h = this.horizon;
+    if (!h) return;
+    if (!b || h.world.zone !== b.zone) {
+      h.setRestricted(null);
+      return;
+    }
+    h.setRestricted((e, n) => !b.index.contains(e - b.anchorE, n - b.anchorN));
+  }
+
+  /**
+   * The wall's foot on the ground: a loaded tile's terrain where there is one,
+   * else the horizon's coarse heights, else the ground at the camera target.
+   */
+  private groundBoundary(): void {
+    const b = this.boundary;
+    if (!b || !this.world) return;
+    const world = this.world;
+    const fallback = this.controls.target.y;
+    b.wall.setGround((ax, ay) => {
+      const e = b.anchorE + ax;
+      const n = b.anchorN + ay;
+      const tile = this.tiles.get(tileKey(b.zone, Math.floor(e / 1000), Math.floor(n / 1000)));
+      const h = tile?.heightAt(e - world.originE, n - world.originN);
+      if (h !== null && h !== undefined) return h;
+      return this.horizon?.heightAtUtm(e, n) ?? fallback;
+    });
+  }
+
+  /**
+   * Keeps the camera inside the work area: the orbit target (street / fly:
+   * the camera) found outside is pulled back — camera and target by the same
+   * amount — towards a point just inside the nearest boundary, eased like
+   * running into a wall. Tested only when it moved.
+   */
+  private clampToBoundary(dt: number): void {
+    const b = this.boundary;
+    if (!b || !this.world || this.fly) return;
+    const own = this.rig.mode === 'street' || this.rig.mode === 'fly';
+    const p = own ? this.camera.position : this.controls.target;
+    if (!this.boundaryPulling && this.boundaryChecked.distanceToSquared(p) < 0.01) return;
+    const e = this.world.originE + p.x - b.anchorE;
+    const n = this.world.originN - p.z - b.anchorN;
+    if (b.index.contains(e, n)) {
+      this.boundaryChecked.copy(p);
+      this.boundaryPulling = false;
+      return;
+    }
+    const goal = b.index.inwardPoint(e, n, BOUNDARY_MARGIN_M);
+    if (!goal) return;
+    const [dx, dy] = clampStep([e, n], goal, dt);
+    // three: x east, z south.
+    this.camera.position.x += dx;
+    this.camera.position.z -= dy;
+    this.controls.target.x += dx;
+    this.controls.target.z -= dy;
+    this.boundaryChecked.copy(p);
+    this.boundaryPulling = true;
+    this.controls.dispatchEvent({ type: 'change' });
+    const now = performance.now();
+    if (now - this.boundaryNoticeAt > BOUNDARY_NOTICE_MS) {
+      this.boundaryNoticeAt = now;
+      this.events.onBoundary?.();
+    }
+  }
+
+  /** Per frame: the wall placed for the origin, its foot re-sampled after tiles came, its fade, the clamp. */
+  private tickBoundary(dt: number): void {
+    if (!this.boundaryRings) return;
+    this.syncBoundary();
+    const b = this.boundary;
+    if (!b) return;
+    const now = performance.now();
+    if (this.boundaryGroundDirty && now - this.boundaryGroundAt > BOUNDARY_GROUND_MS) {
+      this.boundaryGroundDirty = false;
+      this.boundaryGroundAt = now;
+      this.groundBoundary();
+    }
+    this.clampToBoundary(dt);
+    const c = this.camera.position;
+    b.wall.setCameraHeight(c.y - this.heightAt(c.x, -c.z));
   }
 
   /** The backdrop beyond the loaded tiles in the region's open-land colour (climate.ts). */
@@ -753,6 +970,7 @@ export class DtEngine {
     }
     this.groundAtlas.release(tile.groundSlot);
     this.horizon?.setTile(key, this.pendingTiles.has(key) ? 'pending' : 'none');
+    this.boundaryGroundDirty = true;
     tile.dispose();
     this.tiles.delete(key);
     this.scenarioCounts.delete(key);
@@ -780,22 +998,27 @@ export class DtEngine {
     return below.length ? Math.max(...below) : Math.min(...hs.map((s) => s.h));
   }
 
-  /** Ground height at a world point where a loaded tile has it (null elsewhere). */
+  /** Ground height at a world point: a loaded tile's, else the horizon's (null beyond both). */
   groundAt(x: number, y: number): number | null {
     for (const tile of this.tiles.values()) {
       const h = tile.heightAt(x, y);
       if (h !== null) return h;
     }
-    return null;
+    return this.horizonHeightAt(x, y);
   }
 
-  /** Ground height at a world point (0 outside loaded tiles). */
+  /** Ground height at a world point (0 beyond the loaded tiles and the horizon). */
   heightAt(x: number, y: number): number {
-    for (const tile of this.tiles.values()) {
-      const h = tile.heightAt(x, y);
-      if (h !== null) return h;
-    }
-    return 0;
+    return this.groundAt(x, y) ?? 0;
+  }
+
+  /**
+   * The horizon's coarse heights where no tile is loaded (not built yet, or
+   * beyond the boundary): the camera is kept above the ground drawn there.
+   */
+  private horizonHeightAt(x: number, y: number): number | null {
+    if (!this.world || !this.horizon) return null;
+    return this.horizon.heightAtUtm(this.world.originE + x, this.world.originN + y);
   }
 
   /**
@@ -2085,6 +2308,8 @@ export class DtEngine {
   }
 
   dispose(): void {
+    this.boundary?.wall.dispose();
+    this.boundary = null;
     this.placePin?.dispose();
     this.pinListeners.clear();
     this.vehicles.dispose();
@@ -2137,6 +2362,7 @@ export class DtEngine {
       if (this.fly.t >= 1) this.fly = null;
     }
     if (controlsOwnCamera) this.controls.update();
+    this.tickBoundary(Math.min(dt, 0.25));
     this.updateDetail();
     this.live.tick(
       Math.min(dt, 0.25),

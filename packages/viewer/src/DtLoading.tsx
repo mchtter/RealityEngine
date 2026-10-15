@@ -13,6 +13,8 @@ interface DtLoadingProps {
   /** Tile progress; null before the first tile list arrived. */
   tiles: DtView['tiles'] | null;
   error: string | null;
+  /** A tile has been shown once: no full-screen card any more, only the pill. */
+  started?: boolean;
 }
 
 /**
@@ -20,7 +22,7 @@ interface DtLoadingProps {
  * middle (what stage, how far); afterwards a small bar at the top while
  * tiles stream in (moving the camera, flying to a scenario), gone when done.
  */
-export function DtLoading({ tiles, error }: DtLoadingProps) {
+export function DtLoading({ tiles, error, started = false }: DtLoadingProps) {
   const t = useTranslations('dt.load');
   const [open, setOpen] = useState(false);
   useEffect(() => {
@@ -57,7 +59,10 @@ export function DtLoading({ tiles, error }: DtLoadingProps) {
   const shown = planned > 0 ? Math.min(planned, tiles?.shown ?? 0) : loaded;
   const share = planned > 0 ? shown / planned : 0;
 
-  if (loaded === 0) {
+  // The full card only before the first tile ever shown: later, a place with
+  // nothing built yet (the city still being built ahead, or beyond its
+  // boundary) keeps the scene — horizon, boundary — with the small pill.
+  if (loaded === 0 && !started) {
     const stage = !tiles
       ? t('locating')
       : planned === 0 && server > 0

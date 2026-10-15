@@ -1,8 +1,9 @@
-import { type GeoTerrainGrid, utmForward } from '@opentwin/city-core';
+import { type GeoTerrainGrid, utmForward, utmInverse } from '@opentwin/city-core';
 import {
   Discard,
   abs,
   fract,
+  max,
   min,
   mod,
   sin,
@@ -50,12 +51,20 @@ export class HorizonLayer {
   private readonly mask0: [number, number];
   /** World origin (UTM km) relative to the mask's first cell. */
   private readonly originKm = uniform(new THREE.Vector2());
+  /** Per mask cell: its tile's state (0 none, 128 pending, 255 loaded). */
+  private readonly tileState = new Uint8Array(MASK * MASK);
+  /** Per mask cell: its centre lies outside the city's work area. */
+  private readonly cellOutside = new Uint8Array(MASK * MASK);
+  /** Per mask cell: the tile service reported its tile outside the work area. */
+  private readonly tileOutside = new Uint8Array(MASK * MASK);
+  private readonly grid: GeoTerrainGrid;
 
   constructor(
     grid: GeoTerrainGrid,
     readonly world: { zone: number; originE: number; originN: number },
     openLand: THREE.UniformNode<'color', THREE.Color>,
   ) {
+    this.grid = grid;
     const { cols, rows, heights } = grid;
     const positions = new Float32Array(cols * rows * 3);
     for (let j = 0; j < rows; j++) {
@@ -110,7 +119,8 @@ export class HorizonLayer {
     const cellX = floor(gx);
     const cellY = floor(gy);
     // Mask per cell: 1 = a tile is drawn there (dropped here), 0.5 = its tile
-    // is being compiled / meshed (a loading pattern over the land's shape).
+    // is being compiled / meshed (a loading pattern over the land's shape),
+    // 0.25 = outside the city's work area (never built: a red hatch).
     const cellState = Fn(() => {
       const cx = int(cellX);
       const cy = int(cellY);
@@ -126,7 +136,8 @@ export class HorizonLayer {
       return v;
     });
     const state = cellState();
-    const loading = step(0.25, state).mul(step(state, 0.75));
+    const loading = step(0.375, state).mul(step(state, 0.75));
+    const restricted = step(0.125, state).mul(step(state, 0.375));
     // Loading cells read as tiles, like a checkerboard of placeholders: dark and
     // light in turn, stripes leaning one way then the other, each cell's sweep
     // at its own time (not one endless hatch running across the land).
@@ -160,6 +171,15 @@ export class HorizonLayer {
     const pattern = mix(base, vec3(0.42, 0.66, 0.98), line.mul(0.45))
       .add(vec3(0.45, 0.7, 1).mul(band).mul(0.45))
       .add(vec3(0.5, 0.72, 1).mul(outline).mul(0.6));
+    // Restricted land (outside the work area): one red hatch running across
+    // it (not per cell — it reads as a single forbidden zone), drifting slowly.
+    const rDiag = positionWorld.x.add(positionWorld.z).div(90).sub(time.mul(0.08));
+    const rf = fract(rDiag);
+    const rfw = max(fwidth(rDiag), float(0.002));
+    const rBar = smoothstep(rfw.negate().add(0.62), rfw.add(0.62), rf);
+    const rFar = smoothstep(0.08, 0.3, rfw);
+    const rLine = mix(rBar, float(0.38), rFar);
+    const restrictedPattern = mix(vec3(0.3, 0.05, 0.035), vec3(0.92, 0.3, 0.08), rLine.mul(0.8));
     mat.colorNode = Fn(() => {
       If(state.greaterThan(0.75), () => {
         Discard();
@@ -167,12 +187,15 @@ export class HorizonLayer {
       const land = mix(slopes, sea, isSea);
       // Close by the pattern covers the land; far off only tints it, so the
       // horizon does not turn one solid colour.
-      return mix(land, pattern, loading.mul(mix(float(0.88), float(0.45), far)));
+      const shown = mix(land, pattern, loading.mul(mix(float(0.88), float(0.45), far)));
+      return mix(shown, restrictedPattern, restricted.mul(mix(float(0.7), float(0.4), rFar)));
     })();
     mat.emissiveNode = vec3(0.3, 0.55, 1)
       .mul(line.mul(0.35).add(band.mul(0.6)).add(outline.mul(0.4)))
       .mul(loading)
-      .mul(oneMinus(far.mul(0.5)));
+      .mul(oneMinus(far.mul(0.5)))
+      // Restricted land stays readable at night.
+      .add(vec3(0.45, 0.08, 0.03).mul(rLine.mul(0.3).add(0.05)).mul(restricted));
     this.mesh = new THREE.Mesh(g, mat);
     this.mesh.name = 'horizon';
     this.mesh.receiveShadow = false;
@@ -181,21 +204,87 @@ export class HorizonLayer {
     this.mesh.renderOrder = 1;
   }
 
-  /**
-   * A tile's (`utm<zone>/<eKm>/<nKm>`) state here: `loaded` — the horizon steps
-   * aside under it; `pending` — it is being compiled / meshed (hatched); `none`.
-   */
-  setTile(key: string, state: 'loaded' | 'pending' | 'none'): void {
+  /** Mask index of a tile key in the world's zone (-1 elsewhere). */
+  private cellOf(key: string): number {
     const m = /^utm(\d+)\/(\d+)\/(\d+)$/.exec(key);
-    if (!m || Number(m[1]) !== this.world.zone) return;
+    if (!m || Number(m[1]) !== this.world.zone) return -1;
     const i = Number(m[2]) - this.mask0[0];
     const j = Number(m[3]) - this.mask0[1];
-    if (i < 0 || j < 0 || i >= MASK || j >= MASK) return;
+    if (i < 0 || j < 0 || i >= MASK || j >= MASK) return -1;
+    return j * MASK + i;
+  }
+
+  /** Writes a cell's mask value: its tile's state, else restricted (64) or nothing. */
+  private write(idx: number): void {
     const data = this.mask.image.data as Uint8Array;
-    const v = state === 'loaded' ? 255 : state === 'pending' ? 128 : 0;
-    if (data[j * MASK + i] === v) return;
-    data[j * MASK + i] = v;
+    const v = this.tileState[idx] || (this.cellOutside[idx] || this.tileOutside[idx] ? 64 : 0);
+    if (data[idx] === v) return;
+    data[idx] = v;
     this.mask.needsUpdate = true;
+  }
+
+  /**
+   * A tile's (`utm<zone>/<eKm>/<nKm>`) state here: `loaded` — the horizon steps
+   * aside under it; `pending` — it is being compiled / meshed (hatched); `none`;
+   * `restricted` — outside the city's work area (red hatch; kept under the
+   * other states, see `setOutsideTiles`).
+   */
+  setTile(key: string, state: 'loaded' | 'pending' | 'none' | 'restricted'): void {
+    const idx = this.cellOf(key);
+    if (idx < 0) return;
+    if (state === 'restricted') this.tileOutside[idx] = 1;
+    else this.tileState[idx] = state === 'loaded' ? 255 : state === 'pending' ? 128 : 0;
+    this.write(idx);
+  }
+
+  /** The tiles the tile service reported outside the work area (replaces the previous set). */
+  setOutsideTiles(keys: Iterable<string>): void {
+    const next = new Uint8Array(MASK * MASK);
+    for (const key of keys) {
+      const idx = this.cellOf(key);
+      if (idx >= 0) next[idx] = 1;
+    }
+    for (let idx = 0; idx < next.length; idx++) {
+      if (next[idx] === this.tileOutside[idx]) continue;
+      this.tileOutside[idx] = next[idx];
+      this.write(idx);
+    }
+  }
+
+  /**
+   * Marks the cells whose centre lies outside the work area: `outside(e, n)`
+   * gets the centre in UTM metres of the world's zone (null clears them all).
+   */
+  setRestricted(outside: ((e: number, n: number) => boolean) | null): void {
+    for (let j = 0; j < MASK; j++)
+      for (let i = 0; i < MASK; i++) {
+        const idx = j * MASK + i;
+        const v =
+          outside && outside((this.mask0[0] + i + 0.5) * 1000, (this.mask0[1] + j + 0.5) * 1000)
+            ? 1
+            : 0;
+        if (v === this.cellOutside[idx]) continue;
+        this.cellOutside[idx] = v;
+        this.write(idx);
+      }
+  }
+
+  /** Coarse DEM height (m) at a UTM point of the world's zone; null outside the grid. */
+  heightAtUtm(e: number, n: number): number | null {
+    const { cols, rows, heights, west, east, north, south } = this.grid;
+    if (cols < 2 || rows < 2) return null;
+    const { lon, lat } = utmInverse(e, n, this.world.zone);
+    const fx = ((lon - west) / (east - west)) * (cols - 1);
+    const fy = ((north - lat) / (north - south)) * (rows - 1);
+    if (!(fx >= 0 && fy >= 0 && fx <= cols - 1 && fy <= rows - 1)) return null;
+    const i = Math.min(cols - 2, Math.floor(fx));
+    const j = Math.min(rows - 2, Math.floor(fy));
+    const tx = fx - i;
+    const ty = fy - j;
+    const h = (a: number, b: number) => Math.max(-1, heights[b * cols + a]);
+    const top = h(i, j) * (1 - tx) + h(i + 1, j) * tx;
+    const bottom = h(i, j + 1) * (1 - tx) + h(i + 1, j + 1) * tx;
+    return top * (1 - ty) + bottom * ty;
   }
 
   dispose(): void {
