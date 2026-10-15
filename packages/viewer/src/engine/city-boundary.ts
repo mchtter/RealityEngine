@@ -1,6 +1,7 @@
 import {
   Fn,
   abs,
+  attribute,
   cameraViewMatrix,
   float,
   fract,
@@ -10,6 +11,7 @@ import {
   mix,
   mrt,
   oneMinus,
+  positionLocal,
   pow,
   smoothstep,
   time,
@@ -24,12 +26,17 @@ import type { FlatRing } from './boundary-geo';
 /** How far the curtain reaches below the ground (m): no gap where the terrain under it is coarse. */
 export const WALL_SINK = 50;
 /** Curtain height above the ground (m). */
-export const WALL_RISE = 300;
+export const WALL_RISE = 800;
 const WALL_HEIGHT = WALL_SINK + WALL_RISE;
 /** Distance along the wall (m) is wrapped at this (a whole number of stripes): float32 stays exact. */
 const U_WRAP = 6000;
 /** Stripe period along the wall (m). */
 const STRIPE = 30;
+/** Miter of the ground band at sharp corners: at most this many half-widths out. */
+const MITER_LIMIT = 3;
+
+/** The see-through boundary layers write the ground's up as their normal (see the wall). */
+const groundNormalMrt = () => mrt({ normal: cameraViewMatrix.mul(vec4(0, 1, 0, 0)).xyz });
 
 /**
  * The city's boundary as a curtain of light: a vertical band along every
@@ -39,6 +46,10 @@ const STRIPE = 30;
  * one merged mesh for every ring. Built in anchor-relative metres (`x` east,
  * `y` north) — the engine places the mesh for the world origin. Its ground
  * line follows `setGround` (loaded tiles, the horizon's heights).
+ *
+ * Seen from above a wall is a hairline: a band on the ground along the same
+ * rings (a child of the wall mesh) keeps the boundary readable, a few pixels
+ * wide at any camera height.
  */
 export class BoundaryWall {
   readonly mesh: THREE.Mesh;
@@ -49,6 +60,15 @@ export class BoundaryWall {
   /** Ring vertices (anchor metres), all rings in a row. */
   private readonly points: Float64Array;
   private readonly positions: Float32Array;
+  /** The band on the ground (see the class note). */
+  private readonly band: THREE.Mesh;
+  /** Band vertices: per ring vertex (and each ring's first again, closing it) the point index. */
+  private readonly bandPoints: Int32Array;
+  private readonly bandPositions: Float32Array;
+  /** Band half-width (m) and lift over the ground (m), both from the camera height. */
+  private readonly bandWidth = uniform(8);
+  private readonly bandLift = uniform(2);
+  private readonly bandOpacity = uniform(0.5);
 
   constructor(rings: FlatRing[]) {
     let pointCount = 0;
@@ -136,7 +156,7 @@ export class BoundaryWall {
     // reads the ground's depth through the see-through wall: without normals
     // (or with a zero one) it went NaN and the wall drew black. The ground's
     // up, in view space, keeps the occlusion that of the ground behind.
-    mat.mrtNode = mrt({ normal: cameraViewMatrix.mul(vec4(0, 1, 0, 0)).xyz });
+    mat.mrtNode = groundNormalMrt();
     this.mesh = new THREE.Mesh(g, mat);
     this.mesh.name = 'city-boundary';
     this.mesh.castShadow = false;
@@ -145,6 +165,116 @@ export class BoundaryWall {
     this.mesh.frustumCulled = false;
     // Over the horizon and the tiles (it is see-through).
     this.mesh.renderOrder = 5;
+
+    const ground = this.buildBand(rings);
+    this.bandPoints = ground.points;
+    this.bandPositions = ground.positions;
+    this.band = ground.mesh;
+    this.mesh.add(this.band);
+  }
+
+  /**
+   * The ground band: two vertices per ring vertex, pushed out to either side
+   * along the corner's miter in the shader (its width follows the camera).
+   */
+  private buildBand(rings: FlatRing[]): {
+    mesh: THREE.Mesh;
+    points: Int32Array;
+    positions: Float32Array;
+  } {
+    let count = 0;
+    for (const r of rings) count += r.length / 2 + 1;
+    const points = new Int32Array(count);
+    const positions = new Float32Array(count * 2 * 3);
+    const offsets = new Float32Array(count * 2 * 3);
+    const uvs = new Float32Array(count * 2 * 2);
+    const index: number[] = [];
+    let p0 = 0;
+    let v = 0;
+    for (const r of rings) {
+      const n = r.length / 2;
+      const at = (i: number): [number, number] => {
+        const k = ((i % n) + n) % n;
+        return [r[2 * k], r[2 * k + 1]];
+      };
+      let along = 0;
+      for (let i = 0; i <= n; i++) {
+        const [x, y] = at(i);
+        if (i > 0) {
+          const [px, py] = at(i - 1);
+          along += Math.hypot(x - px, y - py);
+        }
+        // Left normals of the segments before and after this vertex; the miter between.
+        const [ax, ay] = at(i - 1);
+        const [bx, by] = at(i + 1);
+        const n1 = leftNormal(x - ax, y - ay);
+        const n2 = leftNormal(bx - x, by - y);
+        let mx = n1[0] + n2[0];
+        let my = n1[1] + n2[1];
+        const ml = Math.hypot(mx, my);
+        if (ml < 1e-6) [mx, my] = n2;
+        else {
+          mx /= ml;
+          my /= ml;
+        }
+        const k = Math.min(MITER_LIMIT, 1 / Math.max(1e-3, mx * n2[0] + my * n2[1]));
+        points[v] = p0 + (i % n);
+        for (const side of [1, -1]) {
+          const o = (v * 2 + (side === 1 ? 0 : 1)) * 3;
+          // three: x east, z south.
+          offsets[o] = mx * k * side;
+          offsets[o + 1] = 0;
+          offsets[o + 2] = -my * k * side;
+          uvs.set([along, side === 1 ? 0 : 1], (v * 2 + (side === 1 ? 0 : 1)) * 2);
+        }
+        if (i < n) {
+          const a = v * 2;
+          index.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+        }
+        v++;
+      }
+      p0 += n;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    g.setAttribute('offset', new THREE.BufferAttribute(offsets, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    g.setIndex(index);
+
+    const mat = new THREE.MeshBasicNodeMaterial({
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const width = this.bandWidth;
+    mat.positionNode = positionLocal
+      .add(attribute<'vec3'>('offset', 'vec3').mul(width))
+      .add(vec3(0, this.bandLift, 0));
+    // Across: 0 at the edges, 1 on the line itself.
+    const centre = oneMinus(abs(uv().y.mul(2).sub(1)));
+    const core = smoothstep(0.62, 0.9, centre);
+    const body = smoothstep(0, 0.45, centre);
+    // Dashes running along, their length tied to the width (same look at every height).
+    const dash = smoothstep(
+      0.35,
+      0.5,
+      abs(fract(uv().x.div(width.mul(10)).sub(time.mul(0.25))).sub(0.5)),
+    );
+    mat.colorNode = mix(vec3(1, 0.45, 0.1), vec3(1, 0.12, 0.05), core)
+      .add(vec3(1, 0.7, 0.45).mul(core.mul(0.35)))
+      .add(vec3(1, 0.6, 0.3).mul(dash.mul(body).mul(0.25)));
+    mat.opacityNode = min(
+      body.mul(0.45).add(core.mul(0.45)).add(dash.mul(body).mul(0.15)).mul(this.bandOpacity),
+      float(0.95),
+    );
+    mat.mrtNode = groundNormalMrt();
+    const mesh = new THREE.Mesh(g, mat);
+    mesh.name = 'city-boundary-band';
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 5;
+    return { mesh, points, positions };
   }
 
   /** Ring vertices (anchor metres) — the engine samples the ground at them. */
@@ -184,6 +314,17 @@ export class BoundaryWall {
     const attr = this.mesh.geometry.attributes.position as THREE.BufferAttribute;
     attr.needsUpdate = true;
     this.mesh.geometry.computeBoundingSphere();
+    const bp = this.bandPositions;
+    for (let k = 0; k < this.bandPoints.length; k++) {
+      const p = this.bandPoints[k];
+      for (let side = 0; side < 2; side++) {
+        const o = (k * 2 + side) * 3;
+        bp[o] = this.points[2 * p];
+        bp[o + 1] = h[p];
+        bp[o + 2] = -this.points[2 * p + 1];
+      }
+    }
+    (this.band.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
   }
 
   /**
@@ -193,11 +334,25 @@ export class BoundaryWall {
   setCameraHeight(height: number): void {
     const k = THREE.MathUtils.smoothstep(height, 2000, 8000);
     this.opacity.value = 1 - 0.7 * k;
+    // The band: ~10 px wide whatever the height, lifted clear of the coarse
+    // terrain under it, faint at street level (the wall's foot says it there).
+    const h = Math.max(0, height);
+    this.bandWidth.value = THREE.MathUtils.clamp(h * 0.007, 4, 3000);
+    this.bandLift.value = THREE.MathUtils.clamp(h * 0.002, 1.5, 300);
+    this.bandOpacity.value = 0.45 + 0.55 * THREE.MathUtils.smoothstep(h, 300, 3000);
   }
 
   dispose(): void {
+    this.band.geometry.dispose();
+    (this.band.material as THREE.Material).dispose();
     this.mesh.removeFromParent();
     this.mesh.geometry.dispose();
     (this.mesh.material as THREE.Material).dispose();
   }
+}
+
+/** Unit normal to the left of a direction (x east, y north); zero for a zero direction. */
+function leftNormal(dx: number, dy: number): [number, number] {
+  const l = Math.hypot(dx, dy);
+  return l < 1e-9 ? [0, 0] : [-dy / l, dx / l];
 }
