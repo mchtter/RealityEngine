@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { LEVEL_PLANS, levelAt, nextLevel } from './detail-level';
 
 describe('detail levels', () => {
-  it('maps the camera height to L5 (street) … L1 (over the city)', () => {
-    expect([1.7, 9.9, 10, 99, 100, 399, 400, 1499, 1500, 9000].map(levelAt)).toEqual([
-      5, 5, 4, 4, 3, 3, 2, 2, 1, 1,
-    ]);
+  it('maps the camera height to L5 (street) … L1 (over the city), L0 (the map)', () => {
+    expect([1.7, 9.9, 10, 99, 100, 399, 400, 1499, 1500, 8999, 9000, 900_000].map(levelAt)).toEqual(
+      [5, 5, 4, 4, 3, 3, 2, 2, 1, 1, 0, 0],
+    );
   });
 
   it('crosses a bound only well past it (hysteresis)', () => {
@@ -18,6 +18,10 @@ describe('detail levels', () => {
     // A jump skips levels.
     expect(nextLevel(2000, 5)).toBe(1);
     expect(nextLevel(3, 1)).toBe(5);
+    // To the map and back.
+    expect(nextLevel(12_000, 1)).toBe(0);
+    expect(nextLevel(8000, 0)).toBe(0);
+    expect(nextLevel(7000, 0)).toBe(1);
   });
 
   it('loads more tiles, fewer of them in full, the higher the camera', () => {

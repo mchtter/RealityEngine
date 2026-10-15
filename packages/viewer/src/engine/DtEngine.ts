@@ -58,6 +58,7 @@ import {
   createMaterials,
   setUnderground as fadeGround,
 } from './materials';
+import { type OverviewData, OverviewMap, type OverviewPick } from './overview-map';
 import { PlacePin, type PinScreen } from './place-pin';
 import { PlacementLayer } from './placements';
 import { SlotAllocator } from './slot-allocator';
@@ -177,6 +178,11 @@ export interface DtEngineEvents {
   onSelectLive?: (sel: LiveRef | null) => void;
   /** The camera ran into the city's boundary (at most every few seconds). */
   onBoundary?: () => void;
+  /**
+   * Overview map (L0): the province under the pointer (client px relative to
+   * the viewer), null when none / the map is not up.
+   */
+  onMapHover?: (hover: { pick: OverviewPick; x: number; y: number } | null) => void;
 }
 
 /** Douglas–Peucker tolerance of the work area's rings (m): provinces have tens of thousands of vertices. */
@@ -189,6 +195,16 @@ const BOUNDARY_MARGIN_M = 30;
 const BOUNDARY_NOTICE_MS = 4000;
 /** Least time between two re-samplings of the wall's foot while tiles stream (ms). */
 const BOUNDARY_GROUND_MS = 1500;
+/** The overview map (L0) fades in over the city between these camera heights (m over the map). */
+const MAP_FADE_FROM = 9000;
+const MAP_FADE_TO = 14000;
+/** Farthest the orbit camera goes (m): the whole country on the overview map. */
+const MAP_MAX_DISTANCE = 2_600_000;
+/** Steepest orbit view (rad from straight down) in the city and over the full map. */
+const ORBIT_MAX_POLAR = 1.43;
+const MAP_MAX_POLAR = 0.95;
+/** Where a click on a province brings the camera (m from its target). */
+const PROVINCE_ENTRY_DISTANCE = 1800;
 
 /** What the transform gizmo does to a placed model (W / E / R, as in Unreal). */
 export type PlacementGizmoMode = 'translate' | 'rotate' | 'scale';
@@ -314,6 +330,8 @@ export class DtEngine {
   /** Where the clamp last found the camera inside (skips the test while nothing moved). */
   private readonly boundaryChecked = new THREE.Vector3(Number.NaN, 0, 0);
   private boundaryPulling = false;
+  /** The orbit target was last found outside the work area. */
+  private targetOutside = false;
   private boundaryNoticeAt = -Infinity;
   /** Tiles the tile service reported outside the work area (red hatch on the horizon). */
   private outsideTiles = new Set<string>();
@@ -521,9 +539,10 @@ export class DtEngine {
     this.controls = new MapControls(this.camera, renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
-    this.controls.maxPolarAngle = 1.43;
+    this.controls.maxPolarAngle = ORBIT_MAX_POLAR;
     this.controls.minDistance = 12;
-    this.controls.maxDistance = 1800;
+    // Out to the whole country: above MAP_FADE_FROM the overview map comes up.
+    this.controls.maxDistance = MAP_MAX_DISTANCE;
     this.controls.zoomToCursor = true;
     this.camera.position.set(260, 230, 330);
     this.controls.update();
@@ -593,6 +612,8 @@ export class DtEngine {
     this.resize = new ResizeObserver(() => this.onResize());
     this.resize.observe(container);
     renderer.domElement.addEventListener('pointerdown', this.onPointerDown);
+    renderer.domElement.addEventListener('pointermove', this.onPointerMove);
+    renderer.domElement.addEventListener('pointerleave', this.onPointerLeave);
     renderer.domElement.addEventListener('pointerup', this.onPointerUp);
     renderer.setAnimationLoop(this.frame);
   }
@@ -733,6 +754,207 @@ export class DtEngine {
     this.scene.add(this.horizon.mesh);
   }
 
+  // ─── Overview map (L0) ──────────────────────────────────────────────────────
+
+  private overviewData: OverviewData | null = null;
+  private overview: OverviewMap | null = null;
+  /** Height of the overview map (m): the city's ground at the target when the map came up. */
+  private mapY = 0;
+  /** 0 … 1: how far the overview map has come up over the city. */
+  private mapK = 0;
+  /** City objects hidden while the full map covers them (shown again on the way down). */
+  private mapHidden: THREE.Object3D[] = [];
+  /** Pointer over the viewer (client px), picked on the map once a frame. */
+  private mapPointer: { x: number; y: number } | null = null;
+  private mapPointerDirty = false;
+  private mapHoverCode: number | null = null;
+
+  /** Country map data (Natural Earth, /dt/l0/turkey.json); null removes the map. */
+  setOverviewData(data: OverviewData | null): void {
+    this.overviewData = data;
+    this.overview?.dispose();
+    this.overview = null;
+  }
+
+  /** The full overview map covers the city (L0, the camera high above it). */
+  get mapMode(): boolean {
+    return this.mapK >= 0.999;
+  }
+
+  /** The map for the world's zone and work area, built when missing. */
+  private syncOverview(): OverviewMap | null {
+    if (!this.overviewData || !this.world) return null;
+    if (this.overview && this.overview.zone === this.world.zone) return this.overview;
+    this.overview?.dispose();
+    const area = this.boundaryRings?.map((ring) => [ring as [number, number][]]) ?? null;
+    this.overview = new OverviewMap(this.overviewData, this.world.zone, area);
+    this.scene.add(this.overview.group);
+    return this.overview;
+  }
+
+  /**
+   * Per frame: the map faded in with the camera's height, placed for the
+   * origin, its lines and names scaled; the city hidden under the full map;
+   * camera limits for the map (tilt, extent, no coming down outside the city).
+   */
+  private tickMap(): void {
+    const m = this.syncOverview();
+    if (!m || !this.world) {
+      this.mapK = 0;
+      return;
+    }
+    const cam = this.camera.position;
+    const t = this.controls.target;
+    if (this.mapK === 0) this.mapY = t.y;
+    const k = THREE.MathUtils.smoothstep(cam.y - this.mapY, MAP_FADE_FROM, MAP_FADE_TO);
+    this.mapK = k;
+    m.setFade(k);
+    m.group.position.set(
+      m.anchorE - this.world.originE,
+      this.mapY,
+      -(m.anchorN - this.world.originN),
+    );
+    const dist = cam.distanceTo(t);
+    const mpp =
+      (dist * 2 * Math.tan((this.camera.fov * Math.PI) / 360)) /
+      Math.max(1, this.container.clientHeight);
+    m.setScale(mpp, mpp * 1.5);
+    // Far plane out past the map's far edge.
+    const far = Math.max(70000, dist * 4);
+    if (Math.abs(far - this.camera.far) > this.camera.far * 0.1) {
+      this.camera.far = far;
+      this.camera.updateProjectionMatrix();
+    }
+    this.hideCity(k >= 0.999, m);
+    if (this.rig.mode === 'orbit') {
+      this.controls.maxPolarAngle = THREE.MathUtils.lerp(ORBIT_MAX_POLAR, MAP_MAX_POLAR, k);
+      // Outside the city the camera stays over the map.
+      const up = Math.max(0.2, (cam.y - t.y) / Math.max(dist, 1));
+      this.controls.minDistance =
+        this.targetOutside && this.boundary ? (MAP_FADE_TO + this.mapY - t.y) / up : 12;
+      if (k > 0) this.keepOverMap(m);
+    }
+    if (this.mapPointerDirty) {
+      this.mapPointerDirty = false;
+      this.hoverMap();
+    } else if (!this.mapMode && this.mapHoverCode !== null) this.hoverMap();
+  }
+
+  /** The orbit target kept over the map's extent (the camera moved with it). */
+  private keepOverMap(m: OverviewMap): void {
+    const t = this.controls.target;
+    const [w, s, e, n] = m.extent;
+    const x = t.x - (m.anchorE - this.world!.originE);
+    const y = -t.z - (m.anchorN - this.world!.originN);
+    const dx = THREE.MathUtils.clamp(x, w, e) - x;
+    const dy = THREE.MathUtils.clamp(y, s, n) - y;
+    if (dx === 0 && dy === 0) return;
+    t.x += dx;
+    t.z -= dy;
+    this.camera.position.x += dx;
+    this.camera.position.z -= dy;
+  }
+
+  /** Hides the city's own objects under the full map (lights, sky, live objects stay). */
+  private hideCity(on: boolean, m: OverviewMap): void {
+    if (!on) {
+      for (const o of this.mapHidden) o.visible = true;
+      this.mapHidden = [];
+      return;
+    }
+    for (const o of this.scene.children) {
+      if (!o.visible || o === m.group || o === this.live.group || o === this.sky) continue;
+      if ((o as THREE.Light).isLight) continue;
+      o.visible = false;
+      this.mapHidden.push(o);
+    }
+  }
+
+  /** The province under the pointer on the full map (highlight + event). */
+  private hoverMap(): void {
+    const p = this.mapPointer;
+    const pick = this.mapMode && p ? this.mapPickAt(p.x, p.y) : null;
+    this.overview?.setHover(pick?.code ?? null);
+    this.mapHoverCode = pick?.code ?? null;
+    if (!pick || !p) {
+      this.events.onMapHover?.(null);
+      return;
+    }
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.events.onMapHover?.({ pick, x: p.x - rect.left, y: p.y - rect.top });
+  }
+
+  /** The province at a client point on the overview map. */
+  private mapPickAt(clientX: number, clientY: number): OverviewPick | null {
+    const m = this.overview;
+    if (!m || !this.world) return null;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(
+      new THREE.Vector2(
+        ((clientX - rect.left) / rect.width) * 2 - 1,
+        -((clientY - rect.top) / rect.height) * 2 + 1,
+      ),
+      this.camera,
+    );
+    const hit = ray.ray.intersectPlane(
+      new THREE.Plane(new THREE.Vector3(0, 1, 0), -this.mapY),
+      new THREE.Vector3(),
+    );
+    if (!hit) return null;
+    const { lon, lat } = utmInverse(
+      this.world.originE + hit.x,
+      this.world.originN - hit.z,
+      this.world.zone,
+    );
+    return m.pick(lon, lat);
+  }
+
+  /**
+   * Down into a province's city: its capital when the work area holds it,
+   * else the work-area point nearest to it; the camera flies there from the map.
+   */
+  private enterProvince(pick: OverviewPick): void {
+    if (!this.world) return;
+    let [lon, lat] = pick.capital;
+    const b = this.boundary;
+    if (b) {
+      const [e, n] = utmForward(lon, lat, b.zone);
+      const x = e - b.anchorE;
+      const y = n - b.anchorN;
+      if (!b.index.contains(x, y)) {
+        const q = b.index.inwardPoint(x, y, 500);
+        if (q) ({ lon, lat } = utmInverse(q[0] + b.anchorE, q[1] + b.anchorN, b.zone));
+      }
+    }
+    const at = this.worldOf(lon, lat);
+    if (!at) return;
+    const z = this.heightAt(at[0], at[1]) || this.mapY;
+    const target = new THREE.Vector3(...toThree(at[0], at[1], z));
+    const dir = this.camera.position.clone().sub(this.controls.target);
+    dir.y = 0;
+    if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
+    dir.normalize().multiplyScalar(Math.cos((50 * Math.PI) / 180));
+    dir.y = Math.sin((50 * Math.PI) / 180);
+    this.targetOutside = false;
+    this.controls.minDistance = 12;
+    this.fly = {
+      from: [this.camera.position.clone(), this.controls.target.clone()],
+      to: [target.clone().add(dir.multiplyScalar(PROVINCE_ENTRY_DISTANCE)), target],
+      t: 0,
+    };
+  }
+
+  private readonly onPointerMove = (e: PointerEvent) => {
+    this.mapPointer = { x: e.clientX, y: e.clientY };
+    if (this.mapK > 0) this.mapPointerDirty = true;
+  };
+
+  private readonly onPointerLeave = () => {
+    this.mapPointer = null;
+    this.mapPointerDirty = true;
+  };
+
   // ─── City boundary (work area) ─────────────────────────────────────────────
 
   /**
@@ -751,6 +973,9 @@ export class DtEngine {
     this.outsideTiles = new Set();
     this.horizon?.setOutsideTiles(this.outsideTiles);
     this.syncBoundary();
+    // Provinces with data follow the work area.
+    this.overview?.dispose();
+    this.overview = null;
   }
 
   /** Tiles the tile service reported outside the work area (kept until the boundary changes). */
@@ -858,6 +1083,15 @@ export class DtEngine {
     const e = this.world.originE + p.x - b.anchorE;
     const n = this.world.originN - p.z - b.anchorN;
     if (b.index.contains(e, n)) {
+      this.boundaryChecked.copy(p);
+      this.boundaryPulling = false;
+      this.targetOutside = false;
+      return;
+    }
+    this.targetOutside = true;
+    // Over the overview map the camera roams the country; outside the city it
+    // cannot come down below the map (tickMap keeps it up there).
+    if (this.overview && this.camera.position.y - this.mapY >= MAP_FADE_TO * 0.98) {
       this.boundaryChecked.copy(p);
       this.boundaryPulling = false;
       return;
@@ -2323,6 +2557,9 @@ export class DtEngine {
     this.csm?.dispose();
     this.resize.disconnect();
     this.renderer.domElement.removeEventListener('pointerdown', this.onPointerDown);
+    this.renderer.domElement.removeEventListener('pointermove', this.onPointerMove);
+    this.renderer.domElement.removeEventListener('pointerleave', this.onPointerLeave);
+    this.overview?.dispose();
     this.renderer.domElement.removeEventListener('pointerup', this.onPointerUp);
     window.removeEventListener('keydown', this.onGizmoKey);
     window.removeEventListener('keyup', this.onGizmoKeyUp);
@@ -2363,6 +2600,7 @@ export class DtEngine {
     }
     if (controlsOwnCamera) this.controls.update();
     this.tickBoundary(Math.min(dt, 0.25));
+    this.tickMap();
     this.updateDetail();
     this.live.tick(
       Math.min(dt, 0.25),
@@ -2371,8 +2609,9 @@ export class DtEngine {
       this.container.clientHeight,
       {
         worldOf: (lon, lat) => this.worldOf(lon, lat),
-        heightAt: (x, y) => this.heightAt(x, y),
-        surfaceAt: (x, y) => this.surfaceAt(x, y),
+        // Over the full overview map, on the map.
+        heightAt: (x, y) => (this.mapMode ? this.mapY : this.heightAt(x, y)),
+        surfaceAt: (x, y) => (this.mapMode ? this.mapY : this.surfaceAt(x, y)),
       },
     );
 
@@ -2380,10 +2619,11 @@ export class DtEngine {
     // scales with it, and with a fixed 1 m near plane ground layers a few cm
     // apart z-fought a few hundred metres away.
     const pos = this.camera.position;
-    const near = THREE.MathUtils.clamp(
-      (pos.y - this.heightAt(pos.x, -pos.z)) * 0.15,
-      this.rig.minNear,
-      40,
+    // Over the overview map only the map is near: a near plane far out keeps
+    // its lines off the paper at a thousand kilometres.
+    const near = Math.max(
+      THREE.MathUtils.clamp((pos.y - this.heightAt(pos.x, -pos.z)) * 0.15, this.rig.minNear, 40),
+      pos.distanceTo(this.controls.target) * 0.04 * this.mapK,
     );
     if (Math.abs(near - this.camera.near) > this.camera.near * 0.15) {
       this.camera.near = near;
@@ -2495,6 +2735,11 @@ export class DtEngine {
     this.pointerDown = null;
     if (!start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 4) return;
     if (this.downOnGizmo) return;
+    if (this.mapMode) {
+      const pick = this.mapPickAt(e.clientX, e.clientY);
+      if (pick?.hasData) this.enterProvince(pick);
+      return;
+    }
     if (this.inspectMode) {
       this.events.onInspect?.(this.inspectAt(e.clientX, e.clientY));
       return;
