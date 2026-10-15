@@ -1836,7 +1836,12 @@ function buildRoof(
     const front = new Set(
       (b.footprint.holes as V2[][]).flatMap((h) => h.map((q) => `${q[0]},${q[1]}`)),
     );
-    const grey = stands ? col('#4f5d70') : new THREE.Color().setScalar(rng.range(0.28, 0.42));
+    // A canopy's top is its own (a fuel station's is white), not a roofing grey.
+    const grey = stands
+      ? col('#4f5d70')
+      : b.form === 'canopy'
+        ? roofColor
+        : new THREE.Color().setScalar(rng.range(0.28, 0.42));
     const base = flats.vertexCount;
     for (let k = 0; k < vertices.length; k += 2) {
       const low = stands && front.has(`${vertices[k]},${vertices[k + 1]}`);
@@ -1901,8 +1906,8 @@ function buildRoof(
         ],
       );
     }
-    // Stair / lift housing on larger flat roofs.
-    if (b.area > 140 && rng.chance(0.7)) {
+    // Stair / lift housing on larger flat roofs (a canopy has no stairs to it).
+    if (b.form !== 'canopy' && b.area > 140 && rng.chance(0.7)) {
       const ob = orientedBox(ring);
       const nrm: V2 = [-ob.axis[1], ob.axis[0]];
       const hx = Math.min(2, ob.halfLength * 0.3);

@@ -1,4 +1,10 @@
-import { type Prop, type PropKind, Rng } from '@opentwin/city-core';
+import {
+  FUEL_BRAND_COLOURS,
+  type FuelBrand,
+  type Prop,
+  type PropKind,
+  Rng,
+} from '@opentwin/city-core';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as THREE from 'three/webgpu';
 import { paint, toThree } from './geom';
@@ -211,6 +217,46 @@ const merge = (parts: THREE.BufferGeometry[]) =>
  * Low-poly street furniture and roof clutter. Local frame: +y up, +z is the
  * direction the prop faces (towards the road for lamps / stops).
  */
+/**
+ * Fuel pump island (fuel.ts): a kerbed concrete island along local z, two
+ * dispensers in the brand's accent with dark display faces, yellow-and-black
+ * bollards at its ends.
+ */
+function fuelPump(brand: FuelBrand): THREE.BufferGeometry {
+  const { accent, fascia } = FUEL_BRAND_COLOURS[brand];
+  const body = C('#f2f3f4');
+  const parts = [box(1.3, 0.18, 4.8, C('#b9bcbf'), 0, 0.09, 0)];
+  for (const z of [-1.15, 1.15]) {
+    parts.push(box(0.75, 1.75, 0.5, body, 0, 0.18 + 0.875, z));
+    parts.push(box(0.77, 0.32, 0.52, C(accent), 0, 0.18 + 1.75 - 0.16, z));
+    parts.push(box(0.77, 0.08, 0.52, C(fascia), 0, 0.18 + 0.3, z));
+    for (const x of [-0.39, 0.39]) parts.push(box(0.02, 0.45, 0.32, C('#1f2428'), x, 1.25, z));
+  }
+  for (const z of [-2.25, 2.25]) {
+    parts.push(cyl(0.09, 0.09, 0.9, 8, C('#f2c200'), 0, 0.18 + 0.45, z));
+    parts.push(cyl(0.092, 0.092, 0.12, 8, C('#1f2428'), 0, 0.18 + 0.55, z));
+  }
+  return mergeGeometries(parts);
+}
+
+/**
+ * Fuel station price sign: a tall panel across the road (thin along local z)
+ * on two posts, in the brand's colours, white price rows on both faces.
+ */
+function fuelTotem(brand: FuelBrand): THREE.BufferGeometry {
+  const { accent, fascia } = FUEL_BRAND_COLOURS[brand];
+  const parts = [
+    box(0.22, 1.3, 0.22, C('#8d9398'), -0.55, 0.65, 0),
+    box(0.22, 1.3, 0.22, C('#8d9398'), 0.55, 0.65, 0),
+    box(1.7, 5.0, 0.36, C(fascia), 0, 1.3 + 2.5, 0),
+    box(1.72, 1.1, 0.38, C(accent), 0, 1.3 + 5.0 - 0.55, 0),
+  ];
+  for (let k = 0; k < 4; k++)
+    for (const z of [-0.185, 0.185])
+      parts.push(box(1.3, 0.42, 0.02, C('#f5f6f7'), 0, 1.3 + 0.6 + k * 0.75, z));
+  return mergeGeometries(parts);
+}
+
 function createPropModules(): Record<PropVariant, THREE.BufferGeometry> {
   const leaf = C('#4f6b2c');
   const leafDark = C('#3d5623');
@@ -509,6 +555,15 @@ function createPropModules(): Record<PropVariant, THREE.BufferGeometry> {
     ]),
     'flagpole-EU': merge([cyl(0.09, 0.16, 20, 8, C('#e8e8e6'), 0, 10, 0), ...flag('EU', 20)]),
     'flagpole-FR': merge([cyl(0.09, 0.16, 20, 8, C('#e8e8e6'), 0, 10, 0), ...flag('FR', 20)]),
+    // Fuel stations (fuel.ts): neutral colours, and one variant per known brand.
+    'fuel-pump': fuelPump('generic'),
+    'fuel-totem': fuelTotem('generic'),
+    ...(Object.fromEntries(
+      (Object.keys(FUEL_BRAND_COLOURS) as FuelBrand[]).flatMap((b) => [
+        [`fuel-pump-${b}`, fuelPump(b)],
+        [`fuel-totem-${b}`, fuelTotem(b)],
+      ]),
+    ) as Record<`fuel-pump-${FuelBrand}` | `fuel-totem-${FuelBrand}`, THREE.BufferGeometry>),
     // Power transformer: tank with radiator banks, three bushings, conservator.
     transformer: merge([
       box(1.8, 0.4, 3.6, C('#9a968f'), 0, 0.2, 0),
@@ -603,15 +658,25 @@ function matrixOf(p: Prop): THREE.Matrix4 {
   return m4.compose(pos, q4, scl).clone();
 }
 
-/** Model variants: pines among the trees, flags by country. */
-type PropVariant = PropKind | 'tree-pine' | 'flagpole-EU' | 'flagpole-FR';
+/** Model variants: pines among the trees, flags by country, fuel pumps and signs by brand. */
+type PropVariant =
+  | PropKind
+  | 'tree-pine'
+  | 'flagpole-EU'
+  | 'flagpole-FR'
+  | `fuel-pump-${FuelBrand}`
+  | `fuel-totem-${FuelBrand}`;
 
 const variantOf = (p: Prop): PropVariant =>
   p.kind === 'tree' && new Rng(p.id).chance(0.3)
     ? 'tree-pine'
     : p.kind === 'flagpole' && (p.flag === 'EU' || p.flag === 'FR')
       ? `flagpole-${p.flag}`
-      : p.kind;
+      : (p.kind === 'fuel-pump' || p.kind === 'fuel-totem') &&
+          p.brand &&
+          p.brand in FUEL_BRAND_COLOURS
+        ? `${p.kind}-${p.brand as FuelBrand}`
+        : p.kind;
 
 /**
  * Instanced meshes for a set of props. In the data view, street furniture

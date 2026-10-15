@@ -330,7 +330,9 @@ export type AreaKind =
   | 'apron'
   /** Runway / taxiway: the paved area of the airfield way. */
   | 'runway'
-  | 'taxiway';
+  | 'taxiway'
+  /** Fuel station forecourt (concrete round the canopy; fuel.ts). */
+  | 'fuel';
 
 export interface Area {
   id: string;
@@ -520,6 +522,10 @@ export interface Building {
 }
 
 export type PropKind =
+  /** Fuel pump island under a station canopy (two dispensers on a kerbed island). */
+  | 'fuel-pump'
+  /** Fuel station price sign (totem) by the road. */
+  | 'fuel-totem'
   | 'tree'
   | 'street-lamp'
   | 'traffic-signal'
@@ -628,6 +634,8 @@ export interface Prop {
   network?: UtilityKind;
   /** Flagpoles: the flag's country (ISO 3166 alpha-2, `EU` for Europe); absent: Turkey's. */
   flag?: string;
+  /** Fuel pumps and price signs: the station's brand (fuel.ts FuelBrand). */
+  brand?: string;
 }
 
 export type FixKind =

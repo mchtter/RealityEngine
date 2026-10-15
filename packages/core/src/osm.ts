@@ -123,6 +123,7 @@ export function areaKindOf(tags: Record<string, string>): AreaKind | null {
   if (landuse === 'harbour' || landuse === 'port' || tags.industrial === 'port') return 'harbour';
   if (landuse === 'military' || MILITARY_GROUNDS.has(tags.military ?? '')) return 'military';
   if (amenity === 'marketplace') return 'marketplace';
+  if (amenity === 'fuel') return 'fuel';
   // A substation / plant mapped as a building is a building (a kiosk, a roof
   // of solar panels), not a yard.
   if (tags.power === 'substation' && !tags.building) return 'substation';

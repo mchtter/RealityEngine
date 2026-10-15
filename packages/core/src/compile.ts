@@ -23,6 +23,7 @@ import {
   placeObservedBuildings,
 } from './buildings';
 import { CutGround, buildCuttings, settleTrenchRims } from './cuttings';
+import { dressStations, fuelStations, stationCanopies } from './fuel';
 import {
   LocalProjection,
   closestOnSegment,
@@ -121,7 +122,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '92';
+export const COMPILER_VERSION = '95';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -533,6 +534,10 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       return polygons.length ? [{ ...b, polygons }] : [];
     });
 
+  // Fuel stations: the data's canopy, or one laid for a station mapped as a point.
+  const stations = fuelStations(features.points, features.areas);
+  candidates.push(...stationCanopies(stations, features.buildings, roadIndex));
+
   // Observed buildings (highest-priority source first), corrected against roads and each other.
   const bctx = { terrain, roads: roadIndex };
   const placedObserved = placeObservedBuildings(candidates, bctx, [regionPoly]);
@@ -674,6 +679,9 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   const buildingIndex = new PolygonIndex<Building>();
   for (const b of buildings) buildingIndex.add(b, b.footprint);
   layoutFacades(buildings, buildingIndex, roadIndex);
+  // Fuel stations dressed: pumps, price sign, forecourt (an area the hard ground draws).
+  const stationDress = dressStations(stations, buildings, roadIndex);
+  areas.push(...stationDress.areas);
   // A mosque whose minarets the data maps as buildings of their own gets no
   // generated ones (it would have two minarets side by side).
   const minarets = buildings
@@ -748,7 +756,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
 
   // Props.
   const pctx = { terrain, roads, roadIndex, buildings: buildingIndex, junctions, crossings };
-  let props: Prop[] = observedProps(features.points, pctx).filter((p) =>
+  let props: Prop[] = [...observedProps(features.points, pctx), ...stationDress.props].filter((p) =>
     inRegion([p.position[0], p.position[1]]),
   );
   if (decorate) {

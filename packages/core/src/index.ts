@@ -1,4 +1,5 @@
 export * from './types';
+export { FUEL_BRAND_COLOURS, type FuelBrand } from './fuel';
 export { COMPILER_VERSION, compileCity, deckPriority } from './compile';
 export { RoadSurface, conformTerrainToStreets, terrainHeightAt } from './terrain';
 export { LocalProjection, orientedBox, pointInRing, ringArea, simplifyRing } from './geo';

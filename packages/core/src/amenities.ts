@@ -214,6 +214,7 @@ export function groundSurfaces(
   }
   const yardBoxes = yards.map((poly) => ({ poly, box: boxOf(poly) }));
   const concrete = [
+    ...of('fuel'),
     ...yards,
     ...dense.flatMap((d) => {
       const others = near(yardBoxes, boxOf(d)).map((y) => y.poly);

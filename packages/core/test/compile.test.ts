@@ -401,6 +401,135 @@ describe('compileCity', () => {
     expect(m.buildings.filter((b) => b.source === 'synthetic').length).toBeGreaterThan(0);
   });
 
+  it('dresses a fuel station: brand canopy, pumps under it, a sign by the road, a forecourt', () => {
+    const feature = (
+      ref: string,
+      kind: 'point' | 'building',
+      geometry:
+        | { type: 'Point'; coordinates: [number, number] }
+        | { type: 'Polygon'; coordinates: [number, number][][] },
+      tags: Record<string, string>,
+    ) => ({ ref, source: 'osm', priority: 0, kind, geometry, tags });
+    const ring = (pts: [number, number][]) => [[...pts, pts[0]].map(([x, y]) => ll(x, y))];
+    // A Shell station on the north side of the E-W street at y = -60: its canopy in the data.
+    const withCanopy = compileCity(
+      {
+        ...gridSource(),
+        features: [
+          feature(
+            'osm:n1',
+            'point',
+            { type: 'Point', coordinates: ll(-120, -35) },
+            { amenity: 'fuel', brand: 'Shell' },
+          ),
+          feature(
+            'osm:w9',
+            'building',
+            {
+              type: 'Polygon',
+              coordinates: ring([
+                [-130, -40],
+                [-110, -40],
+                [-110, -30],
+                [-130, -30],
+              ]),
+            },
+            { building: 'roof' },
+          ),
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    const canopy = withCanopy.buildings.find((b) => b.ref === 'osm:w9')!;
+    expect(canopy.form).toBe('canopy');
+    expect(canopy.palette.wall).toBe('#dd1d21');
+    const pumps = withCanopy.props.filter((p) => p.kind === 'fuel-pump');
+    expect(pumps.length).toBeGreaterThan(0);
+    for (const p of pumps) {
+      expect(p.brand).toBe('shell');
+      expect(p.position[0]).toBeGreaterThan(-130);
+      expect(p.position[0]).toBeLessThan(-110);
+      expect(p.position[1]).toBeGreaterThan(-40);
+      expect(p.position[1]).toBeLessThan(-30);
+    }
+    const sign = withCanopy.props.find((p) => p.kind === 'fuel-totem')!;
+    // By the street (centreline y = -60), on the station's side.
+    expect(sign.position[1]).toBeGreaterThan(-60);
+    expect(sign.position[1]).toBeLessThan(-40);
+    const concrete = withCanopy.surfaces.find((s) => s.kind === 'concrete')!;
+    expect(concrete.polygons.some((p) => pointInRing([-120, -42], p.outer))).toBe(true);
+
+    // A station mapped as a point only: a canopy is laid for it, clear of the street.
+    const pointOnly = compileCity(
+      {
+        ...gridSource(),
+        features: [
+          feature(
+            'osm:n2',
+            'point',
+            { type: 'Point', coordinates: ll(120, -35) },
+            { amenity: 'fuel', brand: 'Opet' },
+          ),
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    const laid = pointOnly.buildings.find((b) => b.ref === 'fuel:osm:n2')!;
+    expect(laid.form).toBe('canopy');
+    expect(laid.palette.wall).toBe('#1d3c8f');
+    expect(pointOnly.props.filter((p) => p.kind === 'fuel-pump').length).toBeGreaterThan(0);
+    const roads = new RoadIndex(pointOnly.roads);
+    for (const q of laid.footprint.outer)
+      expect(roads.covering(q, (r) => (isVehicular(r.cls) ? r.width / 2 : 0))).toBeNull();
+
+    // A canopy reaching the kerb: the sign stands past its end, not under it.
+    const toKerb = compileCity(
+      {
+        ...gridSource(),
+        features: [
+          feature(
+            'osm:n3',
+            'point',
+            { type: 'Point', coordinates: ll(-120, -45) },
+            { amenity: 'fuel', brand: 'BP' },
+          ),
+          feature(
+            'osm:w8',
+            'building',
+            {
+              type: 'Polygon',
+              coordinates: ring([
+                [-130, -55],
+                [-110, -55],
+                [-110, -38],
+                [-130, -38],
+              ]),
+            },
+            { building: 'roof' },
+          ),
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    const roof = toKerb.buildings.find((b) => b.ref === 'osm:w8')!;
+    const totem = toKerb.props.find((p) => p.kind === 'fuel-totem')!;
+    expect(pointInRing([totem.position[0], totem.position[1]], roof.footprint.outer)).toBe(false);
+    const [tx, ty] = totem.position;
+    const r = roof.footprint.outer;
+    const gap = Math.min(
+      ...r.map((a, k) => {
+        const b = r[(k + 1) % r.length];
+        const [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+        const t = Math.max(
+          0,
+          Math.min(1, ((tx - a[0]) * dx + (ty - a[1]) * dy) / (dx * dx + dy * dy)),
+        );
+        return Math.hypot(a[0] + dx * t - tx, a[1] + dy * t - ty);
+      }),
+    );
+    expect(gap).toBeGreaterThan(1.9);
+  });
+
   it('draws a stadium as stands round a lined pitch, with no trees on it', () => {
     const area = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
       ref,
