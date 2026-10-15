@@ -4,12 +4,12 @@ import {
   CutGround,
   GroundModel,
   type Polygon,
-  type RoadSurface,
   SURFACE_LIFT,
   type SurfaceKind,
   type TerrainGrid,
   bufferPolyline,
   clipPolygons,
+  conformTerrainToStreets,
   deckPriority,
   offsetPolygons,
   pointInRing,
@@ -274,47 +274,6 @@ function terrainMesh(
   return mesh;
 }
 
-/**
- * The terrain as drawn under the street surface: every grid node next to a
- * street (any sample of the surface within one cell) sits 0.3 m below the
- * lowest surface point around it. The grid's triangles interpolate between
- * nodes; one spanning a road and a higher median would otherwise rise through
- * the asphalt between them.
- */
-function underStreet(t: TerrainGrid, surface: RoadSurface): TerrainGrid {
-  // Surface sampled once on a half-cell grid (NaN off the streets), then the
-  // minimum over the 5 × 5 samples around each node.
-  const sc = (t.cols - 1) * 2 + 1;
-  const sr = (t.rows - 1) * 2 + 1;
-  const half = t.cellSize / 2;
-  const samples = new Float32Array(sc * sr);
-  let any = false;
-  for (let j = 0; j < sr; j++) {
-    for (let i = 0; i < sc; i++) {
-      const z = surface.heightAt(t.minX + i * half, t.minY + j * half);
-      samples[j * sc + i] = z ?? Number.NaN;
-      if (z !== null) any = true;
-    }
-  }
-  if (!any) return t;
-  const heights = t.heights.slice();
-  for (let j = 0; j < t.rows; j++) {
-    for (let i = 0; i < t.cols; i++) {
-      let low = Infinity;
-      for (let b = Math.max(0, 2 * j - 2); b <= Math.min(sr - 1, 2 * j + 2); b++) {
-        for (let a = Math.max(0, 2 * i - 2); a <= Math.min(sc - 1, 2 * i + 2); a++) {
-          const z = samples[b * sc + a];
-          if (z < low) low = z;
-        }
-      }
-      if (low === Infinity) continue;
-      const idx = j * t.cols + i;
-      heights[idx] = Math.min(heights[idx], low - 0.3);
-    }
-  }
-  return { ...t, heights };
-}
-
 /** Sea: a plane at sea level over the tile. */
 /**
  * The sea, only where the ground goes below it: terrain cells with a corner
@@ -537,7 +496,9 @@ export function buildGround(
   const groundModel = new GroundModel(model);
   const surface = groundModel.street;
   const streetAt = (x: number, y: number) => surface.heightAt(x, y) ?? terrainHeightAt(t, x, y);
-  const shown = underStreet(t, surface);
+  // Compiled since the compiler conforms the terrain itself (one ground for
+  // drawing and placing); older tiles are conformed here.
+  const shown = model.terrainConformed ? t : conformTerrainToStreets(t, surface);
   const trenches = model.terrainCut?.trenches ?? [];
   const lids = model.terrainCut?.lids ?? [];
   const holes = [...trenches, ...lids];

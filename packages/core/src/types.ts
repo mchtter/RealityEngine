@@ -814,6 +814,11 @@ export interface CityModel {
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
   attribution: string[];
   terrain: TerrainGrid;
+  /**
+   * The terrain is already lowered under the streets (conformTerrainToStreets):
+   * drawn as is. Absent on tiles compiled before (the viewer conforms them).
+   */
+  terrainConformed?: boolean;
   roads: Road[];
   surfaces: Surface[];
   markings: Marking[];

@@ -86,6 +86,7 @@ import {
 import { GridIndex, PolygonIndex, PolygonSet, RoadIndex, ringBounds } from './spatial';
 import {
   RoadSurface,
+  conformTerrainToStreets,
   buildTerrain,
   conformTerrainToFill,
   conformTerrainToRoads,
@@ -120,7 +121,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '91';
+export const COMPILER_VERSION = '92';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -608,6 +609,13 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     slivers.length ? new PolygonSet(slivers) : undefined,
   );
   const streetAt = (x: number, y: number) => streetSurface.heightAt(x, y);
+  // One ground for drawing and placing: the terrain lowered under the streets
+  // (as the viewer draws it) before anything takes its height from it. Props
+  // and fences on a verge stood on the terrain before that lowering, up to
+  // 2 m above the drawn ground on sloping streets (2026-10-15). Over the
+  // whole region, before the tile is cut out: neighbours agree on the seam.
+  const lowered = conformTerrainToStreets(terrain, streetSurface);
+  for (let i = 0; i < terrain.heights.length; i++) terrain.heights[i] = lowered.heights[i];
   // Trench wall tops from the street beside them; the ground there kept below.
   settleTrenchRims(cuttings, terrain, streetAt, SURFACE_LIFT.sidewalk);
   const pathSurface = net.surfaces.find((sf) => sf.kind === 'path')?.polygons ?? [];
@@ -997,6 +1005,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
 
   // Everything standing on the ground takes its height from the one ground
   // model the viewer draws with (sidewalk at kerb height, trench floor, lid …).
+  // (The terrain was lowered under the streets above, as drawn.)
   const groundModel = new GroundModel({
     streetFill: outFill,
     terrain: outTerrain,
@@ -1042,6 +1051,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     frame: src.frame,
     attribution: src.attribution,
     terrain: outTerrain,
+    terrainConformed: true,
     roads: outRoads,
     surfaces: outSurfaces,
     markings: outMarkings,
