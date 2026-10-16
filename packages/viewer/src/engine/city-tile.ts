@@ -1,6 +1,7 @@
 import { CutGround, type UtilityKind } from '@opentwin/city-core';
 import * as THREE from 'three/webgpu';
 import { toThree } from './geom';
+import { DRAPED } from './ground-clipmap';
 import { BUILDING_SLOT, type DtMaterials } from './materials';
 import type { PropMode } from './props';
 import {
@@ -303,6 +304,11 @@ export class CityTile {
   }
 
   /** Terrain and street surfaces drawn now (near or far detail): what a vehicle / marker stands on. */
+  /** The flat ground meshes (terrain, surfaces, markings) a ground clipmap draws (D-011). */
+  drapedGround(): THREE.Mesh[] {
+    return [...this.groundNear, ...this.groundFar].filter((m) => DRAPED.test(m.name));
+  }
+
   visibleGround(): THREE.Mesh[] {
     return [...this.groundNear, ...this.groundFar].filter(
       (m) => m.visible && /^(terrain|surfaces)/.test(m.name),

@@ -48,6 +48,7 @@ import { CityTile, type DtInspect, FAR_SHADOW_LAYER, type TileLevel } from './ci
 import { type DetailLevel, LEVEL_DWELL_MS, nextLevel } from './detail-level';
 import { toThree } from './geom';
 import { GroundAtlas } from './ground-atlas';
+import { CLIP_LAYER, GroundClipmap } from './ground-clipmap';
 import { HorizonLayer } from './horizon';
 import { openLandAlbedo } from './landcover';
 import { LiveObjectLayer, type LiveRef, type LiveScreen } from './live-objects';
@@ -380,7 +381,10 @@ export class DtEngine {
   /** CPU time spent submitting frames since the last stats tick (draw-call overhead). */
   private cpuMs = 0;
   /** Development A/B switches for performance analysis. */
-  private debugFlags = { post: true, shadows: true, ao: true };
+  private debugFlags = { post: true, shadows: true, ao: true, drape: false };
+  /** The ground as one picture (D-011, F3; behind the `drape` flag while it is measured). */
+  private clipmap: GroundClipmap | null = null;
+  private drapedKey = '';
   /** Share of ambient occlusion applied (0 = off). */
   private readonly aoStrength = uniform(1);
   /** Colour grade strength: 0 classic, 1 HDR look (after tone mapping). */
@@ -2496,9 +2500,47 @@ export class DtEngine {
     return { x: p.x, y: p.y, z: p.z, mode: this.rig.mode };
   }
 
+  /**
+   * The ground drawn from the clipmap (D-011): every flat ground mesh takes
+   * the drape material (its own kept for the clipmap's pass), markings are
+   * drawn into the clipmap only; the levels are redrawn when the focus moves
+   * or the shown ground changes (a tile loaded, its detail switched).
+   */
+  private tickDrape(): void {
+    this.clipmap ??= new GroundClipmap(this.renderer);
+    const meshes: THREE.Mesh[] = [];
+    for (const tile of this.tiles.values())
+      for (const m of tile.drapedGround()) {
+        if (m.userData.own === undefined) {
+          m.userData.own = m.material;
+          if (/^markings/.test(m.name)) m.layers.set(CLIP_LAYER);
+          else m.material = this.clipmap.drape;
+        }
+        if (m.visible) meshes.push(m);
+      }
+    const key = meshes.map((m) => m.uuid).join();
+    const force = key !== this.drapedKey;
+    this.drapedKey = key;
+    this.clipmap.update(this.scene, this.controls.target, meshes, 9000, force);
+  }
+
+  /** Back to the layered ground (each mesh its own material, markings in the main pass). */
+  private undrape(): void {
+    for (const tile of this.tiles.values())
+      for (const m of tile.drapedGround()) {
+        if (m.userData.own === undefined) continue;
+        m.material = m.userData.own as THREE.Material;
+        m.layers.set(0);
+        delete m.userData.own;
+      }
+    this.drapedKey = '';
+  }
+
   /** Development aid: toggle post-processing / shadows to isolate frame cost. */
-  debugSet(flags: Partial<{ post: boolean; shadows: boolean; ao: boolean }>): void {
+  debugSet(flags: Partial<{ post: boolean; shadows: boolean; ao: boolean; drape: boolean }>): void {
+    const wasDrape = this.debugFlags.drape;
     Object.assign(this.debugFlags, flags);
+    if (wasDrape && !this.debugFlags.drape) this.undrape();
     this.renderer.shadowMap.enabled = this.debugFlags.shadows;
     this.sun.castShadow = this.debugFlags.shadows;
     this.aoStrength.value = this.debugFlags.ao ? 1 : 0;
@@ -2775,6 +2817,7 @@ export class DtEngine {
     }
 
     this.tickPin();
+    if (this.debugFlags.drape) this.tickDrape();
 
     const cpu0 = performance.now();
     if (this.debugFlags.post) this.pipeline.render();
