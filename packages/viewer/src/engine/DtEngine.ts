@@ -696,6 +696,7 @@ export class DtEngine {
     if (this.mode !== 'showcase') tile.setMode(this.mode);
     if (this.showFixes) tile.setShowFixes(true);
     if (this.underground.size) tile.setUnderground(this.underground);
+    if (this.mapLook) tile.setPlain(true);
     const eye = this.rig.lodEye(this.lodEye);
     tile.updateDetail(eye, Math.max(0, eye.y - this.heightAt(eye.x, -eye.z)));
     this.tiles.set(key, tile);
@@ -2542,13 +2543,21 @@ export class DtEngine {
     this.drapedKey = '';
   }
 
+  /** Map look on (see setMapLook). */
+  private mapLook = false;
+
   /**
-   * The ground drawn as one picture (the clipmap; F3, D-011) — no paint or
-   * surface laid over another to z-fight up close. The UI's "map mode". Off:
-   * the layered ground.
+   * The map look (F3, the UI's "map mode"): the ground drawn as one picture
+   * (the clipmap, D-011) — no paint or surface laid over another to z-fight
+   * up close — and plain buildings: one quad per wall edge with shader
+   * windows at every distance, no texture, 3D windows, cornices or clutter.
+   * Off: the detailed city.
    */
-  setDrape(on: boolean): void {
+  setMapLook(on: boolean): void {
+    this.mapLook = on;
     this.debugSet({ drape: on });
+    for (const tile of this.tiles.values()) tile.setPlain(on);
+    this.updateDetail();
   }
 
   /** Development aid: toggle post-processing / shadows to isolate frame cost. */

@@ -81,6 +81,11 @@ export class CityTile {
   private readonly utilityMeshes = new Set<THREE.Mesh>();
   /** Underground view on: networks shown, buildings as holograms, detail and furniture off. */
   private under = false;
+  /**
+   * Map look (F3): walls as one quad per edge at every distance with the
+   * plain wall / roof materials; no cornices, 3D windows or building clutter.
+   */
+  private plain = false;
   private readonly pickables: { mesh: THREE.Mesh; ids: string[]; owners: Int32Array }[] = [];
   private readonly buildingsById: Map<string, BuildingInfo>;
   private readonly local = new THREE.Vector3();
@@ -231,7 +236,7 @@ export class CityTile {
     // close up (loaded far first, its full version still on the way) it keeps
     // its far ground, else the buildings stood on nothing.
     const groundDetail = this.level === 'full' && tileDistance < GROUND_DETAIL_RANGE;
-    const wallDetail = tileDistance < WALL_DETAIL_RANGE;
+    const wallDetail = !this.plain && tileDistance < WALL_DETAIL_RANGE;
     const under = this.under;
     for (const m of this.groundNear) m.visible = groundDetail;
     for (const m of this.groundFar) m.visible = !groundDetail;
@@ -244,7 +249,8 @@ export class CityTile {
     for (const m of this.propsShowcase) m.visible = inRange(m) && !this.data && !under;
     for (const m of this.propsData) m.visible = inRange(m) && this.data && !under;
     for (const t of this.subTiles) {
-      const near = this.local.distanceTo(t.center) < DETAIL_RANGE + t.radius && !under;
+      const near =
+        this.local.distanceTo(t.center) < DETAIL_RANGE + t.radius && !under && !this.plain;
       for (const m of t.obsDetail) m.visible = near;
       for (const m of t.obsProps) m.visible = near;
       for (const m of t.synDetail) m.visible = near && !this.data;
@@ -303,12 +309,12 @@ export class CityTile {
     }
   }
 
-  /** Terrain and street surfaces drawn now (near or far detail): what a vehicle / marker stands on. */
   /** The flat ground meshes (terrain, surfaces, markings) a ground clipmap draws (D-011). */
   drapedGround(): THREE.Mesh[] {
     return [...this.groundNear, ...this.groundFar].filter((m) => DRAPED.test(m.name));
   }
 
+  /** Terrain and street surfaces drawn now (near or far detail): what a vehicle / marker stands on. */
   visibleGround(): THREE.Mesh[] {
     return [...this.groundNear, ...this.groundFar].filter(
       (m) => m.visible && /^(terrain|surfaces)/.test(m.name),
@@ -320,7 +326,21 @@ export class CityTile {
     return this.summary.utilities ?? {};
   }
 
+  /** Map look: walls / roofs plain, else the updateDetail distances (the caller runs it next). */
+  setPlain(on: boolean): void {
+    this.plain = on;
+    this.applyShells();
+  }
+
+  /** A shell's material in the map look (plain walls and roofs; the rest as built). */
+  private plainOf(m: THREE.Material): THREE.Material {
+    if (m === this.mats.wall) return this.mats.wallPlain;
+    if (m === this.mats.roofTile || m === this.mats.roofFlat) return this.mats.roofPlain;
+    return m;
+  }
+
   private applyShells(): void {
+    const own = (m: THREE.Material) => (this.plain ? this.plainOf(m) : m);
     // Synthetic buildings become translucent holograms so observed data stands
     // out (data view); in the underground view every building does.
     for (const s of this.synShells) {
@@ -328,11 +348,11 @@ export class CityTile {
         ? this.mats.holoGhost
         : this.data
           ? this.mats.holoBuilding
-          : s.material;
+          : own(s.material);
       s.mesh.castShadow = !this.data && !this.under;
     }
     for (const s of this.obsShells) {
-      s.mesh.material = this.under ? this.mats.holoGhost : s.material;
+      s.mesh.material = this.under ? this.mats.holoGhost : own(s.material);
       s.mesh.castShadow = !this.under;
     }
   }

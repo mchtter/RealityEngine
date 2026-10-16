@@ -152,6 +152,13 @@ export interface DtMaterials {
   scenario: THREE.DataTexture;
   skyTint: THREE.UniformNode<'color', THREE.Color>;
   wall: THREE.MeshStandardNodeMaterial;
+  /**
+   * The map look's walls (F3): the façade colour without texture, wear or
+   * relief; windows a soft tone, a thin line at each floor, shade at the foot.
+   */
+  wallPlain: THREE.MeshStandardNodeMaterial;
+  /** The map look's roofs: their colour, no tiles or grain. */
+  roofPlain: THREE.MeshStandardNodeMaterial;
   trim: THREE.MeshStandardNodeMaterial;
   glass: THREE.MeshStandardNodeMaterial;
   /** Three-casement window glass (wide living-room windows). */
@@ -375,6 +382,45 @@ export function createMaterials(): DtMaterials {
     );
   };
 
+  /**
+   * Shader windows on a wall (uv = metres along the wall, metres above sea
+   * level; attributes `bay` and `floorInfo`). Far walls draw them on every
+   * window bay; near buildings add 3D frames / glass instances on top that
+   * cover these exactly.
+   */
+  const facadeWindows = () => {
+    const u = uv().x;
+    const v = uv().y;
+    const bay = attribute<'vec3'>('bay', 'vec3');
+    const fl = attribute<'vec3'>('floorInfo', 'vec3');
+    const rel = v.sub(fl.x);
+    const local = rel.sub(fl.y.mul(floor(rel.div(fl.y))));
+    // bay.x < 0 (far LOD walls: one quad per edge): a window every −bay.x metres.
+    const period = max(bay.x.negate(), 0.01);
+    const repeated = step(bay.x, -0.001);
+    const bayCentre = mix(bay.x, floor(u.div(period)).add(0.5).mul(period), repeated);
+    const inX = step(abs(u.sub(bayCentre)), bay.y.mul(0.5)).mul(step(0.01, bay.y));
+    const inY = step(0.9, local)
+      .mul(step(local, bay.z.add(0.9)))
+      .mul(step(fl.x, v))
+      .mul(step(v, fl.z));
+    const win = inX.mul(inY);
+    const lightId = hash(
+      bayCentre
+        .mul(3.7)
+        .add(floor(rel.div(fl.y)).mul(17.3))
+        .add(fl.x.mul(1.31)),
+    );
+    return { win, lightId, local, fl };
+  };
+  /** Lit windows at night: about four in ten, each its own brightness. */
+  const windowLight = (win: ReturnType<typeof float>, lightId: ReturnType<typeof float>) =>
+    vec3(1.0, 0.74, 0.44)
+      .mul(night)
+      .mul(step(0.62, lightId))
+      .mul(win)
+      .mul(hash(lightId.mul(9.1)).mul(0.45).add(0.2));
+
   // ─── Walls ────────────────────────────────────────────────────────────────
   // uv = (metres along the wall, metres above sea level); `finish` selects the pattern.
   const wall = new THREE.MeshStandardNodeMaterial({ roughness: 0.9, metalness: 0 });
@@ -445,28 +491,7 @@ export function createMaterials(): DtMaterials {
     const groundLevel = fl0.x.sub(3.6);
     const splash = oneMinus(smoothstep(0, 1.4, v.sub(groundLevel))).mul(0.14);
     const weathering = float(1).add(patches).sub(streaks).sub(splash);
-    // Far windows: drawn by the shader on every window bay; near buildings add
-    // 3D frames / glass instances on top that cover these exactly.
-    const bay = attribute<'vec3'>('bay', 'vec3');
-    const fl = attribute<'vec3'>('floorInfo', 'vec3');
-    const rel = v.sub(fl.x);
-    const local = rel.sub(fl.y.mul(floor(rel.div(fl.y))));
-    // bay.x < 0 (far LOD walls: one quad per edge): a window every −bay.x metres.
-    const period = max(bay.x.negate(), 0.01);
-    const repeated = step(bay.x, -0.001);
-    const bayCentre = mix(bay.x, floor(u.div(period)).add(0.5).mul(period), repeated);
-    const inX = step(abs(u.sub(bayCentre)), bay.y.mul(0.5)).mul(step(0.01, bay.y));
-    const inY = step(0.9, local)
-      .mul(step(local, bay.z.add(0.9)))
-      .mul(step(fl.x, v))
-      .mul(step(v, fl.z));
-    const win = inX.mul(inY);
-    const lightId = hash(
-      bayCentre
-        .mul(3.7)
-        .add(floor(rel.div(fl.y)).mul(17.3))
-        .add(fl.x.mul(1.31)),
-    );
+    const { win, lightId } = facadeWindows();
     wall.colorNode = mix(
       scenarioTint(vertexColor().rgb.mul(pattern).mul(weathering)),
       vec3(0.07, 0.09, 0.11),
@@ -484,12 +509,27 @@ export function createMaterials(): DtMaterials {
       .sub(brickEdge.mul(is(4)))
       .add(motif.sub(1).mul(2).mul(is(5)));
     wall.normalNode = mix(bumpedNormal(relief, 0.05), normalView, win);
-    wall.emissiveNode = vec3(1.0, 0.74, 0.44)
-      .mul(night)
-      .mul(step(0.62, lightId))
-      .mul(win)
-      .mul(hash(lightId.mul(9.1)).mul(0.45).add(0.2))
-      .add(scenarioGlow().mul(oneMinus(win)));
+    wall.emissiveNode = windowLight(win, lightId).add(scenarioGlow().mul(oneMinus(win)));
+  }
+
+  const wallPlain = new THREE.MeshStandardNodeMaterial({ roughness: 0.88, metalness: 0 });
+  {
+    const v = uv().y;
+    const { win, lightId, local, fl } = facadeWindows();
+    // A thin darker line where each floor's slab meets the façade (above the ground floor).
+    const slab = oneMinus(smoothstep(0.06, 0.16, local))
+      .mul(step(fl.x.add(0.2), v))
+      .mul(step(v, fl.z));
+    // Ambient occlusion at the foot: the façade darkens towards the street.
+    const foot = mix(float(0.8), float(1), smoothstep(0, 5, v.sub(fl.x.sub(3.6))));
+    const facade = vertexColor()
+      .rgb.mul(float(1).sub(slab.mul(0.1)))
+      .mul(foot);
+    // Windows: the façade's colour, darker and cooler (no glass, no frames).
+    const pane = mix(vertexColor().rgb.mul(0.62), vec3(0.36, 0.42, 0.5), 0.55).mul(foot);
+    wallPlain.colorNode = mix(scenarioTint(facade), pane, win.mul(oneMinus(scenarioOn.mul(0.6))));
+    wallPlain.roughnessNode = mix(float(0.88), float(0.4), win);
+    wallPlain.emissiveNode = windowLight(win, lightId).add(scenarioGlow().mul(oneMinus(win)));
   }
 
   const trim = new THREE.MeshStandardNodeMaterial({ roughness: 0.8, metalness: 0 });
@@ -604,6 +644,9 @@ export function createMaterials(): DtMaterials {
     vertexColor().rgb.mul(float(0.92).add(mx_noise_float(positionWorld.mul(2.5)).mul(0.08))),
   );
   roofFlat.emissiveNode = scenarioGlow();
+  const roofPlain = new THREE.MeshStandardNodeMaterial({ roughness: 0.9, metalness: 0 });
+  roofPlain.colorNode = scenarioTint(vertexColor().rgb);
+  roofPlain.emissiveNode = scenarioGlow();
 
   // ─── Balconies ────────────────────────────────────────────────────────────
   const railGlass = new THREE.MeshStandardNodeMaterial({
@@ -1631,6 +1674,8 @@ export function createMaterials(): DtMaterials {
 
   const all = [
     wall,
+    wallPlain,
+    roofPlain,
     trim,
     glass,
     glassWide,
@@ -1686,6 +1731,8 @@ export function createMaterials(): DtMaterials {
     scenario,
     skyTint,
     wall,
+    wallPlain,
+    roofPlain,
     trim,
     glass,
     glassWide,
