@@ -67,6 +67,7 @@ import {
   buildingDetails,
   carriageReach,
   clearOfBridges,
+  clearOfCuts,
   corridorReach,
   decorateStreets,
   observedProps,
@@ -123,7 +124,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '99';
+export const COMPILER_VERSION = '100';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -853,7 +854,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     });
     return { ...r, points, profile };
   };
-  props = clearOfBridges(props, bridges);
+  props = clearOfCuts(clearOfBridges(props, bridges), cut);
   // Nothing stands on a rail bed; walls and fences do not cross the line.
   {
     const kept = harmony.furniture(props, walls.fences);

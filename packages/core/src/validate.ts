@@ -934,6 +934,8 @@ function seamRules(
 
 /** A deck less than this above the street meets it at street level (culvert, low bridge). */
 export const LOW_DECK = 2;
+/** How far past a carriageway's edge a barrier still stands on the road (carriageReach). */
+const KERB_REACH = 0.3;
 
 /**
  * Whether a deck's barrier / walkway stops at a point: a low deck over another
@@ -942,9 +944,12 @@ export const LOW_DECK = 2;
  */
 export function barrierStops(ground: GroundModel, deckZ: number, x: number, y: number): boolean {
   if (deckZ - ground.streetAt(x, y) >= LOW_DECK) return false;
-  // On a ground road's carriageway, its asphalt drawn there or not (a deck's
-  // end ramp eases in over 90 m and meets the streets at its ends low).
-  return ground.supportAt(x, y) === 'asphalt' || ground.street.sample(x, y)?.carriage === true;
+  // On a ground road's carriageway or its kerb (carriageReach), its asphalt
+  // drawn there or not: a deck's end ramp eases in over up to 90 m and runs
+  // low beside the streets at its ends.
+  if (ground.supportAt(x, y) === 'asphalt') return true;
+  const s = ground.street.sample(x, y);
+  return s !== null && s.pastCarriage < KERB_REACH;
 }
 
 /**

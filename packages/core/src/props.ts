@@ -14,7 +14,7 @@ import {
 import { ENTITY_TAG, type SourcePoint } from './osm';
 import { Rng } from './random';
 import { isVehicular } from './roads';
-import { GridIndex, type PolygonIndex, type RoadIndex } from './spatial';
+import { GridIndex, PolygonIndex, type RoadIndex } from './spatial';
 import { barrelRise } from './styles';
 import { terrainHeightAt } from './terrain';
 import type {
@@ -22,6 +22,7 @@ import type {
   Building,
   Crossing,
   Junction,
+  Polygon,
   Prop,
   PropKind,
   Provenance,
@@ -160,6 +161,28 @@ const STRUCTURE_RADIUS: Partial<Record<PropKind, number>> = {
   // The jib (a quarter turned towards the deck is enough to hit it).
   crane: 30,
 };
+
+/**
+ * Least distance (m) from a generated tree's trunk to an underpass trench or
+ * tunnel-mouth lid: the retaining wall (0.4 m) and its parapet stand at the
+ * edge. Street and park trees stood in the wall: 110 of 178 trees flagged
+ * tree.over-cut in three Kızılay tiles (2026-10-16).
+ */
+const CUT_TRUNK_CLEAR = 1;
+
+/** Generated trees kept off the walls of underpass trenches and tunnel mouths. */
+export function clearOfCuts(props: Prop[], cut: { trenches: Polygon[]; lids: Polygon[] }): Prop[] {
+  if (!cut.trenches.length && !cut.lids.length) return props;
+  const prints = new PolygonIndex<Polygon>();
+  for (const p of [...cut.trenches, ...cut.lids]) prints.add(p, p);
+  return props.filter(
+    (p) =>
+      p.provenance === 'observed' ||
+      p.buildingId !== undefined ||
+      (p.kind !== 'tree' && p.kind !== 'cypress') ||
+      prints.distanceTo([p.position[0], p.position[1]], CUT_TRUNK_CLEAR) >= CUT_TRUNK_CLEAR,
+  );
+}
 
 /**
  * Generated props clear of bridges: none may reach into a deck (from below,

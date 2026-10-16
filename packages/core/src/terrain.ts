@@ -190,12 +190,22 @@ export class RoadSurface {
    * Surface height at a point and its coverage: 1 inside a street corridor
    * (carriageway + sidewalks), fading to 0 over the shoulder; null beyond.
    */
-  sample(x: number, y: number): { z: number; w: number; carriage: boolean } | null {
+  sample(
+    x: number,
+    y: number,
+  ): {
+    z: number;
+    w: number;
+    carriage: boolean;
+    /** Distance past the nearest carriageway's edge (negative on a carriageway). */
+    pastCarriage: number;
+  } | null {
     const list = this.index.get(`${Math.floor(x / this.bucket)},${Math.floor(y / this.bucket)}`);
     if (!list) return null;
     const p: Vec2 = [x, y];
     let cover = 0;
     let onRoad: { z: number; d: number } | null = null;
+    let pastCarriage = Infinity;
     let sumW = 0;
     let sumZ = 0;
     for (const k of list) {
@@ -206,13 +216,19 @@ export class RoadSurface {
       const z = sg.za + (sg.zb - sg.za) * tt;
       cover = Math.max(cover, excess <= 0 ? 1 : 1 - excess / this.shoulder);
       if (d <= sg.carriage && (!onRoad || d < onRoad.d)) onRoad = { z, d };
+      pastCarriage = Math.min(pastCarriage, d - sg.carriage);
       const w = 1 / (Math.max(0, d - sg.carriage) + 0.75) ** 2;
       sumW += w;
       sumZ += w * z;
     }
     if (cover <= 0) return null;
     if (cover < 1 && this.fill?.contains(x, y)) cover = 1;
-    return { z: onRoad ? onRoad.z : sumZ / sumW, w: cover, carriage: onRoad !== null };
+    return {
+      z: onRoad ? onRoad.z : sumZ / sumW,
+      w: cover,
+      carriage: onRoad !== null,
+      pastCarriage,
+    };
   }
 
   /** Height inside a street corridor, null outside. */
