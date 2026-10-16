@@ -1,7 +1,8 @@
 import { uniform } from 'three/tsl';
 import * as THREE from 'three/webgpu';
 import { toThree } from './geom';
-import { textLabel, type TextLabelStyle } from './overview-map';
+import { DEFAULT_MAP_STYLE, type MapStyle, rangeOf } from './map-style';
+import { textLabel } from './overview-map';
 import { type StreetLine, straightRuns } from './street-lines';
 
 /**
@@ -58,27 +59,12 @@ export function streetLabels(lines: StreetLine[] | undefined): StreetLabel[] {
   return out;
 }
 
-/** Text line height on screen (px; capitals come to about 0.7 of it). */
-const LETTER_PX = 17;
 /**
  * Least share of its length a flat name's axis may keep seen at a slant:
  * up to this, each axis is stretched back to its screen size (the name
  * reads the same from any pitch); beyond, it foreshortens like the street.
  */
 const MIN_SLANT = 0.35;
-/**
- * By street rank: names are written within this distance (m) of the camera
- * and where a screen pixel covers at most this many metres — main roads
- * from high up, side streets close in.
- */
-const RANGE: Record<number, { distance: number; mpp: number }> = {
-  6: { distance: 7000, mpp: 4 },
-  5: { distance: 6000, mpp: 3.5 },
-  4: { distance: 4000, mpp: 2.4 },
-  3: { distance: 2500, mpp: 1.5 },
-  2: { distance: 1500, mpp: 0.9 },
-  1: { distance: 900, mpp: 0.6 },
-};
 /** A name's quad lies this far (m) above the street surface. */
 const LIFT = 0.35;
 /** The same name is not repeated within this screen distance (px). */
@@ -86,17 +72,11 @@ const REPEAT_PX = 260;
 /** Share of its run a name may fill. */
 const FILL = 0.85;
 
-const STYLE: TextLabelStyle = {
-  font: '600 64px Inter, system-ui, sans-serif',
-  color: '#30343b',
-  halo: 'rgba(255,255,255,0.92)',
-  spacing: '0.5px',
-};
-
 /** Places the street names of the shown tiles each frame (the map look). */
 export class StreetLabeller {
   private readonly fade = uniform(1);
   private on = false;
+  private style = DEFAULT_MAP_STYLE.streets;
   private readonly world = new THREE.Vector3();
   private readonly ahead = new THREE.Vector3();
   private readonly up = new THREE.Vector3();
@@ -111,6 +91,13 @@ export class StreetLabeller {
   private readonly lastView = new THREE.Matrix4();
   private lastTiles: unknown[] = [];
   private lastSize = '';
+
+  /** A new style: the names are drawn again in it. */
+  setStyle(style: MapStyle, tiles: Iterable<{ labels: StreetLabel[] }>): void {
+    this.style = style.streets;
+    for (const t of tiles) disposeStreetLabels(t.labels);
+    this.lastTiles = [];
+  }
 
   setEnabled(on: boolean, tiles: Iterable<{ labels: StreetLabel[] }>): void {
     this.on = on;
@@ -159,13 +146,13 @@ export class StreetLabeller {
         this.world.copy(l.mid).add(t.group.position);
         const d = this.world.distanceTo(eye);
         const mpp = d * perPx;
-        const range = RANGE[l.rank] ?? RANGE[1];
+        const range = rangeOf(this.style.ranges, l.rank);
         if (d > range.distance || mpp > range.mpp) continue;
         // Off screen (with a margin for the name's length): not placed.
         this.corner.copy(this.world).project(camera);
         if (this.corner.z > 1 || Math.abs(this.corner.x) > 1.6 || Math.abs(this.corner.y) > 1.6)
           continue;
-        const h = mpp * LETTER_PX;
+        const h = mpp * this.style.letterPx;
         // Seen along the view ray v, a flat axis a keeps |a − (a·v) v| of its length.
         this.ahead.copy(this.world).sub(eye).normalize();
         const along = l.dir.dot(this.ahead);
@@ -248,7 +235,8 @@ export class StreetLabeller {
 
   private build(l: StreetLabel, group: THREE.Group): void {
     if (!l.glyph.art) {
-      const text = textLabel(l.glyph.name, STYLE, this.fade);
+      const { font, color, halo } = this.style;
+      const text = textLabel(l.glyph.name, { font, color, halo, spacing: '0.5px' }, this.fade);
       // textLabel lies flat with its letters' tops to −z; the basis maps its x along the run.
       const geometry = text.geometry as THREE.PlaneGeometry;
       const material = text.material as THREE.MeshBasicNodeMaterial;

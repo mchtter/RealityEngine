@@ -52,6 +52,7 @@ import { GroundClipmap, HIDDEN_LAYER } from './ground-clipmap';
 import { HorizonLayer } from './horizon';
 import { openLandAlbedo } from './landcover';
 import { LiveObjectLayer, type LiveRef, type LiveScreen } from './live-objects';
+import type { MapStyle } from './map-style';
 import {
   type DtMaterials,
   SCENARIO_ALPHA,
@@ -2547,6 +2548,12 @@ export class DtEngine {
         GroundClipmap.untwin(m);
       }
     this.drapedKey = '';
+  }
+
+  /** The map look's style (D-013): label colours, ranks and distances; tiles stay as compiled. */
+  setMapStyle(style: MapStyle): void {
+    this.streetLabeller.setStyle(style, this.tiles.values());
+    this.poiLabeller.setStyle(style, this.tiles.values());
   }
 
   /** Icons of the points of interest, as SVG markup by kind (POI_ICON_KINDS); the host draws them. */
