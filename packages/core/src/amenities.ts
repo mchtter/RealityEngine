@@ -256,7 +256,7 @@ export function runwayMarkings(areas: Area[]): Marking[] {
       ob.center[0] + ax[0] * u + nx[0] * v,
       ob.center[1] + ax[1] * u + nx[1] * v,
     ];
-    // Points every 20 m: a tile keeps the part of a long line inside it (clipMarkings).
+    // Points every 20 m: a tile keeps the part of a long line inside it (clipLines).
     const line = (u0: number, u1: number, v: number) => {
       const n = Math.max(1, Math.ceil((u1 - u0) / 20));
       return Array.from({ length: n + 1 }, (_, k) => at(u0 + ((u1 - u0) * k) / n, v));

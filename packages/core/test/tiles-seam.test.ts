@@ -65,6 +65,21 @@ describe.skipIf(!existsSync(FIXTURE))(
         }
       }
     });
+
+    it('cut walls at the tile edge (each tile draws its part on its own terrain)', () => {
+      let walls = 0;
+      for (const m of [west, east])
+        for (const f of m.fences ?? []) {
+          walls++;
+          for (const [x, y] of f.points) {
+            expect(x).toBeGreaterThanOrEqual(-0.02);
+            expect(x).toBeLessThanOrEqual(1000.02);
+            expect(y).toBeGreaterThanOrEqual(-0.02);
+            expect(y).toBeLessThanOrEqual(1000.02);
+          }
+        }
+      expect(walls).toBeGreaterThan(10);
+    });
   },
   120_000,
 );

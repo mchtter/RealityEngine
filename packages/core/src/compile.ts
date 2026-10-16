@@ -123,7 +123,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '97';
+export const COMPILER_VERSION = '98';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -462,7 +462,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       ];
       return { outer: [q(0, -w), q(0, w), q(len, w), q(len, -w)], holes: [] };
     });
-  const markings = clipMarkings(buildMarkings(roads, junctions), inRegion);
+  const markings = clipLines(buildMarkings(roads, junctions), inRegion);
   const crossings = buildCrossings(roads, junctions, features.points).filter((c) =>
     inRegion(c.center),
   );
@@ -592,7 +592,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     const surface = (kind: string) =>
       net.surfaces.filter((sf) => sf.kind === kind).flatMap((sf) => sf.polygons);
     markings.push(
-      ...clipMarkings(
+      ...clipLines(
         pathEdgeMarkings(intersection(surface('path'), union(markedPaths)), [
           ...surface('asphalt'),
           ...surface('paving'),
@@ -954,22 +954,18 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       kind: sf.kind,
       polygons: dropHairlines(intersection(sf.polygons, [corePoly])),
     }));
-    outMarkings = clipMarkings(allMarkings, inCore);
+    outMarkings = clipLines(allMarkings, inCore);
     // A rail line crossing tiles: each tile lays the stretches over its core.
     outRails = guide.rails.flatMap((r) =>
       linePieces(r.points, inCore).map((points, i) =>
         onDeck({ ...r, id: i ? `${r.id}~${i}` : r.id, points }),
       ),
     );
-    // Long walls (a campus, an airfield's fence) cut into short pieces, each
-    // drawn by the tile it stands in: on its own terrain, never past the margin.
-    outFences = walls.fences
-      .flatMap((f) => fencePieces(f, 40))
-      .filter((f) => {
-        const a = f.points[0];
-        const b = f.points[f.points.length - 1];
-        return inCore([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
-      });
+    // Walls cut at the core's edge, each part drawn by the tile it stands in,
+    // on that tile's terrain: a piece kept whole past the edge stood on the
+    // cropped grid's edge heights carried flat over the neighbour's slope
+    // (fences floating at tile edges, 2026-10-16). Long ones in short pieces.
+    outFences = clipLines(walls.fences, inCore).flatMap((f) => fencePieces(f, 40));
     outOverhead = overhead.filter((sp) =>
       inCore([(sp.a[0] + sp.b[0]) / 2, (sp.a[1] + sp.b[1]) / 2]),
     );
@@ -1140,8 +1136,9 @@ function cropTerrain(t: TerrainGrid, b: Bounds): TerrainGrid {
   };
 }
 
-function clipMarkings(markings: Marking[], inside: (p: Vec2) => boolean): Marking[] {
-  const out: Marking[] = [];
+/** Lines (markings, walls) cut where they cross the core's edge: each tile draws its own part. */
+function clipLines<T extends { points: Vec2[] }>(markings: T[], inside: (p: Vec2) => boolean): T[] {
+  const out: T[] = [];
   // Where a segment leaves (or enters) the core: found by halving, so paint
   // runs on to the tile edge and the neighbour's starts right there.
   const edge = (a: Vec2, b: Vec2): Vec2 => {
@@ -1154,7 +1151,7 @@ function clipMarkings(markings: Marking[], inside: (p: Vec2) => boolean): Markin
     }
     return inside(a) ? lo : hi;
   };
-  const emit = (m: Marking, points: Vec2[]) => {
+  const emit = (m: T, points: Vec2[]) => {
     if (points.length >= 2) out.push({ ...m, points });
   };
   for (const m of markings) {

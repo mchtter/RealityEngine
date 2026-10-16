@@ -355,7 +355,17 @@ export function validateCity(model: CityModel): ValidationReport {
   fences.forEach((f, i) => {
     let len = 0;
     for (let k = 1; k < f.points.length; k++) len += dist(f.points[k - 1], f.points[k]);
-    if (len < 1.5) add('fence.stub', f.points[0], `${len.toFixed(1)} m`);
+    // A piece ending on the core's edge goes on in the neighbouring tile.
+    const onEdge = [f.points[0], f.points[f.points.length - 1]].some(
+      ([x, y]) =>
+        Math.min(
+          Math.abs(x - b0.minX),
+          Math.abs(x - b0.maxX),
+          Math.abs(y - b0.minY),
+          Math.abs(y - b0.maxY),
+        ) < 0.05,
+    );
+    if (len < 1.5 && !onEdge) add('fence.stub', f.points[0], `${len.toFixed(1)} m`);
     for (const p of [f.points[0], f.points[f.points.length - 1]])
       endAt.insert({ p, f: i }, p[0], p[1], p[0], p[1]);
   });
