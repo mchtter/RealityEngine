@@ -48,7 +48,7 @@ import { CityTile, type DtInspect, FAR_SHADOW_LAYER, type TileLevel } from './ci
 import { type DetailLevel, LEVEL_DWELL_MS, nextLevel } from './detail-level';
 import { toThree } from './geom';
 import { GroundAtlas } from './ground-atlas';
-import { CLIP_LAYER, GroundClipmap } from './ground-clipmap';
+import { GroundClipmap, HIDDEN_LAYER } from './ground-clipmap';
 import { HorizonLayer } from './horizon';
 import { openLandAlbedo } from './landcover';
 import { LiveObjectLayer, type LiveRef, type LiveScreen } from './live-objects';
@@ -2507,18 +2507,23 @@ export class DtEngine {
    * or the shown ground changes (a tile loaded, its detail switched).
    */
   private tickDrape(): void {
-    this.clipmap ??= new GroundClipmap(this.renderer);
+    this.clipmap ??= new GroundClipmap(this.renderer, this.mats.ground);
     const meshes: THREE.Mesh[] = [];
     for (const tile of this.tiles.values())
       for (const m of tile.drapedGround()) {
         if (m.userData.own === undefined) {
           m.userData.own = m.material;
-          if (/^markings/.test(m.name)) m.layers.set(CLIP_LAYER);
-          else m.material = this.clipmap.drape;
+          if (/^markings/.test(m.name)) m.layers.set(HIDDEN_LAYER);
+          else
+            m.material =
+              m.material === this.mats.ground ? this.clipmap.drapeSurface : this.clipmap.drape;
         }
-        if (m.visible) meshes.push(m);
+        meshes.push(m);
       }
-    const key = meshes.map((m) => m.uuid).join();
+    const key = meshes
+      .filter((m) => m.visible)
+      .map((m) => m.uuid)
+      .join();
     const force = key !== this.drapedKey;
     this.drapedKey = key;
     this.clipmap.update(this.scene, this.controls.target, meshes, 9000, force);
@@ -2532,6 +2537,7 @@ export class DtEngine {
         m.material = m.userData.own as THREE.Material;
         m.layers.set(0);
         delete m.userData.own;
+        GroundClipmap.untwin(m);
       }
     this.drapedKey = '';
   }

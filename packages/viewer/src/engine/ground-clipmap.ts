@@ -1,4 +1,16 @@
-import { float, positionWorld, step, texture, uniform, vec2, vec3 } from 'three/tsl';
+import {
+  attribute,
+  clamp,
+  float,
+  min,
+  mix,
+  positionWorld,
+  step,
+  texture,
+  uniform,
+  vec2,
+  vec3,
+} from 'three/tsl';
 import * as THREE from 'three/webgpu';
 
 /**
@@ -15,12 +27,16 @@ export const CLIP_BASE = 64;
 export const CLIP_RES = 1024;
 /** A level is redrawn when its centre would move this share of its size. */
 const RECENTRE = 1 / 8;
-/** Edge band (uv) a level hands over to the next coarser one across. */
-const EDGE = 0.04;
+/** Edge band (uv) over which a level fades into the next coarser one. */
+const EDGE = 0.06;
 
-/** Render layer the clipmap's camera sees (the ground meshes, while a level is drawn). */
+/** Render layer the clipmap's camera sees (the twins of the ground meshes). */
 export const CLIP_LAYER = 5;
+/** A layer no camera sees: the markings, drawn into the clipmap by their twins only. */
+export const HIDDEN_LAYER = 6;
 const CLEAR = new THREE.Color(0.55, 0.53, 0.47);
+/** `surf` value of the kerb faces (ground.ts SURF_KERB). */
+const KERB = 6;
 
 /** The ground meshes a clipmap draws and drapes (flat ground; not decks, walls, lights). */
 export const DRAPED = /^(terrain|surfaces|markings)/;
@@ -35,9 +51,21 @@ export class GroundClipmap {
   private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 4000);
   /** Unlit twins of the ground materials (their colour graph, no light). */
   private readonly flat = new Map<THREE.Material, THREE.Material>();
+  /** The terrain's material: its colour from the clipmap. */
   readonly drape: THREE.MeshStandardNodeMaterial;
+  /**
+   * The street and yard surfaces' material: colour from the clipmap, the
+   * ground material's relief (asphalt / sidewalk wear) and roughness, and
+   * its own colour on the kerb faces (vertical: the picture has none there).
+   */
+  readonly drapeSurface: THREE.MeshStandardNodeMaterial;
+  /** The level the last redraw drew and how long it took (ms). */
+  readonly stats = { levels: 0, ms: 0 };
 
-  constructor(private readonly renderer: THREE.WebGPURenderer) {
+  constructor(
+    private readonly renderer: THREE.WebGPURenderer,
+    ground: THREE.MeshStandardNodeMaterial,
+  ) {
     for (let k = 0; k < CLIP_LEVELS; k++) {
       const t = new THREE.RenderTarget(CLIP_RES, CLIP_RES, {
         generateMipmaps: true,
@@ -51,7 +79,19 @@ export class GroundClipmap {
       this.targets.push(t);
     }
     this.camera.up.set(0, 0, -1);
-    this.drape = this.buildDrape();
+    const colour = this.clipColour();
+    this.drape = new THREE.MeshStandardNodeMaterial({ roughness: 0.92, metalness: 0 });
+    this.drape.colorNode = colour;
+    const surf = attribute<'float'>('surf', 'float');
+    const kerb = step(KERB - 0.5, surf).mul(step(surf, KERB + 0.5));
+    const s = new THREE.MeshStandardNodeMaterial({ metalness: 0 });
+    s.colorNode = mix(colour, vec3(ground.colorNode as never), kerb);
+    if (ground.roughnessNode) s.roughnessNode = ground.roughnessNode;
+    if (ground.normalNode) s.normalNode = ground.normalNode;
+    s.polygonOffset = ground.polygonOffset;
+    s.polygonOffsetFactor = ground.polygonOffsetFactor;
+    s.polygonOffsetUnits = ground.polygonOffsetUnits;
+    this.drapeSurface = s;
   }
 
   /** Size (m) of a level's square. */
@@ -59,32 +99,30 @@ export class GroundClipmap {
     return CLIP_BASE * 2 ** k;
   }
 
-  private buildDrape(): THREE.MeshStandardNodeMaterial {
-    const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.92, metalness: 0 });
+  /**
+   * Colour from the finest level holding the point: each level's weight is
+   * how far inside it the point lies (fading to 0 over its edge band, so the
+   * next coarser level takes over smoothly) times what the finer ones left;
+   * the rest is plain land.
+   */
+  private clipColour() {
     // World x east, z south. The level is drawn with north up, and a WebGPU
     // render target's rows run from the top: the picture's v runs south (+z).
     const xz = vec2(positionWorld.x, positionWorld.z);
-    // The finest level holding the point wins: each level's weight is its
-    // "inside" times what the finer ones left; the rest is plain land.
     type FloatNode = ReturnType<typeof float>;
     type Vec3Node = ReturnType<typeof vec3>;
     let left = float(1) as FloatNode;
     const parts: Vec3Node[] = [];
     for (let k = 0; k < CLIP_LEVELS; k++) {
       const size = float(GroundClipmap.size(k));
-      const c = this.centres[k];
-      const uv = xz.sub(c).div(size).add(0.5);
-      const inside = step(EDGE, uv.x)
-        .mul(step(EDGE, uv.y))
-        .mul(step(uv.x, 1 - EDGE))
-        .mul(step(uv.y, 1 - EDGE)) as FloatNode;
+      const uv = xz.sub(this.centres[k]).div(size).add(0.5);
+      const edge = min(min(uv.x, uv.y), min(float(1).sub(uv.x), float(1).sub(uv.y)));
+      const inside = clamp(edge.div(EDGE), 0, 1) as FloatNode;
       parts.push(vec3(texture(this.targets[k].texture, uv).rgb as never).mul(inside.mul(left)));
       left = left.mul(float(1).sub(inside)) as FloatNode;
     }
     parts.push(vec3(0.55, 0.53, 0.47).mul(left));
-    const colour = parts.reduce((x, y) => x.add(y));
-    m.colorNode = colour;
-    return m;
+    return parts.reduce((x, y) => x.add(y));
   }
 
   private flatOf(mat: THREE.Material): THREE.Material {
@@ -105,9 +143,42 @@ export class GroundClipmap {
   }
 
   /**
-   * Redraws the levels whose centre the focus has moved away from, from
-   * `meshes` (the visible ground of the loaded tiles, drawn with their own
-   * material from `userData.own`) in `scene`. Returns how many were drawn.
+   * The clipmap's own copy of a ground mesh: same geometry, its colour-only
+   * material, on the clipmap's layer (no material swapping per draw — three.js
+   * rebuilt its render state for every swap: 100–280 ms a redraw).
+   */
+  private twinOf(m: THREE.Mesh): THREE.Mesh {
+    let t = m.userData.clipTwin as THREE.Mesh | undefined;
+    if (!t) {
+      const own = (m.userData.own as THREE.Material | undefined) ?? (m.material as THREE.Material);
+      t = new THREE.Mesh(m.geometry, this.flatOf(own));
+      t.name = 'clip-twin';
+      t.layers.set(CLIP_LAYER);
+      t.position.copy(m.position);
+      t.quaternion.copy(m.quaternion);
+      t.scale.copy(m.scale);
+      m.parent?.add(t);
+      m.userData.clipTwin = t;
+    }
+    return t;
+  }
+
+  /** Removes a mesh's twin (back to the layered ground). */
+  static untwin(m: THREE.Mesh): void {
+    const t = m.userData.clipTwin as THREE.Mesh | undefined;
+    t?.removeFromParent();
+    delete m.userData.clipTwin;
+  }
+
+  private readonly dirty = Array.from({ length: CLIP_LEVELS }, () => true);
+  private readonly wanted = Array.from({ length: CLIP_LEVELS }, () => new THREE.Vector2());
+
+  /**
+   * Keeps the levels on the focus: a level the focus has moved away from (or
+   * every level, `force`, when the ground shown changed) is due a redraw; at
+   * most one due level is drawn per call (the finest first), so a redraw
+   * never stalls a frame. `meshes`: the tiles' flat ground meshes (each
+   * gets its twin, shown as the mesh is). Returns the level drawn, or −1.
    */
   update(
     scene: THREE.Scene,
@@ -116,30 +187,40 @@ export class GroundClipmap {
     top: number,
     force = false,
   ): number {
-    let drawn = 0;
+    for (const m of meshes) this.twinOf(m).visible = m.visible;
     for (let k = 0; k < CLIP_LEVELS; k++) {
       const size = GroundClipmap.size(k);
       const c = this.centres[k].value;
       const shift = size * RECENTRE;
       if (
-        !force &&
-        this.placed[k] &&
-        Math.abs(focus.x - c.x) < shift &&
-        Math.abs(focus.z - c.y) < shift
-      )
-        continue;
-      // Snapped to whole texels so a redrawn level does not shimmer.
-      const texel = size / CLIP_RES;
-      c.set(Math.round(focus.x / texel) * texel, Math.round(focus.z / texel) * texel);
-      this.draw(k, scene, meshes, top);
-      this.placed[k] = true;
-      drawn++;
+        force ||
+        !this.placed[k] ||
+        Math.abs(focus.x - c.x) >= shift ||
+        Math.abs(focus.z - c.y) >= shift
+      ) {
+        // Snapped to whole texels so a redrawn level does not shimmer.
+        const texel = size / CLIP_RES;
+        this.wanted[k].set(
+          Math.round(focus.x / texel) * texel,
+          Math.round(focus.z / texel) * texel,
+        );
+        this.dirty[k] = true;
+      }
     }
-    return drawn;
+    const k = this.dirty.indexOf(true);
+    if (k < 0) return -1;
+    const t0 = performance.now();
+    this.centres[k].value.copy(this.wanted[k]);
+    this.draw(k, scene, top);
+    this.dirty[k] = false;
+    this.placed[k] = true;
+    this.stats.levels = k;
+    this.stats.ms = performance.now() - t0;
+    return k;
   }
 
-  /** Draws level k: the ground meshes alone (their layer), unlit, seen from straight above. */
-  private draw(k: number, scene: THREE.Scene, meshes: THREE.Mesh[], top: number): void {
+  /** Draws level k: the twins alone (their layer), unlit, seen from straight above. */
+  private draw(k: number, scene: THREE.Scene, top: number): void {
     const size = GroundClipmap.size(k);
     const c = this.centres[k].value;
     const cam = this.camera;
@@ -154,37 +235,29 @@ export class GroundClipmap {
     cam.layers.set(CLIP_LAYER);
     cam.updateProjectionMatrix();
     cam.updateMatrixWorld();
-    const kept = meshes.map((m) => ({ m, mat: m.material, visible: m.visible }));
-    for (const m of meshes) {
-      const own = (m.userData.own as THREE.Material | undefined) ?? (m.material as THREE.Material);
-      m.material = this.flatOf(own);
-      m.visible = true;
-      m.layers.enable(CLIP_LAYER);
-    }
     const { background, fog, fogNode } = scene;
     scene.background = null;
     scene.fog = null;
     scene.fogNode = null;
     const prev = this.renderer.getRenderTarget();
+    // (Its type wants a Color4, which three/webgpu does not export; a Color takes the r, g, b.)
+    const clear = this.renderer.getClearColor(new THREE.Color() as never) as THREE.Color;
+    const alpha = this.renderer.getClearAlpha();
     this.renderer.setRenderTarget(this.targets[k]);
     this.renderer.setClearColor(CLEAR, 1);
     this.renderer.clear();
     this.renderer.render(scene, cam);
     this.renderer.setRenderTarget(prev);
+    this.renderer.setClearColor(clear, alpha);
     scene.background = background;
     scene.fog = fog;
     scene.fogNode = fogNode;
-    for (const { m, mat, visible } of kept) {
-      m.material = mat;
-      m.visible = visible;
-      // Markings live on the clipmap's layer alone (the main pass does not draw them).
-      if (!/^markings/.test(m.name)) m.layers.disable(CLIP_LAYER);
-    }
   }
 
   dispose(): void {
     for (const t of this.targets) t.dispose();
     for (const f of this.flat.values()) f.dispose();
     this.drape.dispose();
+    this.drapeSurface.dispose();
   }
 }
