@@ -12,7 +12,7 @@
 // metres in the placement's own frame. The DT shows it floor by floor; every
 // space and piece of equipment is a city object of an ontology class and can be
 // bound to a device for live data.
-// Design: docs/architecture/cityos-live-city-engine.md §10
+// Design: docs/architecture/kentos-live-city-engine.md §10
 // =============================================================================
 
 import { cityClass } from './city-ontology';
