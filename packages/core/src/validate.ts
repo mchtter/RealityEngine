@@ -87,6 +87,8 @@ export const RULES = {
   'junction.paint-inside':
     'Durma / yol ver çizgisi ya da dönüş oku kavşak alanının içinde (kolda olmalı)',
   'junction.stop-on-crossing': 'Durma / yol ver çizgisi yaya geçidinin üstünde',
+  'junction.lane-unconnected':
+    'Kavşağa giren şeridin izinli dönüşü bir çıkış şeridine bağlanamıyor (o yönde çıkış yok)',
   'bridge.ground-through': 'Zemin köprü tabliyesinin içinden çıkıyor (tabliye üstünden yüksek)',
   'street.edge-step':
     'Sokak kenarında bordürden yüksek basamak (> 0,5 m): yandaki zemin çukurda ya da sokağın üstünde',
@@ -1048,6 +1050,18 @@ function junctionPaintRules(
   model: CityModel,
   add: (rule: RuleId, at: Vec2, note?: string) => void,
 ): void {
+  // Every turn a lane driving in may take leads somewhere.
+  for (const j of model.junctions)
+    (j.arms ?? []).forEach((arm, a) => {
+      if (arm.merging || !arm.turns) return;
+      arm.turns.forEach((turns, k) => {
+        for (const t of turns) {
+          if (t !== 'left' && t !== 'through' && t !== 'right') continue;
+          if (!(j.connectors ?? []).some((c) => c.from[0] === a && c.from[1] === k && c.turn === t))
+            add('junction.lane-unconnected', j.center, `${arm.roadId} şerit ${k + 1}: ${t}`);
+        }
+      });
+    });
   const areas = model.junctions.filter((j) => j.polygon && j.polygon.outer.length >= 3);
   const paint = model.markings.filter(
     (m) => m.kind === 'stop' || m.kind === 'give-way' || m.kind === 'arrow',

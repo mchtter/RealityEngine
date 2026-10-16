@@ -150,6 +150,8 @@ export interface Road {
   /** Carriageway (or path) width in metres. */
   width: number;
   sidewalk: number;
+  /** The sidewalk is on this side only (of the drawing direction); both sides when unset. */
+  sidewalkSide?: 'left' | 'right';
   lanes: number;
   oneway: boolean;
   /** Road bounds city blocks (vehicular / pedestrian street at ground level). */
@@ -299,6 +301,18 @@ export interface Junction {
   arms?: JunctionArm[];
   /** The junction area: the arms' carriageway corners at their edges. */
   polygon?: Polygon;
+  /** Paths through the junction from each lane driving in to the lane it may turn into. */
+  connectors?: JunctionConnector[];
+}
+
+/** A lane-to-lane path through a junction (D-012). */
+export interface JunctionConnector {
+  /** Arm index in `arms`, lane index from the centre line outwards (lanes driving in). */
+  from: [number, number];
+  /** Arm index, lane index from the centre line outwards (lanes driving out). */
+  to: [number, number];
+  turn: LaneTurn;
+  path: Vec2[];
 }
 
 /** A road leaving a junction. */

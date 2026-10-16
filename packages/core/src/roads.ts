@@ -10,7 +10,7 @@ import {
   sub,
 } from './geo';
 import { CROSSING_GAP, CROSSING_WIDTH, armLength, armPoint } from './junctions';
-import { laneLayout } from './lanes';
+import { CYCLE_LANE, PARKING_LANE, laneLayout, sideLanes } from './lanes';
 import { ENTITY_TAG, type SourcePoint, type SourceRoad } from './osm';
 import {
   bufferPolylinePaths,
@@ -203,7 +203,15 @@ export function classifyRoads(source: SourceRoad[]): Road[] {
     const rawWidth = Number.parseFloat(r.tags.width ?? '');
     if (Number.isFinite(rawWidth) && rawWidth > spec.maxWidth) rejected.width = rawWidth;
     const tagWidth = rejected.width === undefined ? rawWidth : Number.NaN;
-    const width = Number.isFinite(tagWidth) && tagWidth > 1 ? tagWidth : lanes * spec.laneWidth;
+    const observedWidth = Number.isFinite(tagWidth) && tagWidth > 1;
+    // Cycle and parking lanes beside the traffic lanes (D-012): laid out (and the
+    // carriageway widened for them) only where the width is not the source's.
+    const side = spec.vehicular && !observedWidth ? sideLanes(r.tags, oneway) : undefined;
+    const sideWidth = side
+      ? side.cycle.filter(Boolean).length * CYCLE_LANE +
+        side.parking.filter(Boolean).length * PARKING_LANE
+      : 0;
+    const width = observedWidth ? tagWidth : lanes * spec.laneWidth + sideWidth;
     const sidewalkTag = r.tags.sidewalk;
     // "separate": the sidewalks are mapped as footways of their own (drawn by them).
     const sidewalk =
@@ -240,7 +248,13 @@ export function classifyRoads(source: SourceRoad[]): Road[] {
         lanes: Number.isFinite(tagLanes) ? 'observed' : 'inferred',
       },
       ...(rejected.width !== undefined || rejected.lanes !== undefined ? { rejected } : {}),
-      ...(isVehicular(cls) ? { laneLayout: laneLayout({ lanes, width, oneway }, r.tags) } : {}),
+      ...(isVehicular(cls)
+        ? { laneLayout: laneLayout({ lanes, width, oneway }, r.tags, side) }
+        : {}),
+      // A sidewalk on one side only (the street corridor stops at the kerb on the other).
+      ...(sidewalk > 0 && (sidewalkTag === 'left' || sidewalkTag === 'right')
+        ? { sidewalkSide: sidewalkTag }
+        : {}),
     });
   }
   return roads;
@@ -490,7 +504,20 @@ export function buildSurfaces(roads: Road[], clipTo: Polygon[]): RoadSurfaces {
   const pathPaths = ground
     .filter((r) => r.cls === 'footway' || r.cls === 'cycleway')
     .flatMap((r) => bufferPolylinePaths(r.centerline, r.width / 2));
-  const corridorOf = (r: Road) => buffer(r, r.width / 2 + r.sidewalk);
+  // A one-sided sidewalk: the carriageway, and the sidewalk band on its side only.
+  const corridorOf = (r: Road) =>
+    r.sidewalkSide
+      ? [
+          ...buffer(r, r.width / 2),
+          ...bufferPolylinePaths(
+            offsetPolyline(
+              r.centerline,
+              (r.sidewalkSide === 'left' ? 1 : -1) * (r.width / 2 + r.sidewalk / 2 - 0.05),
+            ),
+            r.sidewalk / 2 + 0.05,
+          ),
+        ]
+      : buffer(r, r.width / 2 + r.sidewalk);
   const corridorPaths = ground.filter((r) => r.formsBlocks).flatMap(corridorOf);
 
   const carriageway = intersection(unionPaths(asphaltPaths), clipTo);
@@ -641,13 +668,16 @@ export function buildMarkings(roads: Road[], junctions: Junction[]): Marking[] {
         out.push({ kind, points: run });
     };
     const lanes = road.laneLayout;
-    if (lanes && lanes.length === road.lanes) {
+    if (lanes && lanes.filter((l) => l.kind === 'drive').length === road.lanes) {
       // Between lanes (D-012): the centre line where the directions meet
       // (double solid on a road of four or more lanes), dashed between lanes
-      // of one direction.
+      // of one direction, a solid line along a cycle or parking lane.
       for (let k = 1; k < lanes.length; k++) {
         const d = lanes[k - 1].offset - lanes[k - 1].width / 2;
-        if (lanes[k - 1].forward === lanes[k].forward) add('lane-dashed', d);
+        const [a, b] = [lanes[k - 1], lanes[k]];
+        if (a.kind !== 'drive' || b.kind !== 'drive') {
+          if (a.kind !== b.kind) add('edge', d);
+        } else if (a.forward === b.forward) add('lane-dashed', d);
         else if (road.lanes >= 4) {
           add('center-solid', d + 0.12);
           add('center-solid', d - 0.12);

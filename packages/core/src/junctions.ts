@@ -3,6 +3,7 @@ import type {
   Crossing,
   Junction,
   JunctionArm,
+  JunctionConnector,
   LaneTurn,
   Marking,
   Polygon,
@@ -121,7 +122,7 @@ export function layoutJunctions(junctions: Junction[], roads: Road[]): void {
 
 /** The lanes of a road that drive into a junction on that arm, from the centre line outwards. */
 export function lanesInto(road: Road, arm: JunctionArm) {
-  const lanes = road.laneLayout ?? [];
+  const lanes = (road.laneLayout ?? []).filter((l) => l.kind === 'drive');
   // Outward: the road is drawn away from the junction, so its backward lanes come in.
   const incoming = lanes.filter((l) => l.forward !== arm.outward);
   // From the centre line outwards: the backward lanes lie left (largest offset last
@@ -157,10 +158,12 @@ export function inferTurns(junctions: Junction[], roads: Road[]): void {
       const heading: Vec2 = [-arm.dir[0], -arm.dir[1]];
       const exits = new Set<LaneTurn>();
       for (const other of j.arms ?? []) {
-        if (other === arm) continue;
+        // A road merging at a shallow angle has no junction edge to turn into.
+        if (other === arm || other.merging) continue;
         const out = byId.get(other.roadId);
         // An exit has lanes leading away from the junction.
-        if (!out?.laneLayout?.some((l) => l.forward === other.outward)) continue;
+        if (!out?.laneLayout?.some((l) => l.kind === 'drive' && l.forward === other.outward))
+          continue;
         const cross = heading[0] * other.dir[1] - heading[1] * other.dir[0];
         const dot = heading[0] * other.dir[0] + heading[1] * other.dir[1];
         const deg = (Math.atan2(cross, dot) * 180) / Math.PI;
@@ -331,4 +334,100 @@ export function junctionMarkings(
     }
   }
   return out;
+}
+
+/** The lanes of a road that drive out of a junction on that arm, from the centre line outwards. */
+export function lanesOutOf(road: Road, arm: JunctionArm) {
+  const lanes = (road.laneLayout ?? []).filter((l) => l.kind === 'drive');
+  const out = lanes.filter((l) => l.forward === arm.outward);
+  return arm.outward
+    ? out.sort((a, b) => b.offset - a.offset)
+    : out.sort((a, b) => a.offset - b.offset);
+}
+
+/** Which turn takes an arm's traffic into another arm (by the angle between them). */
+function turnBetween(from: JunctionArm, to: JunctionArm): 'left' | 'through' | 'right' | null {
+  const h: Vec2 = [-from.dir[0], -from.dir[1]];
+  const deg =
+    (Math.atan2(h[0] * to.dir[1] - h[1] * to.dir[0], h[0] * to.dir[0] + h[1] * to.dir[1]) * 180) /
+    Math.PI;
+  if (Math.abs(deg) <= THROUGH_DEG) return 'through';
+  if (Math.abs(deg) >= REVERSE_DEG) return null;
+  return deg > 0 ? 'left' : 'right';
+}
+
+const CONNECTOR_POINTS = 8;
+
+/**
+ * Lane-to-lane paths through each junction (`connectors`): every lane
+ * driving in, for each turn it may take, to a lane driving out of the arm
+ * that turn leads to — a left turn into the lane by the centre line, a
+ * right turn into the kerb lane, straight on into the lane in the same
+ * place. The path leaves the stop line along the lane and meets the exit
+ * lane at the junction's edge (a cubic curve).
+ */
+export function connectJunctions(junctions: Junction[], roads: Road[]): void {
+  const byId = new Map(roads.map((r) => [r.id, r]));
+  for (const j of junctions) {
+    const arms = j.arms ?? [];
+    const out: JunctionConnector[] = [];
+    arms.forEach((arm, a) => {
+      const road = byId.get(arm.roadId);
+      if (!road || arm.merging || arm.stop === undefined || !arm.turns) return;
+      const into = lanesInto(road, arm);
+      into.forEach((lane, k) => {
+        const start = armPoint(road, arm, arm.stop!);
+        const p0: Vec2 = [
+          start.p[0] + start.left[0] * lane.offset,
+          start.p[1] + start.left[1] * lane.offset,
+        ];
+        const hin: Vec2 = [-start.out[0], -start.out[1]];
+        for (const turn of arm.turns![k] ?? []) {
+          // The arm that turn leads to, among those a driver may enter.
+          const b = arms.findIndex((o, n) => {
+            if (n === a || o.merging || turnBetween(arm, o) !== simple(turn)) return false;
+            const r = byId.get(o.roadId);
+            return !!r && lanesOutOf(r, o).length > 0;
+          });
+          if (b < 0) continue;
+          const exit = arms[b];
+          const exitRoad = byId.get(exit.roadId)!;
+          const outs = lanesOutOf(exitRoad, exit);
+          const m =
+            simple(turn) === 'left'
+              ? 0
+              : simple(turn) === 'right'
+                ? outs.length - 1
+                : Math.min(k, outs.length - 1);
+          const end = armPoint(exitRoad, exit, exit.edge);
+          const p3: Vec2 = [
+            end.p[0] + end.left[0] * outs[m].offset,
+            end.p[1] + end.left[1] * outs[m].offset,
+          ];
+          const l = Math.hypot(p3[0] - p0[0], p3[1] - p0[1]) / 3;
+          const p1: Vec2 = [p0[0] + hin[0] * l, p0[1] + hin[1] * l];
+          const p2: Vec2 = [p3[0] - end.out[0] * l, p3[1] - end.out[1] * l];
+          const path: Vec2[] = [];
+          for (let i = 0; i <= CONNECTOR_POINTS; i++) {
+            const t = i / CONNECTOR_POINTS;
+            const u = 1 - t;
+            path.push([
+              u * u * u * p0[0] + 3 * u * u * t * p1[0] + 3 * u * t * t * p2[0] + t * t * t * p3[0],
+              u * u * u * p0[1] + 3 * u * u * t * p1[1] + 3 * u * t * t * p2[1] + t * t * t * p3[1],
+            ]);
+          }
+          out.push({ from: [a, k], to: [b, m], turn, path });
+        }
+      });
+    });
+    if (out.length) j.connectors = out;
+  }
+}
+
+/** A turn as left / through / right (slight and sharp alike). */
+function simple(turn: LaneTurn): 'left' | 'through' | 'right' | null {
+  if (turn === 'through') return 'through';
+  if (turn.endsWith('left') && !turn.startsWith('merge')) return 'left';
+  if (turn.endsWith('right') && !turn.startsWith('merge')) return 'right';
+  return null;
 }

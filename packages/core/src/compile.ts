@@ -42,7 +42,13 @@ import { GroundModel, SURFACE_LIFT } from './ground-model';
 import { furnishGrounds } from './grounds';
 import { RAIL_DECK, layGuideways } from './guideways';
 import { type Envelope, Harmonizer } from './harmony/engine';
-import { inferTurns, junctionMarkings, layoutJunctions, setStops } from './junctions';
+import {
+  connectJunctions,
+  inferTurns,
+  junctionMarkings,
+  layoutJunctions,
+  setStops,
+} from './junctions';
 import {
   ENTITY_TAG,
   LANDFORM_LINES,
@@ -124,7 +130,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '106';
+export const COMPILER_VERSION = '107';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -477,6 +483,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   // Traffic stops behind the crossings; lane lines end there; stop / give-way
   // lines and turn arrows at the junctions (D-012).
   setStops(junctions, roads, crossings);
+  connectJunctions(junctions, roads);
   const markings = clipLines(
     [...buildMarkings(roads, junctions), ...junctionMarkings(junctions, roads, crossings)],
     inRegion,

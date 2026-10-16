@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { laneLayout } from '../src/lanes';
+import { CYCLE_LANE, PARKING_LANE, laneLayout, sideLanes } from '../src/lanes';
 
 describe('laneLayout', () => {
   it('splits a two-way road by rule: the odd lane goes with the drawing direction', () => {
@@ -46,5 +46,19 @@ describe('laneLayout', () => {
       { 'turn:lanes': 'left|through|right' },
     );
     expect(wrong.every((l) => l.turns.length === 0)).toBe(true);
+  });
+
+  it('lays cycle and parking lanes outside the traffic lanes, kerbside last', () => {
+    const side = sideLanes({ cycleway: 'lane', 'parking:right': 'lane' }, false);
+    expect(side).toEqual({ cycle: [true, true], parking: [false, true] });
+    const width = 6 + 2 * CYCLE_LANE + PARKING_LANE;
+    const lanes = laneLayout({ lanes: 2, width, oneway: false }, {}, side);
+    expect(lanes.map((l) => l.kind)).toEqual(['cycle', 'drive', 'drive', 'cycle', 'parking']);
+    // The traffic lanes share what the side lanes leave.
+    for (const l of lanes.filter((x) => x.kind === 'drive')) expect(l.width).toBeCloseTo(3);
+    const right = lanes[4].offset - lanes[4].width / 2;
+    expect(right).toBeCloseTo(-width / 2);
+    // A one-way road's cycle lane runs on its right only.
+    expect(sideLanes({ cycleway: 'lane' }, true).cycle).toEqual([false, true]);
   });
 });

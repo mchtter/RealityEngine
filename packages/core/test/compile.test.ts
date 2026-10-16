@@ -1758,6 +1758,17 @@ describe('junctions', () => {
       expect(arm.edge).toBeLessThan(other.width / 2 + 2);
     }
     expect(pointInRing([0, 0], j.polygon!.outer)).toBe(true);
+    // Lane to lane through the junction: one lane in per arm, three turns each.
+    expect(j.connectors).toHaveLength(12);
+    for (const c of j.connectors!) {
+      const [from, to] = [j.arms![c.from[0]], j.arms![c.to[0]]];
+      const start = c.path[0];
+      const end = c.path[c.path.length - 1];
+      // Leaves its own arm at the stop point, reaches the exit arm at the junction's edge.
+      expect(Math.hypot(start[0], start[1])).toBeGreaterThan(from.stop! - 3);
+      expect(Math.hypot(end[0], end[1])).toBeGreaterThan(to.edge - 3);
+      expect(end[0] * to.dir[0] + end[1] * to.dir[1]).toBeGreaterThan(to.edge - 0.5);
+    }
     // Every lane driving in (one per arm here) may go left, ahead or right.
     for (const arm of j.arms!) {
       expect(arm.turns).toHaveLength(1);
@@ -1881,6 +1892,33 @@ describe('junctions', () => {
     // Across the side road's lane driving in (its west half), north of the main road.
     for (const [, y] of gw[0].points) expect(y).toBeGreaterThan(3);
     expect(m.markings.filter((mk) => mk.kind === 'stop')).toHaveLength(0);
+  });
+
+  it('draws a sidewalk on its one side only, and widens a road for its cycle lanes', () => {
+    const m = compile([
+      road(
+        'osm:one',
+        [
+          [-150, 0],
+          [150, 0],
+        ],
+        {
+          highway: 'tertiary',
+          sidewalk: 'left',
+          cycleway: 'lane',
+        },
+      ),
+    ]);
+    const r = m.roads.find((x) => x.ref.endsWith(':one'))!;
+    expect(r.sidewalkSide).toBe('left');
+    expect(r.laneLayout!.map((l) => l.kind)).toEqual(['cycle', 'drive', 'drive', 'cycle']);
+    const sidewalk = m.surfaces.find((sf) => sf.kind === 'sidewalk')!.polygons;
+    const on = (y: number) => sidewalk.some((p) => pointInRing([0, y], p.outer));
+    // Left of the drawing direction (east) is north.
+    expect(on(r.width / 2 + r.sidewalk / 2)).toBe(true);
+    expect(on(-(r.width / 2 + r.sidewalk / 2))).toBe(false);
+    // A solid line along each cycle lane.
+    expect(m.markings.filter((mk) => mk.kind === 'edge').length).toBeGreaterThanOrEqual(2);
   });
 
   it('gives the side road of a T junction left and right turns only', () => {
