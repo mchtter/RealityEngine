@@ -689,6 +689,14 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
     parents: ['aviation.airport'],
     theme: t('road', { class: 'taxiway' }),
   }),
+  c('aviation.stopway', 'Pist uzatması / durma alanı', 'district', 'polygon', {
+    parents: ['aviation.runway'],
+    theme: t('road', { class: 'stopway' }),
+  }),
+  c('aviation.stand', 'Uçak park yeri', 'site', 'polygon', {
+    parents: ['aviation.apron'],
+    theme: t('road', { class: 'stand' }),
+  }),
   c('aviation.apron', 'Apron', 'site', 'polygon', {
     parents: ['aviation.airport'],
     theme: t('area', { kind: 'apron' }),

@@ -541,6 +541,50 @@ const fuelBrand = (t: Record<string, string>) =>
   t.amenity === 'fuel' ? (t.brand ?? t.operator) : undefined;
 
 /** The row of an OSM feature in its theme, or why it is left out. */
+/** Which sides of a way have a sidewalk (contract `sidewalkSide`), from `sidewalk*` tags. */
+export function sidewalkSide(t: Record<string, string>): string | undefined {
+  const both = t['sidewalk:both'];
+  const left = t['sidewalk:left'];
+  const right = t['sidewalk:right'];
+  const v = t.sidewalk;
+  if (v === 'separate' || both === 'separate') return 'separate';
+  if (v === 'both' || v === 'yes' || both === 'yes') return 'both';
+  if (v === 'left' || v === 'right') return v;
+  if (v === 'no' || v === 'none' || both === 'no') return 'no';
+  const l = left === 'yes';
+  const r = right === 'yes';
+  if (l || r) return l && r ? 'both' : l ? 'left' : 'right';
+  if (left === 'no' && right === 'no') return 'no';
+  return undefined;
+}
+
+/** Cycle lane on a road (contract `cycleway`), from `cycleway*` tags. */
+export function cyclewayOf(t: Record<string, string>): string | undefined {
+  const vs = [t.cycleway, t['cycleway:both'], t['cycleway:left'], t['cycleway:right']].filter(
+    Boolean,
+  );
+  if (!vs.length) return undefined;
+  if (vs.some((v) => v === 'track' || v === 'opposite_track')) return 'track';
+  if (vs.some((v) => v === 'lane' || v === 'opposite_lane')) return 'lane';
+  if (vs.some((v) => v === 'shared_lane' || v === 'share_busway')) return 'shared';
+  return vs.every((v) => v === 'no' || v === 'separate') ? 'no' : undefined;
+}
+
+/** Kerbside parking (contract `parking`), from `parking:<side>` / `parking:lane:<side>` tags. */
+export function parkingOf(t: Record<string, string>): string | undefined {
+  const side = (s: string) => {
+    const v = t[`parking:${s}`] ?? t[`parking:lane:${s}`];
+    return v === undefined
+      ? undefined
+      : !['no', 'no_parking', 'no_stopping', 'separate'].includes(v);
+  };
+  const both = side('both');
+  const left = side('left') ?? both;
+  const right = side('right') ?? both;
+  if (left === undefined && right === undefined) return undefined;
+  return left && right ? 'both' : left ? 'left' : right ? 'right' : 'no';
+}
+
 export function osmRow(
   theme: OsmTheme,
   id: string,
@@ -567,14 +611,40 @@ export function osmRow(
     const rail = t.highway ? undefined : RAIL_CLASS[t.railway ?? ''];
     const cls = ROAD_CLASS[t.highway] ?? AIRFIELD_CLASS[t.aeroway ?? ''] ?? rail;
     if (!cls) return { drop: `sınıf dışı (${t.highway})` };
+    // oneway=-1: one way against the drawing — drawn the way traffic goes, so
+    // what was "backward" (lanes, turns, the left sidewalk) is now forward.
+    const reverse = t.oneway === '-1';
+    const way = reverse
+      ? {
+          ...g,
+          coordinates: [...(g as { coordinates: [number, number][] }).coordinates].reverse(),
+        }
+      : g;
+    const fwd = reverse ? 'backward' : 'forward';
+    const bwd = reverse ? 'forward' : 'backward';
+    const side = sidewalkSide(t);
     return {
       id,
-      geometry: g,
+      geometry: way as Geometry,
       attrs: {
         name: t.name,
         class: cls,
         width: metres(t.width),
         lanes: rail ? 1 : int(t.lanes),
+        lanesForward: int(t[`lanes:${fwd}`]),
+        lanesBackward: int(t[`lanes:${bwd}`]),
+        turnLanes: t['turn:lanes'],
+        turnLanesForward: t[`turn:lanes:${fwd}`],
+        turnLanesBackward: t[`turn:lanes:${bwd}`],
+        widthLanes: t['width:lanes'],
+        sidewalkSide:
+          reverse && (side === 'left' || side === 'right')
+            ? side === 'left'
+              ? 'right'
+              : 'left'
+            : side,
+        cycleway: cyclewayOf(t),
+        parking: parkingOf(t),
         oneway: t.oneway ? ['yes', '1', '-1', 'true'].includes(t.oneway) : undefined,
         bridge: t.bridge ? yes(t.bridge) : undefined,
         tunnel: t.tunnel ? yes(t.tunnel) : undefined,

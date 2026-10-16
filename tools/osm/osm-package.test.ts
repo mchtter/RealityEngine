@@ -12,6 +12,7 @@ import {
   anchor,
   areaKind,
   buildingUse,
+  cyclewayOf,
   districtLocator,
   type Geometry,
   inOsmArea,
@@ -19,9 +20,11 @@ import {
   osmRow,
   osmTheme,
   PackageWriter,
+  parkingOf,
   polygonTester,
   readOsm,
   type Ring,
+  sidewalkSide,
 } from './osm-package';
 
 const square = (x0: number, y0: number, x1: number, y1: number): Ring => [
@@ -112,6 +115,46 @@ describe('osmTheme', () => {
     assert.ok(!('drop' in crossing) && crossing.attrs.type === 'uncontrolled');
     const mast = osmRow('asset', 'm', pt(0, 0), { man_made: 'mast', 'tower:type': 'lighting' });
     assert.ok(!('drop' in mast) && mast.attrs.kind === 'floodlight');
+  });
+
+  it('carries lane detail; a way one way against its drawing is drawn the way traffic goes', () => {
+    const r = osmRow('road', 'r', line([0, 0], [1, 1]), {
+      highway: 'primary',
+      lanes: '3',
+      'lanes:forward': '2',
+      'lanes:backward': '1',
+      'turn:lanes:forward': 'left|through;right',
+      'width:lanes': '3.5|3.25|3.25',
+      'sidewalk:left': 'yes',
+      'sidewalk:right': 'no',
+      'cycleway:right': 'lane',
+      'parking:both': 'lane',
+    });
+    assert.ok(!('drop' in r));
+    assert.equal(r.attrs.lanesForward, 2);
+    assert.equal(r.attrs.lanesBackward, 1);
+    assert.equal(r.attrs.turnLanesForward, 'left|through;right');
+    assert.equal(r.attrs.widthLanes, '3.5|3.25|3.25');
+    assert.equal(r.attrs.sidewalkSide, 'left');
+    assert.equal(r.attrs.cycleway, 'lane');
+    assert.equal(r.attrs.parking, 'both');
+    const back = osmRow('road', 'b', line([0, 0], [1, 1]), {
+      highway: 'secondary',
+      oneway: '-1',
+      'lanes:backward': '2',
+      sidewalk: 'left',
+    });
+    assert.ok(!('drop' in back));
+    assert.deepEqual((back.geometry as { coordinates: unknown }).coordinates, [
+      [1, 1],
+      [0, 0],
+    ]);
+    assert.equal(back.attrs.oneway, true);
+    assert.equal(back.attrs.lanesForward, 2);
+    assert.equal(back.attrs.sidewalkSide, 'right');
+    assert.equal(sidewalkSide({ sidewalk: 'separate' }), 'separate');
+    assert.equal(cyclewayOf({ cycleway: 'no' }), 'no');
+    assert.equal(parkingOf({ 'parking:lane:right': 'parallel' }), 'right');
   });
 
   it('carries fuel stations as assets (points) and areas (grounds) with name and brand', () => {

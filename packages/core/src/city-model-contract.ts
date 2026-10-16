@@ -684,6 +684,108 @@ export const ROAD_CONTRACT_V2: CityThemeContract = {
   },
 };
 
+/** Lanes in OSM's `turn:lanes` syntax: per lane left to right, `|` between lanes. */
+const TURN_LANES =
+  'Soldan sağa şerit başına izinli yönler, şeritler "|" ile ayrılır, bir şeritte birden çok yön ";" ile (OSM turn:lanes): left | through | right | slight_left | slight_right | merge_to_left | merge_to_right | reverse | none. Ör. "left|through|through;right".';
+
+/**
+ * v3: lane-level detail (D-012) — lanes per direction, turn lanes, lane
+ * widths, sidewalk sides, cycle and parking lanes. All optional: a road
+ * without them is laid out by its class (as in v2).
+ */
+export const ROAD_CONTRACT_V3: CityThemeContract = {
+  ...ROAD_CONTRACT_V2,
+  version: '3',
+  dtUse:
+    'Orta hattan şerit düzeyinde yol: şerit başına genişlik ve yön, dönüş şeritleri ve okları, durma çizgileri, kaldırım ve bisiklet / park şeritleri; verilmeyen şerit bilgisi sınıfına ve kavşağına göre varsayılır. Köprü ve tüneller, kavşaklar. Yollar arsa adalarını (bina bloklarını) oluşturur.',
+  attributes: [
+    ...ROAD_CONTRACT_V2.attributes,
+    {
+      key: 'lanesForward',
+      type: 'integer',
+      label: 'Çizim yönündeki şerit sayısı',
+      column: 'SERIT_ILERI',
+      range: [0, 8],
+      dt: true,
+    },
+    {
+      key: 'lanesBackward',
+      type: 'integer',
+      label: 'Ters yöndeki şerit sayısı',
+      column: 'SERIT_GERI',
+      range: [0, 8],
+      dt: true,
+    },
+    {
+      key: 'turnLanes',
+      type: 'string',
+      label: 'Dönüş şeritleri (tek yönlü yol)',
+      column: 'DONUS_SERIT',
+      dt: true,
+      description: TURN_LANES,
+    },
+    {
+      key: 'turnLanesForward',
+      type: 'string',
+      label: 'Dönüş şeritleri, çizim yönü',
+      column: 'DONUS_ILERI',
+      dt: true,
+      description: TURN_LANES,
+    },
+    {
+      key: 'turnLanesBackward',
+      type: 'string',
+      label: 'Dönüş şeritleri, ters yön',
+      column: 'DONUS_GERI',
+      dt: true,
+      description: TURN_LANES,
+    },
+    {
+      key: 'widthLanes',
+      type: 'string',
+      label: 'Şerit genişlikleri (m)',
+      column: 'SERIT_GENISLIK',
+      dt: true,
+      description:
+        'Soldan sağa şerit başına genişlik, "|" ile ayrılır (OSM width:lanes). Ör. "3.5|3.25".',
+    },
+    {
+      key: 'sidewalkSide',
+      type: 'enum',
+      label: 'Kaldırım tarafı',
+      column: 'KALDIRIM_YON',
+      values: ['both', 'left', 'right', 'no', 'separate'],
+      dt: true,
+      description:
+        'Çizim yönüne göre. "separate": kaldırım ayrı yaya yolu olarak verildi (yol kendi kaldırımını çizmez).',
+    },
+    {
+      key: 'cycleway',
+      type: 'enum',
+      label: 'Bisiklet yolu',
+      column: 'BISIKLET',
+      values: ['lane', 'track', 'shared', 'no'],
+      dt: true,
+    },
+    {
+      key: 'parking',
+      type: 'enum',
+      label: 'Yol kenarı park şeridi',
+      column: 'PARK_SERIT',
+      values: ['both', 'left', 'right', 'no'],
+      dt: true,
+    },
+  ],
+  example: {
+    ...ROAD_CONTRACT_V2.example,
+    SERIT: 3,
+    SERIT_ILERI: 2,
+    SERIT_GERI: 1,
+    DONUS_ILERI: 'left|through;right',
+    KALDIRIM_YON: 'both',
+  },
+};
+
 export const CROSSING_CONTRACT_V1: CityThemeContract = {
   theme: 'crossing',
   version: '1',
@@ -1113,7 +1215,7 @@ export const CITY_CONTRACTS: Partial<Record<CityTheme, CityThemeContract>> = {
   parcel: PARCEL_CONTRACT_V1,
   address: ADDRESS_CONTRACT_V1,
   building: BUILDING_CONTRACT_V2,
-  road: ROAD_CONTRACT_V2,
+  road: ROAD_CONTRACT_V3,
   crossing: CROSSING_CONTRACT_V1,
   area: AREA_CONTRACT_V1,
   tree: TREE_CONTRACT_V1,
@@ -1145,7 +1247,7 @@ export const CITY_DELIVERY_SPEC: CityThemeContract[] = [
   PARCEL_CONTRACT_V1,
   ADDRESS_CONTRACT_V1,
   BUILDING_CONTRACT_V2,
-  ROAD_CONTRACT_V2,
+  ROAD_CONTRACT_V3,
   CROSSING_CONTRACT_V1,
   TERRAIN_CONTRACT_V1,
   LANDFORM_CONTRACT_V1,
