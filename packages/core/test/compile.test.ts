@@ -1714,6 +1714,126 @@ describe('compileCity', () => {
   });
 });
 
+describe('junctions', () => {
+  const road = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+    ref,
+    source: 'osm',
+    priority: 0,
+    kind: 'road' as const,
+    geometry: { type: 'LineString' as const, coordinates: pts.map(([x, y]) => ll(x, y)) },
+    tags,
+  });
+  const compile = (features: ReturnType<typeof road>[]) =>
+    compileCity({ ...gridSource(), osm: [], features }, { infill: false, decorate: false });
+
+  it('ends a crossroads where the arms clear each other, with turns for the lanes driving in', () => {
+    const m = compile([
+      road(
+        'osm:ew',
+        [
+          [-150, 0],
+          [0, 0],
+          [150, 0],
+        ],
+        { highway: 'secondary' },
+      ),
+      road(
+        'osm:ns',
+        [
+          [0, -150],
+          [0, 0],
+          [0, 150],
+        ],
+        { highway: 'tertiary' },
+      ),
+    ]);
+    const j = m.junctions.find((x) => Math.hypot(x.center[0], x.center[1]) < 0.1)!;
+    expect(j.arms).toHaveLength(4);
+    const ew = m.roads.find((r) => r.ref === 'osm:osm:ew' || r.ref.endsWith(':ew'))!;
+    const ns = m.roads.find((r) => r.ref.endsWith(':ns'))!;
+    for (const arm of j.arms!) {
+      const other = arm.roadId === ew.id ? ns : ew;
+      // Out past the crossing carriageway's edge, not far beyond it.
+      expect(arm.edge).toBeGreaterThanOrEqual(other.width / 2);
+      expect(arm.edge).toBeLessThan(other.width / 2 + 2);
+    }
+    expect(pointInRing([0, 0], j.polygon!.outer)).toBe(true);
+    // Every lane driving in (one per arm here) may go left, ahead or right.
+    for (const arm of j.arms!) {
+      expect(arm.turns).toHaveLength(1);
+      expect(arm.turns![0].sort()).toEqual(['left', 'right', 'through']);
+      expect(arm.turnsProvenance).toBe('inferred');
+    }
+  });
+
+  it("takes a road's own turn lanes for the junction it ends at", () => {
+    const m = compile([
+      road(
+        'osm:main',
+        [
+          [-150, 0],
+          [0, 0],
+          [150, 0],
+        ],
+        { highway: 'secondary' },
+      ),
+      // One way, drawn into the junction: its turn:lanes are for this junction.
+      road(
+        'osm:in',
+        [
+          [0, 150],
+          [0, 0],
+        ],
+        {
+          highway: 'secondary',
+          oneway: 'yes',
+          lanes: '2',
+          'turn:lanes': 'left|right',
+        },
+      ),
+    ]);
+    const into = m.roads.find((r) => r.ref.endsWith(':in'))!;
+    const j = m.junctions.find((x) => Math.hypot(x.center[0], x.center[1]) < 0.1)!;
+    const arm = j.arms!.find((a) => a.roadId === into.id)!;
+    expect(arm.turns).toEqual([['left'], ['right']]);
+    expect(arm.turnsProvenance).toBe('observed');
+  });
+
+  it('gives the side road of a T junction left and right turns only', () => {
+    const m = compile([
+      road(
+        'osm:main',
+        [
+          [-150, 0],
+          [0, 0],
+          [150, 0],
+        ],
+        { highway: 'secondary' },
+      ),
+      road(
+        'osm:side',
+        [
+          [0, 0],
+          [0, 150],
+        ],
+        { highway: 'residential' },
+      ),
+    ]);
+    const side = m.roads.find((r) => r.ref.endsWith(':side'))!;
+    const j = m.junctions.find((x) => Math.hypot(x.center[0], x.center[1]) < 0.1)!;
+    const arm = j.arms!.find((a) => a.roadId === side.id)!;
+    expect(arm.turns).toHaveLength(1);
+    expect(arm.turns![0].sort()).toEqual(['left', 'right']);
+    expect(arm.turnsProvenance).toBe('inferred');
+    // A two-way main road: ahead or right from the west, ahead or left from the east.
+    const main = j.arms!.filter((a) => a.roadId !== side.id);
+    expect(main.map((a) => a.turns![0].sort().join(',')).sort()).toEqual([
+      'left,through',
+      'right,through',
+    ]);
+  });
+});
+
 describe('bridges', () => {
   it('a short bridge down a slope is one vertical curve, not steps over the ground', () => {
     const [west, south] = ll(-400, -400);

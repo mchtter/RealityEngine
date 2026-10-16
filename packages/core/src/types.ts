@@ -288,6 +288,30 @@ export interface Junction {
   radius: number;
   roadIds: string[];
   signalised: boolean;
+  /** Its arms, each with where the junction ends on it (D-012, junctions.ts). */
+  arms?: JunctionArm[];
+  /** The junction area: the arms' carriageway corners at their edges. */
+  polygon?: Polygon;
+}
+
+/** A road leaving a junction. */
+export interface JunctionArm {
+  roadId: string;
+  /** Vertex index of the junction on the road's centreline. */
+  at: number;
+  /** The road is drawn away from the junction on this arm. */
+  outward: boolean;
+  /** Unit direction away from the junction. */
+  dir: Vec2;
+  /** Distance (m) out from the centre where the junction area ends on this arm. */
+  edge: number;
+  /**
+   * Turns of the lanes driving into the junction on this arm, from the centre
+   * line outwards: the road's own (`turn:lanes`) where it ends here, else by
+   * rule (inferTurns).
+   */
+  turns?: LaneTurn[][];
+  turnsProvenance?: Provenance;
 }
 
 export type SurfaceKind =

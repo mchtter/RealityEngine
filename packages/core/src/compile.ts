@@ -42,6 +42,7 @@ import { GroundModel, SURFACE_LIFT } from './ground-model';
 import { furnishGrounds } from './grounds';
 import { RAIL_DECK, layGuideways } from './guideways';
 import { type Envelope, Harmonizer } from './harmony/engine';
+import { inferTurns, layoutJunctions } from './junctions';
 import {
   ENTITY_TAG,
   LANDFORM_LINES,
@@ -123,7 +124,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '103';
+export const COMPILER_VERSION = '104';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -440,6 +441,9 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   // Road network.
   const signals = features.points.filter((p) => p.tags.highway === 'traffic_signals');
   const junctions = findJunctions(sourceRoads, roads, signals, g);
+  // Where each junction ends on its arms, and the turns of the lanes driving in.
+  layoutJunctions(junctions, roads);
+  inferTurns(junctions, roads);
   const net = buildSurfaces(roads, [regionPoly]);
   // A ramp road's round end cap reaches past the portal over the tube (and
   // would lie on its lid): surfaces stop at the portal plane. Kept short of
