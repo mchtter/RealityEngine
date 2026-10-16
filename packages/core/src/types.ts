@@ -164,6 +164,36 @@ export interface Road {
   rejected?: { width?: number; lanes?: number };
   /** Centreline heights of a ground road (the street surface, see RoadSurface). */
   profile?: number[];
+  /**
+   * The carriageway as lanes, left to right along the drawing direction
+   * (D-012, lanes.ts); vehicular roads only.
+   */
+  laneLayout?: Lane[];
+}
+
+/** Where a lane may go at the junction it leads into (OSM `turn:lanes` values). */
+export type LaneTurn =
+  | 'left'
+  | 'slight_left'
+  | 'sharp_left'
+  | 'through'
+  | 'slight_right'
+  | 'right'
+  | 'sharp_right'
+  | 'reverse'
+  | 'merge_to_left'
+  | 'merge_to_right';
+
+export interface Lane {
+  /** Offset of the lane's middle from the centreline (m), positive to the left of the drawing direction. */
+  offset: number;
+  width: number;
+  kind: 'drive' | 'bus' | 'cycle' | 'parking';
+  /** Traffic along the centreline's drawing direction. */
+  forward: boolean;
+  /** Turns allowed at the next junction; empty when not known. */
+  turns: LaneTurn[];
+  provenance: Provenance;
 }
 
 export type MarkingKind =

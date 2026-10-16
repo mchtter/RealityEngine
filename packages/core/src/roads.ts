@@ -1,4 +1,5 @@
 import { add, closestOnSegment, dist, normalize, perp, polylineLength, scale, sub } from './geo';
+import { laneLayout } from './lanes';
 import { ENTITY_TAG, type SourcePoint, type SourceRoad } from './osm';
 import {
   bufferPolylinePaths,
@@ -193,7 +194,11 @@ export function classifyRoads(source: SourceRoad[]): Road[] {
     const tagWidth = rejected.width === undefined ? rawWidth : Number.NaN;
     const width = Number.isFinite(tagWidth) && tagWidth > 1 ? tagWidth : lanes * spec.laneWidth;
     const sidewalkTag = r.tags.sidewalk;
-    const sidewalk = sidewalkTag === 'no' || sidewalkTag === 'none' ? 0 : spec.sidewalk;
+    // "separate": the sidewalks are mapped as footways of their own (drawn by them).
+    const sidewalk =
+      sidewalkTag === 'no' || sidewalkTag === 'none' || sidewalkTag === 'separate'
+        ? 0
+        : spec.sidewalk;
     const grade: Grade =
       r.tags.bridge && r.tags.bridge !== 'no'
         ? 'bridge'
@@ -224,6 +229,7 @@ export function classifyRoads(source: SourceRoad[]): Road[] {
         lanes: Number.isFinite(tagLanes) ? 'observed' : 'inferred',
       },
       ...(rejected.width !== undefined || rejected.lanes !== undefined ? { rejected } : {}),
+      ...(isVehicular(cls) ? { laneLayout: laneLayout({ lanes, width, oneway }, r.tags) } : {}),
     });
   }
   return roads;
