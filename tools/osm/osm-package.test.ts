@@ -272,6 +272,42 @@ describe('area filtering', () => {
 });
 
 describe('readOsm + PackageWriter', () => {
+  it('gives tagged outlines their point of interest unless also mapped as a point', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'osm-package-'));
+    try {
+      const f = (id: number, type: string, g: Geometry, tags: Record<string, string>) =>
+        `\x1e${JSON.stringify({ type: 'Feature', geometry: g, properties: { '@type': type, '@id': id, ...tags } })}`;
+      const seq = [
+        // A school building with its node inside: one school.
+        f(1, 'way', poly(square(0.1, 0.1, 0.101, 0.101)), {
+          building: 'school',
+          amenity: 'school',
+          name: 'Okul',
+        }),
+        f(2, 'node', pt(0.1002, 0.1002), { amenity: 'school', name: 'Okul' }),
+        // A hospital's grounds alone: its point at the middle.
+        f(3, 'way', poly(square(0.3, 0.3, 0.302, 0.302)), { amenity: 'hospital', name: 'Hastane' }),
+        '',
+      ].join('\n');
+      writeFileSync(join(dir, 'x.geojsonseq'), seq);
+      const osm = await readOsm([join(dir, 'x.geojsonseq')], inside);
+      assert.deepEqual(
+        osm.rows.poi.map((r) => [r.id, r.attrs.kind]),
+        [
+          ['osm:n2', 'school'],
+          ['osm:w3', 'hospital'],
+        ],
+      );
+      const [hx, hy] = osm.rows.poi[1].geometry.coordinates as [number, number];
+      assert.ok(Math.abs(hx - 0.301) < 1e-9 && Math.abs(hy - 0.301) < 1e-9);
+      assert.deepEqual(osm.dropped.poi, { 'noktası da var': 1 });
+      // The school building stays a building.
+      assert.equal(osm.rows.building.length, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('reads an osmium export once per element and writes JSON.stringify bytes', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'osm-package-'));
     try {

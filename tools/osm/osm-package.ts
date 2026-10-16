@@ -841,6 +841,8 @@ export async function readOsm(
   let read = 0;
   const bump = (t: OsmTheme, why: string) => (dropped[t][why] = (dropped[t][why] ?? 0) + 1);
   const airports = await areaAerodromes(files, inside);
+  /** Points of interest from outlines (kept unless the same place is also mapped as a point). */
+  const outlined: Row[] = [];
   for (const file of files)
     for await (const f of readGeojsonseq(file)) {
       const t = f.properties;
@@ -850,6 +852,16 @@ export async function readOsm(
       seen.add(dup);
       read++;
       const g = f.geometry;
+      // A building or ground tagged as a point of interest (a school, a hospital's
+      // grounds) also gives its point, inside the outline.
+      if ((g.type === 'Polygon' || g.type === 'MultiPolygon') && poiKind(t)) {
+        const at = interiorAnchor(g);
+        if (!at) bump('poi', 'iç nokta bulunamadı');
+        else if (inside(at)) {
+          const row = osmRow('poi', id, { type: 'Point', coordinates: at }, t);
+          if (!('drop' in row)) outlined.push(row);
+        } else bump('poi', 'demo alanı dışında');
+      }
       const theme = osmTheme(t, g);
       if (!theme) continue;
       if (!inOsmArea(theme, t, g, inside, airports)) {
@@ -860,7 +872,60 @@ export async function readOsm(
       if ('drop' in row) bump(theme, row.drop);
       else rows[theme].push(row);
     }
+  rows.poi.push(...dropMappedTwice(outlined, rows.poi, () => bump('poi', 'noktası da var')));
   return { rows, dropped, read };
+}
+
+/**
+ * A point inside an outline for its point of interest: the vertex mean, else
+ * its box's centre, if inside (null for a ring curled round both).
+ */
+export function interiorAnchor(g: Geometry): [number, number] | null {
+  const ring =
+    g.type === 'Polygon'
+      ? g.coordinates[0]
+      : g.type === 'MultiPolygon'
+        ? g.coordinates[0]?.[0]
+        : null;
+  if (!ring || ring.length < 4) return null;
+  // Without the closing vertex (it repeats the first).
+  const open = ring.slice(0, -1);
+  const mean: [number, number] = [
+    open.reduce((a, p) => a + p[0], 0) / open.length,
+    open.reduce((a, p) => a + p[1], 0) / open.length,
+  ];
+  if (inPolygon(mean, g)) return mean;
+  const xs = open.map((p) => p[0]);
+  const ys = open.map((p) => p[1]);
+  const box: [number, number] = [
+    (Math.min(...xs) + Math.max(...xs)) / 2,
+    (Math.min(...ys) + Math.max(...ys)) / 2,
+  ];
+  return inPolygon(box, g) ? box : null;
+}
+
+/** Same kind and name within this distance (degrees, ~200 m): one place mapped twice. */
+const TWICE = 0.002;
+
+/** Outline points of interest that are not also mapped as a point nearby (same kind and name). */
+function dropMappedTwice(outlined: Row[], points: Row[], dropped: () => void): Row[] {
+  const byKey = new Map<string, [number, number][]>();
+  for (const r of points) {
+    if (!r.attrs.name || r.geometry.type !== 'Point') continue;
+    const k = `${String(r.attrs.kind)}|${String(r.attrs.name)}`;
+    const list = byKey.get(k) ?? [];
+    list.push(r.geometry.coordinates);
+    byKey.set(k, list);
+  }
+  return outlined.filter((r) => {
+    if (!r.attrs.name || r.geometry.type !== 'Point') return true;
+    const [x, y] = r.geometry.coordinates;
+    const twin = byKey
+      .get(`${String(r.attrs.kind)}|${String(r.attrs.name)}`)
+      ?.some((q) => Math.abs(q[0] - x) < TWICE && Math.abs(q[1] - y) < TWICE);
+    if (twin) dropped();
+    return !twin;
+  });
 }
 
 /** City-specific steps around the OSM layers. */
