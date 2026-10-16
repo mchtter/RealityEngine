@@ -65,6 +65,7 @@ import { PlacePin, type PinScreen } from './place-pin';
 import { PlacementLayer } from './placements';
 import { type QuakeCity, QuakeOverlay } from './quake-overlay';
 import { SlotAllocator } from './slot-allocator';
+import { StreetLabeller } from './street-labels';
 import {
   type BuildingInfo,
   type MeshPayload,
@@ -384,6 +385,8 @@ export class DtEngine {
   private debugFlags = { post: true, shadows: true, ao: true, drape: false };
   /** The ground as one picture (D-011, F3; behind the `drape` flag while it is measured). */
   private clipmap: GroundClipmap | null = null;
+  /** Street names (the map look). */
+  private readonly streetLabeller = new StreetLabeller();
   private drapedKey = '';
   /** Share of ambient occlusion applied (0 = off). */
   private readonly aoStrength = uniform(1);
@@ -2557,6 +2560,7 @@ export class DtEngine {
     this.mapLook = on;
     this.debugSet({ drape: on });
     for (const tile of this.tiles.values()) tile.setPlain(on);
+    this.streetLabeller.setEnabled(on, this.tiles.values());
     this.updateDetail();
   }
 
@@ -2842,6 +2846,12 @@ export class DtEngine {
 
     this.tickPin();
     if (this.debugFlags.drape) this.tickDrape();
+    this.streetLabeller.update(
+      this.tiles.values(),
+      this.camera,
+      this.container.clientWidth,
+      this.container.clientHeight,
+    );
 
     const cpu0 = performance.now();
     if (this.debugFlags.post) this.pipeline.render();

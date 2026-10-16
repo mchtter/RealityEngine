@@ -14,6 +14,7 @@ import {
   INSTANCE_MATRIX_ATTRIBUTES,
   instancedVariant,
 } from './materials';
+import { type StreetLine, streetLines } from './street-lines';
 
 /**
  * Transfer format between the tile worker (builds geometry off the main
@@ -96,6 +97,8 @@ export interface TileSummary {
    * (tile coords); a tunnel road has its clear height.
    */
   decks: { path: [number, number, number][]; half: number; clear?: number }[];
+  /** Named ground streets (centreline on the street surface), for their names on the map. */
+  streets?: StreetLine[];
   /** No city data in the tile (drawn as the grey grid). */
   empty: boolean;
   /** Buried networks in the tile: runs and length (km) per network. */
@@ -154,6 +157,7 @@ export function summarize(model: CityModel): TileSummary {
     fixes: model.fixes,
     utilities: utilityStats(model),
     empty: isEmptyTile(model),
+    streets: streetLines(model.roads),
     decks: [
       ...(model.bridges ?? []).map((b) => ({ path: b.path, half: b.width / 2 })),
       ...(model.tunnels ?? []).map((t) => ({ path: t.path, half: t.width / 2, clear: t.height })),

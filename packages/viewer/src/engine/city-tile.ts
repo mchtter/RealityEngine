@@ -4,6 +4,7 @@ import { toThree } from './geom';
 import { DRAPED } from './ground-clipmap';
 import { BUILDING_SLOT, type DtMaterials } from './materials';
 import type { PropMode } from './props';
+import { type StreetLabel, disposeStreetLabels, streetLabels } from './street-labels';
 import {
   type BuildingInfo,
   type MeshPayload,
@@ -94,6 +95,8 @@ export class CityTile {
   private readonly ground: CutGround;
   /** Building ids per shell layer, in slot order (see TilePayload.slots). */
   readonly slots: TilePayload['slots'];
+  /** Street names of the tile (placed by the engine's StreetLabeller in the map look). */
+  readonly labels: StreetLabel[];
 
   constructor(
     readonly key: string,
@@ -109,6 +112,7 @@ export class CityTile {
     readonly groundSlot = -1,
   ) {
     this.slots = payload.slots;
+    this.labels = streetLabels(payload.summary.streets);
     this.summary = payload.summary;
     this.ground = new CutGround(payload.summary.terrain, payload.summary.terrainCut);
     this.buildingsById = new Map(payload.summary.buildings.map((b) => [b.id, b]));
@@ -561,6 +565,7 @@ export class CityTile {
   }
 
   dispose(): void {
+    disposeStreetLabels(this.labels);
     this.group.traverse((o) => {
       if (o instanceof THREE.Mesh && !o.geometry.userData.shared) o.geometry.dispose();
     });
