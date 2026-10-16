@@ -1,6 +1,6 @@
 import { POI_KINDS } from '@opentwin/shared';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_MAP_STYLE, rangeOf } from './map-style';
+import { DEFAULT_MAP_STYLE, NIGHT_MAP_STYLE, mapStyleFor, rangeOf } from './map-style';
 
 describe('map style', () => {
   it('gives every point-of-interest kind of the contract a colour and a rank', () => {
@@ -17,5 +17,12 @@ describe('map style', () => {
     expect(rangeOf(DEFAULT_MAP_STYLE.streets.ranges, 0)).toEqual(
       DEFAULT_MAP_STYLE.streets.ranges[1],
     );
+  });
+
+  it('follows the time of day when automatic, else the choice', () => {
+    expect(mapStyleFor('auto', 12).id).toBe('day');
+    expect(mapStyleFor('auto', 21.5).id).toBe('night');
+    expect(mapStyleFor('auto', 6).id).toBe('night');
+    expect(mapStyleFor('night', 12)).toBe(NIGHT_MAP_STYLE);
   });
 });

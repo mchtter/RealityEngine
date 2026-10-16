@@ -34,6 +34,11 @@ export interface MapStyle {
     /** Icon disc diameter and name font size (screen px). */
     discPx: number;
     fontPx: number;
+    /** Ring round the disc and halo round the names. */
+    stroke: string;
+    halo: string;
+    /** Names in their category's colour: below 1 darker, above 1 towards white. */
+    nameShade: number;
   };
 }
 
@@ -104,8 +109,42 @@ export const DEFAULT_MAP_STYLE: MapStyle = {
     nameMpp: 0.5,
     discPx: 22,
     fontPx: 12,
+    stroke: 'rgba(255,255,255,0.95)',
+    halo: 'rgba(255,255,255,0.95)',
+    nameShade: 0.62,
   },
 };
+
+/** Night: light names on a dark halo (the lit city behind them), the same rules. */
+export const NIGHT_MAP_STYLE: MapStyle = {
+  ...DEFAULT_MAP_STYLE,
+  id: 'night',
+  label: 'Gece',
+  streets: {
+    ...DEFAULT_MAP_STYLE.streets,
+    color: '#e4e8ef',
+    halo: 'rgba(16,20,28,0.9)',
+  },
+  pois: {
+    ...DEFAULT_MAP_STYLE.pois,
+    stroke: 'rgba(16,20,28,0.9)',
+    halo: 'rgba(16,20,28,0.9)',
+    nameShade: 1.45,
+  },
+};
+
+export const MAP_STYLES: Record<string, MapStyle> = {
+  day: DEFAULT_MAP_STYLE,
+  night: NIGHT_MAP_STYLE,
+};
+
+/** A style choice: `auto` follows the time of day (day 07:00–19:00, as the HUD's sun). */
+export type MapStyleChoice = 'auto' | 'day' | 'night';
+
+export function mapStyleFor(choice: MapStyleChoice, hour: number): MapStyle {
+  if (choice !== 'auto') return MAP_STYLES[choice];
+  return hour >= 7 && hour <= 19 ? DEFAULT_MAP_STYLE : NIGHT_MAP_STYLE;
+}
 
 /** A rank's range, else the lowest rank's (a rank the style does not list). */
 export function rangeOf(ranges: Record<string, LabelRange>, rank: number): LabelRange {

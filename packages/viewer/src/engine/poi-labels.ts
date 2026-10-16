@@ -244,7 +244,7 @@ export class PoiLabeller {
     ctx.fillStyle = cat.colour;
     ctx.fill();
     ctx.lineWidth = 1.5;
-    ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+    ctx.strokeStyle = this.style.stroke;
     ctx.stroke();
     const img = this.icons.get(kind);
     const s = disc * 0.6;
@@ -254,10 +254,10 @@ export class PoiLabeller {
       ctx.textBaseline = 'middle';
       ctx.lineJoin = 'round';
       ctx.lineWidth = 3;
-      ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+      ctx.strokeStyle = this.style.halo;
       const x = disc + 2 + GAP;
       ctx.strokeText(name, x, cy);
-      ctx.fillStyle = shade(cat.colour);
+      ctx.fillStyle = shade(cat.colour, this.style.nameShade);
       ctx.fillText(name, x, cy);
     }
     const texture = new THREE.CanvasTexture(canvas);
@@ -273,10 +273,11 @@ export class PoiLabeller {
   }
 }
 
-/** A category colour darkened for its names (readable on light ground). */
-function shade(hex: string): string {
+/** A category colour for its names: `k` below 1 darker, above 1 towards white. */
+function shade(hex: string, k: number): string {
   const c = new THREE.Color(hex);
-  c.multiplyScalar(0.62);
+  if (k <= 1) c.multiplyScalar(k);
+  else c.lerp(new THREE.Color(1, 1, 1), Math.min(1, k - 1));
   return `#${c.getHexString()}`;
 }
 
