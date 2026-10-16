@@ -2,7 +2,7 @@ import { uniform } from 'three/tsl';
 import * as THREE from 'three/webgpu';
 import { toThree } from './geom';
 import { textLabel, type TextLabelStyle } from './overview-map';
-import { type StreetLine, straightestRun } from './street-lines';
+import { type StreetLine, straightRuns } from './street-lines';
 
 /**
  * Street names written along the street (F3, the map look): each named
@@ -13,9 +13,15 @@ import { type StreetLine, straightestRun } from './street-lines';
  * or repeat the same name too close — give way by street class.
  */
 
-/** A street name of a tile: where it may lie, and its text quad once first shown. */
-export interface StreetLabel {
+/** A name's text quad, drawn once per tile and shared by its places. */
+export interface NameGlyph {
   name: string;
+  art: { geometry: THREE.BufferGeometry; material: THREE.Material; aspect: number } | null;
+}
+
+/** A place for a street name in a tile, and its quad once first shown. */
+export interface StreetLabel {
+  glyph: NameGlyph;
   rank: number;
   /** Run middle and unit direction (tile-local three.js coords; direction follows the slope). */
   mid: THREE.Vector3;
@@ -23,26 +29,31 @@ export interface StreetLabel {
   /** Run length (m): the name must fit in it. */
   room: number;
   mesh: THREE.Mesh | null;
-  /** Quad width per unit letter height. */
-  aspect: number;
 }
 
+/** A run shorter than this (m) holds no name at any scale. */
+const MIN_ROOM = 30;
+
+/** Every straight run of a tile's named streets long enough for a name, one glyph per name. */
 export function streetLabels(lines: StreetLine[] | undefined): StreetLabel[] {
+  const glyphs = new Map<string, NameGlyph>();
   const out: StreetLabel[] = [];
   for (const s of lines ?? []) {
-    const run = straightestRun(s.path);
-    if (!run || run.length < 20) continue;
-    const a = new THREE.Vector3(...toThree(...run.a));
-    const b = new THREE.Vector3(...toThree(...run.b));
-    out.push({
-      name: s.name,
-      rank: s.rank,
-      mid: a.clone().add(b).multiplyScalar(0.5),
-      dir: b.sub(a).normalize(),
-      room: run.length,
-      mesh: null,
-      aspect: 0,
-    });
+    for (const run of straightRuns(s.path)) {
+      if (run.length < MIN_ROOM) continue;
+      let glyph = glyphs.get(s.name);
+      if (!glyph) glyphs.set(s.name, (glyph = { name: s.name, art: null }));
+      const a = new THREE.Vector3(...toThree(...run.a));
+      const b = new THREE.Vector3(...toThree(...run.b));
+      out.push({
+        glyph,
+        rank: s.rank,
+        mid: a.clone().add(b).multiplyScalar(0.5),
+        dir: b.sub(a).normalize(),
+        room: run.length,
+        mesh: null,
+      });
+    }
   }
   return out;
 }
@@ -55,10 +66,19 @@ const LETTER_PX = 17;
  * reads the same from any pitch); beyond, it foreshortens like the street.
  */
 const MIN_SLANT = 0.35;
-/** Names are written within this distance (m) of the camera … */
-const MAX_DISTANCE = 1500;
-/** … and where a screen pixel covers at most this many metres. */
-const MAX_MPP = 0.9;
+/**
+ * By street rank: names are written within this distance (m) of the camera
+ * and where a screen pixel covers at most this many metres — main roads
+ * from high up, side streets close in.
+ */
+const RANGE: Record<number, { distance: number; mpp: number }> = {
+  6: { distance: 7000, mpp: 4 },
+  5: { distance: 6000, mpp: 3.5 },
+  4: { distance: 4000, mpp: 2.4 },
+  3: { distance: 2500, mpp: 1.5 },
+  2: { distance: 1500, mpp: 0.9 },
+  1: { distance: 900, mpp: 0.6 },
+};
 /** A name's quad lies this far (m) above the street surface. */
 const LIFT = 0.35;
 /** The same name is not repeated within this screen distance (px). */
@@ -85,9 +105,14 @@ export class StreetLabeller {
   private readonly basis = new THREE.Matrix4();
   /** Names shown in the last update. */
   shown = 0;
+  /** Camera and tiles of the last placement: unchanged, the names stay where they are. */
+  private readonly lastView = new THREE.Matrix4();
+  private lastTiles: unknown[] = [];
+  private lastSize = '';
 
   setEnabled(on: boolean, tiles: Iterable<{ labels: StreetLabel[] }>): void {
     this.on = on;
+    this.lastTiles = [];
     if (!on) for (const t of tiles) for (const l of t.labels) if (l.mesh) l.mesh.visible = false;
   }
 
@@ -96,8 +121,23 @@ export class StreetLabeller {
     camera: THREE.PerspectiveCamera,
     width: number,
     height: number,
+    /** Place again even if nothing moved (measurement). */
+    force = false,
   ): void {
     if (!this.on) return;
+    const list = [...tiles];
+    const size = `${width}x${height}`;
+    if (
+      !force &&
+      list.length === this.lastTiles.length &&
+      list.every((t, i) => t === this.lastTiles[i]) &&
+      size === this.lastSize &&
+      this.lastView.equals(camera.matrixWorld)
+    )
+      return;
+    this.lastView.copy(camera.matrixWorld);
+    this.lastTiles = list;
+    this.lastSize = size;
     const perPx = (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / height;
     const eye = camera.position;
     type Candidate = {
@@ -110,14 +150,19 @@ export class StreetLabeller {
       fz: number;
     };
     const candidates: Candidate[] = [];
-    for (const t of tiles) {
+    for (const t of list) {
       if (!t.group.visible) continue;
       for (const l of t.labels) {
         if (l.mesh) l.mesh.visible = false;
         this.world.copy(l.mid).add(t.group.position);
         const d = this.world.distanceTo(eye);
         const mpp = d * perPx;
-        if (d > MAX_DISTANCE || mpp > MAX_MPP) continue;
+        const range = RANGE[l.rank] ?? RANGE[1];
+        if (d > range.distance || mpp > range.mpp) continue;
+        // Off screen (with a margin for the name's length): not placed.
+        this.corner.copy(this.world).project(camera);
+        if (this.corner.z > 1 || Math.abs(this.corner.x) > 1.6 || Math.abs(this.corner.y) > 1.6)
+          continue;
         const h = mpp * LETTER_PX;
         // Seen along the view ray v, a flat axis a keeps |a − (a·v) v| of its length.
         this.ahead.copy(this.world).sub(eye).normalize();
@@ -127,7 +172,7 @@ export class StreetLabeller {
         const fx = 1 / Math.max(Math.sqrt(1 - along * along), MIN_SLANT);
         const fz = 1 / Math.max(Math.sqrt(1 - across * across), MIN_SLANT);
         if (!l.mesh) this.build(l, t.group);
-        if (l.aspect * h * fx > l.room * FILL) continue;
+        if (l.glyph.art!.aspect * h * fx > l.room * FILL) continue;
         candidates.push({ l, group: t.group, d, h, fx, fz });
       }
     }
@@ -159,7 +204,7 @@ export class StreetLabeller {
       let by0 = Infinity;
       let bx1 = -Infinity;
       let by1 = -Infinity;
-      const halfW = (l.aspect * h * fx) / 2;
+      const halfW = (l.glyph.art!.aspect * h * fx) / 2;
       const halfH = 0.75 * h * fz;
       for (const [u, v] of [
         [-halfW, -halfH],
@@ -185,11 +230,11 @@ export class StreetLabeller {
       if (placed.some((q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1])) continue;
       const cx = (bx0 + bx1) / 2;
       const cy = (by0 + by1) / 2;
-      const same = named.get(l.name);
+      const same = named.get(l.glyph.name);
       if (same?.some(([x, y]) => Math.hypot(x - cx, y - cy) < REPEAT_PX)) continue;
       placed.push(r);
       if (same) same.push([cx, cy]);
-      else named.set(l.name, [[cx, cy]]);
+      else named.set(l.glyph.name, [[cx, cy]]);
       // The matrix is world: the mesh hangs in the scene root's frame via its tile group.
       mesh.matrix.premultiply(this.basis.copy(c.group.matrixWorld).invert());
       mesh.matrixWorldNeedsUpdate = true;
@@ -199,14 +244,17 @@ export class StreetLabeller {
   }
 
   private build(l: StreetLabel, group: THREE.Group): void {
-    const mesh = textLabel(l.name, STYLE, this.fade);
-    // textLabel lies flat with its letters' tops to −z; the basis maps its x along the run.
-    const g = mesh.geometry as THREE.PlaneGeometry;
-    l.aspect = g.parameters.width / 1.5;
-    const mat = mesh.material as THREE.MeshBasicNodeMaterial;
-    mat.polygonOffset = true;
-    mat.polygonOffsetFactor = -2;
-    mat.polygonOffsetUnits = -4;
+    if (!l.glyph.art) {
+      const text = textLabel(l.glyph.name, STYLE, this.fade);
+      // textLabel lies flat with its letters' tops to −z; the basis maps its x along the run.
+      const geometry = text.geometry as THREE.PlaneGeometry;
+      const material = text.material as THREE.MeshBasicNodeMaterial;
+      material.polygonOffset = true;
+      material.polygonOffsetFactor = -2;
+      material.polygonOffsetUnits = -4;
+      l.glyph.art = { geometry, material, aspect: geometry.parameters.width / 1.5 };
+    }
+    const mesh = new THREE.Mesh(l.glyph.art.geometry, l.glyph.art.material);
     mesh.matrixAutoUpdate = false;
     mesh.frustumCulled = false;
     mesh.renderOrder = 20;
@@ -219,13 +267,18 @@ export class StreetLabeller {
 
 /** Frees the text quads of a tile's names. */
 export function disposeStreetLabels(labels: StreetLabel[]): void {
+  const glyphs = new Set<NameGlyph>();
   for (const l of labels) {
-    if (!l.mesh) continue;
-    l.mesh.removeFromParent();
-    l.mesh.geometry.dispose();
-    const mat = l.mesh.material as THREE.MeshBasicNodeMaterial;
+    l.mesh?.removeFromParent();
+    l.mesh = null;
+    glyphs.add(l.glyph);
+  }
+  for (const g of glyphs) {
+    if (!g.art) continue;
+    g.art.geometry.dispose();
+    const mat = g.art.material as THREE.MeshBasicNodeMaterial;
     mat.map?.dispose();
     mat.dispose();
-    l.mesh = null;
+    g.art = null;
   }
 }

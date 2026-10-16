@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { straightestRun, streetLines } from './street-lines';
+import { straightRuns, straightestRun, streetLines } from './street-lines';
 
 describe('streetLines', () => {
   it('keeps named ground streets with a profile, ranked by class', () => {
@@ -30,6 +30,63 @@ describe('streetLines', () => {
         ],
       },
     ]);
+  });
+});
+
+describe('streetLines joining', () => {
+  it('joins pieces of one name meeting end to end, walking one backwards', () => {
+    const lines = streetLines([
+      {
+        name: 'Cad.',
+        cls: 'residential',
+        grade: 'ground',
+        centerline: [
+          [0, 0],
+          [40, 0],
+        ],
+        profile: [1, 2],
+      },
+      // Drawn the other way: from the far end back to the junction at (40, 0).
+      {
+        name: 'Cad.',
+        cls: 'secondary',
+        grade: 'ground',
+        centerline: [
+          [100, 0],
+          [40, 0],
+        ],
+        profile: [4, 2],
+      },
+      {
+        name: 'Başka',
+        cls: 'residential',
+        grade: 'ground',
+        centerline: [
+          [40, 0],
+          [40, 50],
+        ],
+        profile: [2, 3],
+      },
+    ]);
+    const cad = lines.find((l) => l.name === 'Cad.');
+    expect(lines).toHaveLength(2);
+    expect(cad?.rank).toBe(4);
+    expect(cad?.path).toEqual([
+      [0, 0, 1],
+      [40, 0, 2],
+      [100, 0, 4],
+    ]);
+  });
+});
+
+describe('straightRuns', () => {
+  it('lists every straight run in order', () => {
+    const runs = straightRuns([
+      [0, 0, 0],
+      [30, 0, 0],
+      [30, 40, 0],
+    ]);
+    expect(runs.map((r) => r.length)).toEqual([30, 40]);
   });
 });
 
