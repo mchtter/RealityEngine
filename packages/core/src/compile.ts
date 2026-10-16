@@ -124,7 +124,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '100';
+export const COMPILER_VERSION = '101';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -918,6 +918,22 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   ];
   // One surface per spot: nothing else under a rail bed (surface.rail).
   outSurfaces = harmony.surfaces(outSurfaces);
+  // Where a deck runs low over the ground (its landing in a junction) the deck
+  // is the surface: the streets' surfaces stop at its edge and the land under
+  // it lies below it. Other roads' asphalt and sidewalks rose through a deck
+  // easing into its landing (bridge.ground-through, 2026-10-16).
+  const lowDecks = lowDeckPrints(
+    bridges,
+    (x, y) => streetAt(x, y) ?? terrainHeightAt(terrain, x, y),
+    terrain.cellSize,
+  );
+  if (lowDecks.prints.length) {
+    outSurfaces = outSurfaces.map((sf) => ({
+      ...sf,
+      polygons: dropHairlines(difference(sf.polygons, lowDecks.prints)),
+    }));
+    sinkUnderDecks(terrain, lowDecks);
+  }
   const allMarkings = harmony.paint([
     ...markings,
     ...parking.markings,
@@ -1377,6 +1393,20 @@ function buildBridges(
         ? landAt(p)
         : terrainHeightAt(terrain, p[0], p[1]),
     );
+    // Ground across a short deck's width (its edges and middle): on a cross
+    // slope the higher edge rose through a deck held only over its centreline.
+    const half = Math.max(...chain.map((r) => deckHalf(r)));
+    const across = pts.map((p, k) => {
+      const a = pts[Math.max(0, k - 1)];
+      const b = pts[Math.min(pts.length - 1, k + 1)];
+      const l = dist(a, b) || 1;
+      const n: Vec2 = [-(b[1] - a[1]) / l, (b[0] - a[0]) / l];
+      return Math.max(
+        grounds[k],
+        landAt([p[0] + n[0] * half, p[1] + n[1] * half]),
+        landAt([p[0] - n[0] * half, p[1] - n[1] * half]),
+      );
+    });
     // A short bridge spans straight between its ground ends, rising from each
     // at most DECK_RISE above the ground's own grade to its clearance, as one
     // vertical curve. Its clearance came within the 25 m ramps: down a
@@ -1392,10 +1422,14 @@ function buildBridges(
       const fromEnd = endInner ? Infinity : total - s;
       const ramp = Math.min(1, Math.min(fromStart, fromEnd) / 25 || 0);
       let base: number;
+      // A ground end lies on the street it lands on, whatever the ground beside it.
+      if (straight && k === 0) return [p[0], p[1], za];
+      if (straight && k === pts.length - 1) return [p[0], p[1], zb];
       if (straight) {
         base = Math.max(
           za + (zb - za) * (total > 0 ? s / total : 0),
-          grounds[k] + Math.min(clearance, DECK_RISE * Math.min(fromStart, fromEnd)),
+          across[k] +
+            Math.max(DECK_SKIN, Math.min(clearance, DECK_RISE * Math.min(fromStart, fromEnd))),
         );
       } else {
         let sum = 0;
@@ -1513,8 +1547,72 @@ function buildBridges(
   return decks.map((d) => d.bridge);
 }
 
+/** A deck this close (m) over the ground under its middle is low: the ground there yields to it. */
+const LOW_OVER_GROUND = 1;
+
+/**
+ * The low stretches of every deck (top within LOW_OVER_GROUND of the ground
+ * under its middle), as footprints, with the decks to read heights from. The
+ * run-on at each end (under the street it lands on) is left out.
+ */
+function lowDeckPrints(
+  bridges: Bridge[],
+  groundAt: (x: number, y: number) => number,
+  /** Extra reach of the land sunk under them (a grid cell: its triangles reach the deck edge). */
+  landReach: number,
+): { prints: Polygon[]; land: Polygon[]; decks: Bridge[] } {
+  const prints: Polygon[] = [];
+  const land: Polygon[] = [];
+  const decks: Bridge[] = [];
+  for (const br of bridges) {
+    const before = prints.length;
+    const p = br.path.slice(1, -1);
+    let run: Vec2[] = [];
+    const flush = () => {
+      if (run.length >= 2) {
+        prints.push(...bufferPolyline(run, br.width / 2 + 0.1, false));
+        land.push(...bufferPolyline(run, br.width / 2 + landReach, false));
+      }
+      run = [];
+    };
+    for (const q of p) {
+      if (q[2] - groundAt(q[0], q[1]) < LOW_OVER_GROUND) run.push([q[0], q[1]]);
+      else {
+        if (run.length) run.push([q[0], q[1]]);
+        flush();
+      }
+    }
+    flush();
+    if (prints.length > before) decks.push(br);
+  }
+  return { prints, land, decks };
+}
+
+/** Terrain nodes under (and a cell beside) a low deck stretch, DECK_SKIN below the deck there. */
+function sinkUnderDecks(t: TerrainGrid, low: { land: Polygon[]; decks: Bridge[] }): void {
+  const set = new PolygonSet(low.land);
+  for (let j = 0; j < t.rows; j++)
+    for (let i = 0; i < t.cols; i++) {
+      const x = t.minX + i * t.cellSize;
+      const y = t.minY + j * t.cellSize;
+      if (!set.contains(x, y)) continue;
+      let best = { d: Infinity, z: 0 };
+      for (const br of low.decks)
+        for (let k = 1; k < br.path.length; k++) {
+          const a = br.path[k - 1];
+          const b = br.path[k];
+          const c = closestOnSegment([x, y], [a[0], a[1]], [b[0], b[1]]);
+          if (c.d < best.d) best = { d: c.d, z: a[2] + (b[2] - a[2]) * c.t };
+        }
+      const idx = j * t.cols + i;
+      t.heights[idx] = Math.min(t.heights[idx], best.z - DECK_SKIN);
+    }
+}
+
 /** Steepest a short bridge's deck rises from a ground end, over the ground's own grade. */
 const DECK_RISE = 0.06;
+/** Least height (m) of a short deck's top over the ground across it, its ends apart. */
+const DECK_SKIN = 0.15;
 
 /**
  * Raises a profile (heights `path[k][2]` at distances `at[k]`) to its least

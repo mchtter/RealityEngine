@@ -84,6 +84,7 @@ export const RULES = {
   'fence.float': 'Bahçe duvarı / çit tabanı ile zemin arasında boşluk (> 3 cm, havada)',
   'building.float': 'Bina duvarının dibi ile zemin arasında boşluk (> 3 cm, havada)',
   'terrain.spike': 'Arazide tek düğümlük sivri tepe / çukur (dört komşusundan > 1,5 m)',
+  'bridge.ground-through': 'Zemin köprü tabliyesinin içinden çıkıyor (tabliye üstünden yüksek)',
   'street.edge-step':
     'Sokak kenarında bordürden yüksek basamak (> 0,5 m): yandaki zemin çukurda ya da sokağın üstünde',
 } as const;
@@ -926,6 +927,7 @@ function seamRules(
     }
   }
   for (const br of model.bridges ?? []) {
+    groundThroughDeck(br, ground, add);
     bridgeEnds(br, model.bridges ?? [], ground, roadIndex, add);
     if (barrierOnRoad(br, ground, roadIndex).length)
       add('bridge.barrier-road', [br.path[0][0], br.path[0][1]]);
@@ -978,6 +980,59 @@ export function barrierOnRoad(
     }
   }
   return out;
+}
+
+/**
+ * The drawn ground rising through a deck: sampled every metre along it and
+ * across its width, away from its ends (where it lands on the street).
+ */
+function groundThroughDeck(
+  br: Bridge,
+  ground: GroundModel,
+  add: (rule: RuleId, at: Vec2, note?: string) => void,
+): void {
+  const p = br.path;
+  let s = 0;
+  const total = p.reduce(
+    (t, q, k) => (k ? t + dist([q[0], q[1]], [p[k - 1][0], p[k - 1][1]]) : 0),
+    0,
+  );
+  let worst = 0.05;
+  let where = 0;
+  let kind = '';
+  let at: Vec2 | null = null;
+  for (let k = 1; k < p.length; k++) {
+    const a = p[k - 1];
+    const b = p[k];
+    const len = dist([a[0], a[1]], [b[0], b[1]]);
+    if (len < 1e-6) continue;
+    const n: Vec2 = [-(b[1] - a[1]) / len, (b[0] - a[0]) / len];
+    for (let i = 0; i < Math.ceil(len); i++) {
+      const t = i / Math.ceil(len);
+      const along = s + len * t;
+      if (along < 3 || total - along < 3) continue;
+      const z = a[2] + (b[2] - a[2]) * t;
+      for (const o of [-br.width / 2, 0, br.width / 2]) {
+        const x = a[0] + (b[0] - a[0]) * t + n[0] * o;
+        const y = a[1] + (b[1] - a[1]) * t + n[1] * o;
+        const sf = ground.surfaceAt(x, y);
+        const over = sf.z - z;
+        if (over > worst) {
+          worst = over;
+          at = [x, y];
+          where = Math.min(along, total - along);
+          kind = sf.support;
+        }
+      }
+    }
+    s += len;
+  }
+  if (at)
+    add(
+      'bridge.ground-through',
+      at,
+      `${kind} ${worst.toFixed(2)} m, ucundan ${where.toFixed(0)} m`,
+    );
 }
 
 /** Street land a deck end may meet: the street surfaces and footpaths. */

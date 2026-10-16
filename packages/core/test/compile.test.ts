@@ -1778,6 +1778,67 @@ describe('bridges', () => {
   });
 });
 
+describe('bridges across a slope', () => {
+  it('keeps a short deck above the ground across its whole width', () => {
+    const [west, south] = ll(-400, -400);
+    const [east, north] = ll(400, 400);
+    const road = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'road' as const,
+      geometry: { type: 'LineString' as const, coordinates: pts.map(([x, y]) => ll(x, y)) },
+      tags,
+    });
+    // Rising 15 % to the east, across a bridge that runs north along the contour.
+    const m = compileCity(
+      {
+        ...gridSource(),
+        osm: [],
+        terrain: {
+          source: 'test',
+          west,
+          east,
+          north,
+          south,
+          cols: 9,
+          rows: 9,
+          heights: Array.from({ length: 81 }, (_, k) => 200 + 0.15 * ((k % 9) * 100 - 400)),
+        },
+        features: [
+          road(
+            'osm:a',
+            [
+              [0, -200],
+              [0, -80],
+            ],
+            { highway: 'primary', lanes: '4' },
+          ),
+          road(
+            'osm:b',
+            [
+              [0, -80],
+              [0, 80],
+            ],
+            { highway: 'primary', lanes: '4', bridge: 'yes', layer: '1' },
+          ),
+          road(
+            'osm:c',
+            [
+              [0, 80],
+              [0, 200],
+            ],
+            { highway: 'primary', lanes: '4' },
+          ),
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    expect(m.bridges.length).toBeGreaterThan(0);
+    expect(validateCity(m).counts['bridge.ground-through'] ?? 0).toBe(0);
+  });
+});
+
 describe('ground contact rules', () => {
   it('a compiled tile touches its ground; a raised building, a fence over a sunk street and a spike are caught', () => {
     const m = compileCity(gridSource());
