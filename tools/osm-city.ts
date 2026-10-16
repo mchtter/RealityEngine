@@ -10,8 +10,8 @@
  *   <city>-districts.geojson     district polygons (OSM boundary=administrative,
  *                                admin_level=6; properties.name)
  * Writes data/demo/<city>/package/: idari_sinir_ilce, yapi_osm, yol_osm,
- * yaya_gecidi_osm, agac_osm, alan_osm, kent_donatisi_osm (.geojson) and
- * RAPOR.json. The area is the --districts given (by name, Turkish
+ * yaya_gecidi_osm, agac_osm, alan_osm, kent_donatisi_osm, ilgi_noktasi_osm
+ * (.geojson) and RAPOR.json. The area is the --districts given (by name, Turkish
  * case-insensitive), or every district.
  */
 import { readFileSync } from 'node:fs';

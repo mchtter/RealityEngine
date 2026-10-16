@@ -99,6 +99,8 @@ export interface TileSummary {
   decks: { path: [number, number, number][]; half: number; clear?: number }[];
   /** Named ground streets (centreline on the street surface), for their names on the map. */
   streets?: StreetLine[];
+  /** Points of interest (tile coords, on the ground), for the map's icons. */
+  pois?: { kind: string; name?: string; position: [number, number, number] }[];
   /** No city data in the tile (drawn as the grey grid). */
   empty: boolean;
   /** Buried networks in the tile: runs and length (km) per network. */
@@ -158,6 +160,7 @@ export function summarize(model: CityModel): TileSummary {
     utilities: utilityStats(model),
     empty: isEmptyTile(model),
     streets: streetLines(model.roads),
+    pois: (model.pois ?? []).map((p) => ({ kind: p.kind, name: p.name, position: p.position })),
     decks: [
       ...(model.bridges ?? []).map((b) => ({ path: b.path, half: b.width / 2 })),
       ...(model.tunnels ?? []).map((t) => ({ path: t.path, half: t.width / 2, clear: t.height })),

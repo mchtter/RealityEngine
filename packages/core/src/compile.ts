@@ -114,6 +114,7 @@ import type {
   CitySource,
   CompileOptions,
   Fence,
+  Poi,
   Polygon,
   Prop,
   RailLine,
@@ -130,7 +131,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '107';
+export const COMPILER_VERSION = '108';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -1090,6 +1091,18 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     corePathRuns(u.path, inCore).map((path, k) => ({ ...u, id: k ? `${u.id}~${k}` : u.id, path })),
   );
   const outNodes = network.nodes.filter((n) => inCore([n.position[0], n.position[1]]));
+  // Points of interest (tag `poi`, from the city model's poi theme), on the final ground.
+  const outPois: Poi[] = features.points
+    .filter((pt) => pt.tags.poi && inCore(pt.p))
+    .map((pt) => ({
+      id: `poi:${pt.ref}`,
+      ref: pt.ref,
+      ...(pt.tags[ENTITY_TAG] ? { entity: pt.tags[ENTITY_TAG] } : {}),
+      kind: pt.tags.poi,
+      ...(pt.tags.name ? { name: pt.tags.name } : {}),
+      ...(pt.tags.brand ? { brand: pt.tags.brand } : {}),
+      position: [pt.p[0], pt.p[1], groundModel.surfaceAt(pt.p[0], pt.p[1]).z],
+    }));
   const outLights = guide.lights.filter((l) => inCore(l.at));
 
   const observedOut = buildings.filter((b) => b.source !== 'synthetic');
@@ -1112,6 +1125,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     ...(outLights.length ? { airfieldLights: outLights } : {}),
     ...(outUtilities.length ? { utilities: outUtilities } : {}),
     ...(outNodes.length ? { utilityNodes: outNodes } : {}),
+    ...(outPois.length ? { pois: outPois } : {}),
     ...(outFill.length ? { streetFill: outFill } : {}),
     crossings: outCrossings,
     junctions: outJunctions,

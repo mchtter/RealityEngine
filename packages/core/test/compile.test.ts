@@ -111,6 +111,29 @@ const carriageway = (m: CityModel) =>
   );
 
 describe('compileCity', () => {
+  it('places points of interest on the ground with their kind and name', () => {
+    const src = gridSource();
+    src.features = [
+      ...(src.features ?? []),
+      {
+        ref: 'osm:n-cafe',
+        source: 'osm',
+        priority: 0,
+        kind: 'point' as const,
+        geometry: { type: 'Point' as const, coordinates: ll(30, 35) },
+        tags: { poi: 'cafe', name: 'Köşe Kahvesi' },
+      },
+    ];
+    const m = compileCity(src);
+    expect(m.pois).toHaveLength(1);
+    const p = m.pois![0];
+    expect(p).toMatchObject({ kind: 'cafe', name: 'Köşe Kahvesi', ref: 'osm:n-cafe' });
+    expect(p.position[0]).toBeCloseTo(30, 0);
+    expect(p.position[1]).toBeCloseTo(35, 0);
+    // A furniture rule does not take it: no prop came from the point.
+    expect(m.props.some((q) => q.id.includes('n-cafe'))).toBe(false);
+  });
+
   it('is deterministic', () => {
     const a = compileCity(gridSource());
     const b = compileCity(gridSource());

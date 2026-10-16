@@ -21,6 +21,7 @@ import {
   osmTheme,
   PackageWriter,
   parkingOf,
+  poiKind,
   polygonTester,
   readOsm,
   type Ring,
@@ -89,7 +90,11 @@ describe('osmTheme', () => {
     assert.equal(osmTheme({ natural: 'tree' }, pt(0, 0)), 'tree');
     assert.equal(osmTheme({ highway: 'street_lamp' }, pt(0, 0)), 'asset');
     assert.equal(osmTheme({ power: 'pole' }, pt(0, 0)), 'asset');
-    assert.equal(osmTheme({ amenity: 'cafe' }, pt(0, 0)), null);
+    assert.equal(osmTheme({ amenity: 'cafe' }, pt(0, 0)), 'poi');
+    assert.equal(osmTheme({ shop: 'hairdresser' }, pt(0, 0)), 'poi');
+    // Street furniture stays the asset theme's; amenities without a map icon are left out.
+    assert.equal(osmTheme({ amenity: 'bench' }, pt(0, 0)), 'asset');
+    assert.equal(osmTheme({ amenity: 'shelter' }, pt(0, 0)), null);
     assert.equal(osmTheme({ landuse: 'farmland' }, a), null);
   });
 
@@ -115,6 +120,11 @@ describe('osmTheme', () => {
     assert.ok(!('drop' in crossing) && crossing.attrs.type === 'uncontrolled');
     const mast = osmRow('asset', 'm', pt(0, 0), { man_made: 'mast', 'tower:type': 'lighting' });
     assert.ok(!('drop' in mast) && mast.attrs.kind === 'floodlight');
+    const poi = osmRow('poi', 'p', pt(0, 0), { shop: 'pastry', name: 'Fırın', brand: 'X' });
+    assert.ok(!('drop' in poi));
+    assert.deepEqual(poi.attrs, { kind: 'bakery', name: 'Fırın', brand: 'X' });
+    assert.equal(poiKind({ tourism: 'guest_house' }), 'hotel');
+    assert.equal(poiKind({ shop: 'vacant' }), null);
   });
 
   it('carries lane detail; a way one way against its drawing is drawn the way traffic goes', () => {

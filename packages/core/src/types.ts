@@ -881,6 +881,22 @@ export interface Utility {
   rerouted?: number;
 }
 
+/**
+ * A point of interest (contract `poi`): a business or service a map shows
+ * an icon and its name for; on the ground surface at its point.
+ */
+export interface Poi {
+  id: string;
+  /** Canonical city entity id (city_features.entity_id) when the object comes from the city model. */
+  entity?: string;
+  ref: string;
+  /** Contract POI_KINDS value (restaurant, pharmacy, …). */
+  kind: string;
+  name?: string;
+  brand?: string;
+  position: Vec3;
+}
+
 /** Access point of a buried network: a manhole / chamber or a valve. */
 export interface UtilityNode {
   id: string;
@@ -935,6 +951,8 @@ export interface CityModel {
   /** Buried pipes and cables, and their manholes / valves. */
   utilities?: Utility[];
   utilityNodes?: UtilityNode[];
+  /** Points of interest (businesses, services) for the map's icons and names. */
+  pois?: Poi[];
   /**
    * Street land outside the road corridors: gaps narrower than 3 m between two
    * sidewalks, drawn as sidewalk and levelled to the street surface (see

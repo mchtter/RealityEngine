@@ -63,6 +63,7 @@ import {
 import { type OverviewData, OverviewMap, type OverviewPick } from './overview-map';
 import { PlacePin, type PinScreen } from './place-pin';
 import { PlacementLayer } from './placements';
+import { PoiLabeller } from './poi-labels';
 import { type QuakeCity, QuakeOverlay } from './quake-overlay';
 import { SlotAllocator } from './slot-allocator';
 import { StreetLabeller } from './street-labels';
@@ -387,6 +388,8 @@ export class DtEngine {
   private clipmap: GroundClipmap | null = null;
   /** Street names (the map look). */
   private readonly streetLabeller = new StreetLabeller();
+  /** Point-of-interest icons (the map look), after the street names. */
+  private readonly poiLabeller = new PoiLabeller();
   private drapedKey = '';
   /** Share of ambient occlusion applied (0 = off). */
   private readonly aoStrength = uniform(1);
@@ -2546,6 +2549,11 @@ export class DtEngine {
     this.drapedKey = '';
   }
 
+  /** Icons of the points of interest, as SVG markup by kind (POI_ICON_KINDS); the host draws them. */
+  setPoiIcons(svgs: Record<string, string>): void {
+    this.poiLabeller.setIcons(svgs);
+  }
+
   /** Map look on (see setMapLook). */
   private mapLook = false;
 
@@ -2561,6 +2569,7 @@ export class DtEngine {
     this.debugSet({ drape: on });
     for (const tile of this.tiles.values()) tile.setPlain(on);
     this.streetLabeller.setEnabled(on, this.tiles.values());
+    this.poiLabeller.setEnabled(on, this.tiles.values());
     this.updateDetail();
   }
 
@@ -2706,6 +2715,7 @@ export class DtEngine {
     this.pinListeners.clear();
     this.vehicles.dispose();
     this.live.dispose();
+    this.poiLabeller.dispose();
     this.placements.dispose();
     this.groundAtlas.dispose();
     this.horizon?.dispose();
@@ -2846,11 +2856,19 @@ export class DtEngine {
 
     this.tickPin();
     if (this.debugFlags.drape) this.tickDrape();
-    this.streetLabeller.update(
+    const moved = this.streetLabeller.update(
       this.tiles.values(),
       this.camera,
       this.container.clientWidth,
       this.container.clientHeight,
+    );
+    this.poiLabeller.update(
+      this.tiles.values(),
+      this.camera,
+      this.container.clientWidth,
+      this.container.clientHeight,
+      [...this.streetLabeller.placed],
+      moved,
     );
 
     const cpu0 = performance.now();

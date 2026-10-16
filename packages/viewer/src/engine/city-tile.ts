@@ -3,6 +3,7 @@ import * as THREE from 'three/webgpu';
 import { toThree } from './geom';
 import { DRAPED } from './ground-clipmap';
 import { BUILDING_SLOT, type DtMaterials } from './materials';
+import { type PoiMark, disposePoiMarks, poiMarks } from './poi-labels';
 import type { PropMode } from './props';
 import { type StreetLabel, disposeStreetLabels, streetLabels } from './street-labels';
 import {
@@ -97,6 +98,8 @@ export class CityTile {
   readonly slots: TilePayload['slots'];
   /** Street names of the tile (placed by the engine's StreetLabeller in the map look). */
   readonly labels: StreetLabel[];
+  /** Points of interest of the tile (placed by the engine's PoiLabeller in the map look). */
+  readonly pois: PoiMark[];
 
   constructor(
     readonly key: string,
@@ -113,6 +116,7 @@ export class CityTile {
   ) {
     this.slots = payload.slots;
     this.labels = streetLabels(payload.summary.streets);
+    this.pois = poiMarks(payload.summary.pois);
     this.summary = payload.summary;
     this.ground = new CutGround(payload.summary.terrain, payload.summary.terrainCut);
     this.buildingsById = new Map(payload.summary.buildings.map((b) => [b.id, b]));
@@ -566,6 +570,7 @@ export class CityTile {
 
   dispose(): void {
     disposeStreetLabels(this.labels);
+    disposePoiMarks(this.pois);
     this.group.traverse((o) => {
       if (o instanceof THREE.Mesh && !o.geometry.userData.shared) o.geometry.dispose();
     });

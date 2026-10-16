@@ -172,6 +172,8 @@ export interface CityClassDef {
   /** Open standards / protocols its data and control arrive by. */
   standards?: string[];
   theme?: CityThemeBinding;
+  /** Records of the class in further themes (a hospital's building and its point of interest). */
+  also?: CityThemeBinding[];
 }
 
 // ─── Commands ───────────────────────────────────────────────────────────────
@@ -312,10 +314,55 @@ const c = (
 const t = (theme: CityTheme, attrs?: Record<string, string>): CityThemeBinding =>
   attrs ? { theme, attrs } : { theme };
 
+/**
+ * The class of each point-of-interest kind (POI_KINDS): bound as a further
+ * binding, so a hospital is one class whether it comes as a building or as
+ * its point.
+ */
+const POI_CLASS: Record<string, string> = {
+  restaurant: 'commerce.food',
+  fast_food: 'commerce.food',
+  cafe: 'commerce.food',
+  bar: 'commerce.food',
+  bakery: 'commerce.food',
+  supermarket: 'commerce.shop',
+  mall: 'commerce.shop',
+  shop: 'commerce.shop',
+  pharmacy: 'health.pharmacy',
+  hospital: 'health.hospital',
+  clinic: 'health.clinic',
+  school: 'education.school',
+  university: 'education.university',
+  kindergarten: 'education.kindergarten',
+  library: 'education.library',
+  place_of_worship: 'social.mosque',
+  museum: 'social.museum',
+  culture: 'social.cultural_center',
+  hotel: 'commerce.hotel',
+  attraction: 'social.attraction',
+  bank: 'commerce.bank_atm',
+  atm: 'commerce.bank_atm',
+  post_office: 'commerce.post_office',
+  police: 'safety.police_station',
+  fire_station: 'safety.fire_station',
+  public_office: 'admin.public_office',
+  bus_station: 'transit.bus_terminal',
+  parking: 'mobility.parking_lot',
+};
+
+function withPoiBindings(classes: CityClassDef[]): CityClassDef[] {
+  for (const [kind, id] of Object.entries(POI_CLASS)) {
+    const d = classes.find((x) => x.id === id);
+    if (!d) throw new Error(`POI kind ${kind}: no class ${id}`);
+    d.also = [...(d.also ?? []), t('poi', { kind })];
+  }
+  return classes;
+}
+
 const LIVE_VEHICLE: Opts = { capabilities: ['position', 'state'], deviceKind: 'vehicle' };
 const ROAD = (cls: string): Opts => ({ theme: t('road', { class: cls }) });
 
-export const CITY_CLASSES: readonly CityClassDef[] = [
+export const CITY_CLASSES: readonly CityClassDef[] = withPoiBindings([
   // ── İdari sınırlar ve adres
   c('admin.province', 'İl', 'region', 'polygon', { theme: t('boundary', { level: 'province' }) }),
   c('admin.district', 'İlçe', 'district', 'polygon', {
@@ -328,6 +375,7 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
     theme: t('boundary', { level: 'village' }),
   }),
   c('admin.address', 'Adres (kapı numarası, UAVT)', 'building', 'point', { theme: t('address') }),
+  c('admin.public_office', 'Kamu kurumu (belediye, adliye, valilik)', 'building', 'point'),
 
   // ── Arazi, mülkiyet ve kamusal alan
   c('land.block', 'Ada (yapı adası)', 'block', 'polygon'),
@@ -1129,6 +1177,10 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
     theme: t('area', { kind: 'marketplace' }),
   }),
   c('commerce.bank_atm', 'Banka / ATM', 'building', 'point'),
+  c('commerce.food', 'Yeme-içme işletmesi (lokanta, kafe, bar, fırın)', 'building', 'point'),
+  c('commerce.hotel', 'Otel / konaklama', 'building', 'point'),
+  c('commerce.post_office', 'Postane', 'building', 'point'),
+  c('social.attraction', 'Gezilecek yer / seyir noktası', 'site', 'point'),
 
   // ── Kent donatısı (sokaktaki sabit kamu eşyası)
   c('furniture.street_lamp', 'Sokak lambası / aydınlatma direği', 'street', 'point', {
@@ -1249,7 +1301,7 @@ export const CITY_CLASSES: readonly CityClassDef[] = [
     capabilities: ['simulation', 'state'],
   }),
   c('hazard.evacuation_route', 'Tahliye güzergâhı', 'district', 'line'),
-];
+]);
 
 // ─── Lookups ────────────────────────────────────────────────────────────────
 
@@ -1271,6 +1323,11 @@ export function canContain(parentId: string, childId: string): boolean {
   return child.parents.some((p) => matchesClassPattern(p, parentId));
 }
 
+/** Every theme binding of a class (its own and `also`). */
+export function bindingsOf(d: CityClassDef): CityThemeBinding[] {
+  return [...(d.theme ? [d.theme] : []), ...(d.also ?? [])];
+}
+
 /** The class a canonical city record belongs to (most specific binding wins). */
 export function classOfRecord(
   theme: CityTheme,
@@ -1278,15 +1335,16 @@ export function classOfRecord(
 ): CityClassDef | undefined {
   let best: CityClassDef | undefined;
   let bestKeys = -1;
-  for (const d of CITY_CLASSES) {
-    if (d.theme?.theme !== theme) continue;
-    const want = d.theme.attrs ?? {};
-    const keys = Object.keys(want);
-    if (keys.every((k) => attrs[k] === want[k]) && keys.length > bestKeys) {
-      best = d;
-      bestKeys = keys.length;
+  for (const d of CITY_CLASSES)
+    for (const b of bindingsOf(d)) {
+      if (b.theme !== theme) continue;
+      const want = b.attrs ?? {};
+      const keys = Object.keys(want);
+      if (keys.every((k) => attrs[k] === want[k]) && keys.length > bestKeys) {
+        best = d;
+        bestKeys = keys.length;
+      }
     }
-  }
   return best;
 }
 

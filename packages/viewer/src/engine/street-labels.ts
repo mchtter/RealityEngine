@@ -105,6 +105,8 @@ export class StreetLabeller {
   private readonly basis = new THREE.Matrix4();
   /** Names shown in the last update. */
   shown = 0;
+  /** Screen boxes (px) the names took in the last placement. */
+  placed: [number, number, number, number][] = [];
   /** Camera and tiles of the last placement: unchanged, the names stay where they are. */
   private readonly lastView = new THREE.Matrix4();
   private lastTiles: unknown[] = [];
@@ -123,8 +125,8 @@ export class StreetLabeller {
     height: number,
     /** Place again even if nothing moved (measurement). */
     force = false,
-  ): void {
-    if (!this.on) return;
+  ): boolean {
+    if (!this.on) return false;
     const list = [...tiles];
     const size = `${width}x${height}`;
     if (
@@ -134,7 +136,7 @@ export class StreetLabeller {
       size === this.lastSize &&
       this.lastView.equals(camera.matrixWorld)
     )
-      return;
+      return false;
     this.lastView.copy(camera.matrixWorld);
     this.lastTiles = list;
     this.lastSize = size;
@@ -177,7 +179,7 @@ export class StreetLabeller {
       }
     }
     candidates.sort((x, y) => y.l.rank - x.l.rank || x.d - y.d);
-    const placed: [number, number, number, number][] = [];
+    const placed: [number, number, number, number][] = (this.placed = []);
     const named = new Map<string, [number, number][]>();
     this.shown = 0;
     for (const c of candidates) {
@@ -241,6 +243,7 @@ export class StreetLabeller {
       mesh.visible = true;
       this.shown++;
     }
+    return true;
   }
 
   private build(l: StreetLabel, group: THREE.Group): void {
@@ -249,15 +252,14 @@ export class StreetLabeller {
       // textLabel lies flat with its letters' tops to −z; the basis maps its x along the run.
       const geometry = text.geometry as THREE.PlaneGeometry;
       const material = text.material as THREE.MeshBasicNodeMaterial;
-      material.polygonOffset = true;
-      material.polygonOffsetFactor = -2;
-      material.polygonOffsetUnits = -4;
+      // Over everything (as on a map): a name stays readable behind a tree or a building.
+      material.depthTest = false;
       l.glyph.art = { geometry, material, aspect: geometry.parameters.width / 1.5 };
     }
     const mesh = new THREE.Mesh(l.glyph.art.geometry, l.glyph.art.material);
     mesh.matrixAutoUpdate = false;
     mesh.frustumCulled = false;
-    mesh.renderOrder = 20;
+    mesh.renderOrder = 900;
     mesh.visible = false;
     mesh.name = 'street-label';
     group.add(mesh);

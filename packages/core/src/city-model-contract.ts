@@ -19,6 +19,7 @@ export type CityTheme =
   | 'road'
   | 'area'
   | 'asset'
+  | 'poi'
   | 'crossing'
   | 'tree'
   | 'utility'
@@ -75,6 +76,7 @@ export type CityThemeGroup =
   | 'transport'
   | 'nature'
   | 'furniture'
+  | 'places'
   | 'utilities';
 
 export const CITY_THEME_GROUP_LABEL: Record<CityThemeGroup, string> = {
@@ -83,6 +85,7 @@ export const CITY_THEME_GROUP_LABEL: Record<CityThemeGroup, string> = {
   transport: 'Ulaşım',
   nature: 'Arazi, doğa ve açık alanlar',
   furniture: 'Kent donatısı',
+  places: 'İlgi noktaları',
   utilities: 'Altyapı ağları',
 };
 
@@ -1032,6 +1035,71 @@ export const ASSET_CONTRACT_V1: CityThemeContract = {
   example: { KIMLIK: 'L-7781', TUR: 'street_lamp' },
 };
 
+/**
+ * Point-of-interest kinds: the categories a map shows an icon for (the
+ * source's own tag is not kept; OSM `amenity` / `shop` / `tourism` values
+ * map onto these in the OSM package).
+ */
+export const POI_KINDS: Record<string, string> = {
+  restaurant: 'Lokanta / restoran',
+  fast_food: 'Hızlı yemek',
+  cafe: 'Kafe / pastane',
+  bar: 'Bar / birahane',
+  bakery: 'Fırın / pastane (dükkân)',
+  supermarket: 'Market / bakkal',
+  mall: 'Alışveriş merkezi / mağaza zinciri',
+  shop: 'Dükkân (diğer)',
+  pharmacy: 'Eczane',
+  hospital: 'Hastane',
+  clinic: 'Sağlık merkezi / muayenehane',
+  school: 'Okul',
+  university: 'Üniversite / yüksekokul',
+  kindergarten: 'Anaokulu / kreş',
+  library: 'Kütüphane',
+  place_of_worship: 'İbadethane',
+  museum: 'Müze',
+  culture: 'Tiyatro / sinema / kültür merkezi',
+  hotel: 'Otel / konaklama',
+  attraction: 'Gezilecek yer / seyir noktası',
+  bank: 'Banka',
+  atm: 'ATM',
+  post_office: 'Postane',
+  police: 'Emniyet / karakol',
+  fire_station: 'İtfaiye',
+  public_office: 'Kamu kurumu (belediye, adliye)',
+  bus_station: 'Otogar / otobüs terminali',
+  parking: 'Otopark',
+};
+
+export const POI_CONTRACT_V1: CityThemeContract = {
+  theme: 'poi',
+  version: '1',
+  group: 'places',
+  file: 'ilgi_noktasi',
+  label: 'İlgi noktası',
+  description:
+    'İşletme ve hizmet noktaları: yeme-içme, alışveriş, sağlık, eğitim, ibadet, kültür, konaklama, banka, kamu kurumları, otogar ve otoparklar.',
+  dtUse:
+    'Harita görünümünde konumunda türünün simgesi ve adı (çakışan simgeler önceliğe göre seyrelir).',
+  geometry: ['Point'],
+  attributes: [
+    {
+      key: 'kind',
+      type: 'enum',
+      label: 'Nokta türü',
+      column: 'TUR',
+      required: true,
+      values: Object.keys(POI_KINDS),
+      valueLabels: POI_KINDS,
+      dt: true,
+    },
+    { ...NAME, dt: true },
+    { ...BRAND, description: 'Zincir işletmelerde marka.' },
+  ],
+  rules: [...BASE_RULES('Nokta', 'Point'), enumKnown('kind.known', 'Nokta türü')],
+  example: { KIMLIK: 'P-1204', TUR: 'pharmacy', AD: 'Kızılay Eczanesi' },
+};
+
 export const UTILITY_CONTRACT_V1: CityThemeContract = {
   theme: 'utility',
   version: '1',
@@ -1220,6 +1288,7 @@ export const CITY_CONTRACTS: Partial<Record<CityTheme, CityThemeContract>> = {
   area: AREA_CONTRACT_V1,
   tree: TREE_CONTRACT_V1,
   asset: ASSET_CONTRACT_V1,
+  poi: POI_CONTRACT_V1,
   landform: LANDFORM_CONTRACT_V1,
   utility: UTILITY_CONTRACT_V1,
   utility_node: UTILITY_NODE_CONTRACT_V1,
@@ -1233,6 +1302,7 @@ export const CITY_DT_THEMES: readonly CityTheme[] = [
   'area',
   'tree',
   'asset',
+  'poi',
   'landform',
   'utility',
   'utility_node',
@@ -1254,6 +1324,7 @@ export const CITY_DELIVERY_SPEC: CityThemeContract[] = [
   AREA_CONTRACT_V1,
   TREE_CONTRACT_V1,
   ASSET_CONTRACT_V1,
+  POI_CONTRACT_V1,
   UTILITY_CONTRACT_V1,
   UTILITY_NODE_CONTRACT_V1,
 ];

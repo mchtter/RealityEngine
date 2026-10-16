@@ -456,7 +456,7 @@ export const RAIL_CLASS: Record<string, string> = {
   tram: 'tram',
 };
 
-export const OSM_THEMES = ['building', 'road', 'crossing', 'tree', 'area', 'asset'] as const;
+export const OSM_THEMES = ['building', 'road', 'crossing', 'tree', 'area', 'asset', 'poi'] as const;
 export type OsmTheme = (typeof OSM_THEMES)[number];
 
 /** The contract theme an OSM feature is carried in, or null (left out, not counted). */
@@ -484,9 +484,11 @@ export function osmTheme(t: Record<string, string>, g: Geometry): OsmTheme | nul
                 t.man_made === 'mast' ||
                 t.man_made === 'flagpole')
             ? 'asset'
-            : (g.type === 'Polygon' || g.type === 'MultiPolygon') && areaKind(t)
-              ? 'area'
-              : null;
+            : g.type === 'Point' && poiKind(t)
+              ? 'poi'
+              : (g.type === 'Polygon' || g.type === 'MultiPolygon') && areaKind(t)
+                ? 'area'
+                : null;
 }
 
 /**
@@ -534,6 +536,72 @@ export function buildingUse(t: Record<string, string>): string | undefined {
           : 'public'
       : undefined)
   );
+}
+
+const POI_AMENITY: Record<string, string> = {
+  restaurant: 'restaurant',
+  food_court: 'restaurant',
+  fast_food: 'fast_food',
+  cafe: 'cafe',
+  ice_cream: 'cafe',
+  bar: 'bar',
+  pub: 'bar',
+  biergarten: 'bar',
+  pharmacy: 'pharmacy',
+  hospital: 'hospital',
+  clinic: 'clinic',
+  doctors: 'clinic',
+  dentist: 'clinic',
+  school: 'school',
+  university: 'university',
+  college: 'university',
+  kindergarten: 'kindergarten',
+  childcare: 'kindergarten',
+  library: 'library',
+  place_of_worship: 'place_of_worship',
+  theatre: 'culture',
+  cinema: 'culture',
+  arts_centre: 'culture',
+  bank: 'bank',
+  atm: 'atm',
+  post_office: 'post_office',
+  police: 'police',
+  fire_station: 'fire_station',
+  townhall: 'public_office',
+  courthouse: 'public_office',
+  bus_station: 'bus_station',
+  parking: 'parking',
+};
+const POI_TOURISM: Record<string, string> = {
+  hotel: 'hotel',
+  hostel: 'hotel',
+  guest_house: 'hotel',
+  motel: 'hotel',
+  museum: 'museum',
+  gallery: 'museum',
+  attraction: 'attraction',
+  viewpoint: 'attraction',
+};
+const POI_SHOP: Record<string, string> = {
+  bakery: 'bakery',
+  pastry: 'bakery',
+  confectionery: 'bakery',
+  supermarket: 'supermarket',
+  convenience: 'supermarket',
+  greengrocer: 'supermarket',
+  mall: 'mall',
+  department_store: 'mall',
+};
+
+/**
+ * The point-of-interest kind (contract POI_KINDS) of an OSM point, or null:
+ * `amenity` / `tourism` values a map shows an icon for, and any `shop`
+ * (street furniture — bench, waste basket, fuel — is the asset theme's).
+ */
+export function poiKind(t: Record<string, string>): string | null {
+  const shop =
+    t.shop && t.shop !== 'no' && t.shop !== 'vacant' ? (POI_SHOP[t.shop] ?? 'shop') : null;
+  return POI_AMENITY[t.amenity ?? ''] ?? POI_TOURISM[t.tourism ?? ''] ?? shop;
 }
 
 /** A fuel station's brand: OSM `brand`, else its `operator` (many stations carry only one). */
@@ -698,6 +766,8 @@ export function osmRow(
       attrs: { kind, name: t.name, brand: fuelBrand(t), country: t.country },
     };
   }
+  if (theme === 'poi')
+    return { id, geometry: g, attrs: { kind: poiKind(t), name: t.name, brand: t.brand } };
   return { id, geometry: g, attrs: { kind: areaKind(t), name: t.name, brand: fuelBrand(t) } };
 }
 
@@ -813,7 +883,7 @@ export interface OsmLayersOptions {
   hooks?: OsmHooks;
 }
 
-/** Reads the OSM features and writes the six `*_osm` layers (after the city's hooks). */
+/** Reads the OSM features and writes the seven `*_osm` layers (after the city's hooks). */
 export async function osmLayers(writer: PackageWriter, opts: OsmLayersOptions): Promise<OsmRead> {
   const osm = await readOsm(opts.files, opts.inside);
   const { rows: out, dropped: drop, read } = osm;
@@ -830,5 +900,6 @@ export async function osmLayers(writer: PackageWriter, opts: OsmLayersOptions): 
   writer.writeLayer('tree', 'osm', out.tree, { source: src, read, dropped: drop.tree });
   writer.writeLayer('area', 'osm', out.area, { source: src, read, dropped: drop.area });
   writer.writeLayer('asset', 'osm', out.asset, { source: src, read, dropped: drop.asset });
+  writer.writeLayer('poi', 'osm', out.poi, { source: src, read, dropped: drop.poi });
   return osm;
 }
