@@ -2515,7 +2515,10 @@ export class DtEngine {
    * or the shown ground changes (a tile loaded, its detail switched).
    */
   private tickDrape(): void {
-    this.clipmap ??= new GroundClipmap(this.renderer, this.mats.ground);
+    if (!this.clipmap) {
+      this.clipmap = new GroundClipmap(this.renderer, this.mats.ground);
+      this.applyGroundPalette(this.clipmap);
+    }
     const meshes: THREE.Mesh[] = [];
     for (const tile of this.tiles.values())
       for (const m of tile.drapedGround()) {
@@ -2552,8 +2555,22 @@ export class DtEngine {
 
   /** The map look's style (D-013): label colours, ranks and distances; tiles stay as compiled. */
   setMapStyle(style: MapStyle): void {
+    this.mapStyle = style;
     this.streetLabeller.setStyle(style, this.tiles.values());
     this.poiLabeller.setStyle(style, this.tiles.values());
+    this.mats.mapBuildings.saturation.value = style.buildings.saturation;
+    this.mats.mapBuildings.lighten.value = style.buildings.lighten;
+    if (this.clipmap) this.applyGroundPalette(this.clipmap);
+  }
+
+  private mapStyle: MapStyle | null = null;
+
+  private applyGroundPalette(clipmap: GroundClipmap): void {
+    const g = this.mapStyle?.ground;
+    if (!g) return;
+    clipmap.palette.saturation.value = g.saturation;
+    clipmap.palette.gain.value = g.gain;
+    clipmap.palette.tint.value.set(g.tint);
   }
 
   /** Icons of the points of interest, as SVG markup by kind (POI_ICON_KINDS); the host draws them. */

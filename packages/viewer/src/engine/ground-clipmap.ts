@@ -2,6 +2,7 @@ import {
   attribute,
   clamp,
   float,
+  luminance,
   min,
   mix,
   positionWorld,
@@ -59,6 +60,12 @@ export class GroundClipmap {
    * its own colour on the kerb faces (vertical: the picture has none there).
    */
   readonly drapeSurface: THREE.MeshStandardNodeMaterial;
+  /** The map style's ground palette: saturation kept, brightness gain, tint. */
+  readonly palette = {
+    saturation: uniform(1),
+    gain: uniform(1),
+    tint: uniform(new THREE.Color(1, 1, 1)),
+  };
   /** The level the last redraw drew and how long it took (ms). */
   readonly stats = { levels: 0, ms: 0 };
 
@@ -79,7 +86,11 @@ export class GroundClipmap {
       this.targets.push(t);
     }
     this.camera.up.set(0, 0, -1);
-    const colour = this.clipColour();
+    const raw = this.clipColour();
+    const { saturation, gain, tint } = this.palette;
+    const colour = mix(vec3(luminance(raw)), raw, saturation)
+      .mul(gain)
+      .mul(tint);
     this.drape = new THREE.MeshStandardNodeMaterial({ roughness: 0.92, metalness: 0 });
     this.drape.colorNode = colour;
     const surf = attribute<'float'>('surf', 'float');

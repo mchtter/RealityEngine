@@ -14,6 +14,10 @@ export interface LabelRange {
 export interface MapStyle {
   id: string;
   label: string;
+  /** The ground picture (map look): colour saturation kept, brightness gain, tint (#rrggbb). */
+  ground: { saturation: number; gain: number; tint: string };
+  /** Plain buildings: saturation kept, lift towards white (0 – 1). */
+  buildings: { saturation: number; lighten: number };
   streets: {
     /** CSS font (size in px of the drawn text; shown at `letterPx`). */
     font: string;
@@ -54,6 +58,8 @@ const TRANSPORT = '#3a78b6';
 export const DEFAULT_MAP_STYLE: MapStyle = {
   id: 'day',
   label: 'Gündüz',
+  ground: { saturation: 1, gain: 1, tint: '#ffffff' },
+  buildings: { saturation: 1, lighten: 0 },
   streets: {
     font: '600 64px Inter, system-ui, sans-serif',
     color: '#30343b',
@@ -133,13 +139,26 @@ export const NIGHT_MAP_STYLE: MapStyle = {
   },
 };
 
+/**
+ * Light: a faded, near-monochrome base (as map products' light themes) for
+ * data drawn over it — pale ground, whitened buildings, the same labels.
+ */
+export const LIGHT_MAP_STYLE: MapStyle = {
+  ...DEFAULT_MAP_STYLE,
+  id: 'light',
+  label: 'Sade',
+  ground: { saturation: 0.3, gain: 1.12, tint: '#f6f4f0' },
+  buildings: { saturation: 0.2, lighten: 0.45 },
+};
+
 export const MAP_STYLES: Record<string, MapStyle> = {
   day: DEFAULT_MAP_STYLE,
   night: NIGHT_MAP_STYLE,
+  light: LIGHT_MAP_STYLE,
 };
 
 /** A style choice: `auto` follows the time of day (day 07:00–19:00, as the HUD's sun). */
-export type MapStyleChoice = 'auto' | 'day' | 'night';
+export type MapStyleChoice = 'auto' | 'day' | 'night' | 'light';
 
 export function mapStyleFor(choice: MapStyleChoice, hour: number): MapStyle {
   if (choice !== 'auto') return MAP_STYLES[choice];

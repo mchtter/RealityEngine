@@ -157,6 +157,11 @@ export interface DtMaterials {
    * relief; windows a soft tone, a thin line at each floor, shade at the foot.
    */
   wallPlain: THREE.MeshStandardNodeMaterial;
+  /** The map style's building palette (wallPlain / roofPlain): saturation kept, lift towards white. */
+  mapBuildings: {
+    saturation: THREE.UniformNode<'float', number>;
+    lighten: THREE.UniformNode<'float', number>;
+  };
   /** The map look's roofs: their colour, no tiles or grain. */
   roofPlain: THREE.MeshStandardNodeMaterial;
   trim: THREE.MeshStandardNodeMaterial;
@@ -512,6 +517,10 @@ export function createMaterials(): DtMaterials {
     wall.emissiveNode = windowLight(win, lightId).add(scenarioGlow().mul(oneMinus(win)));
   }
 
+  const mapBuildings = { saturation: uniform(1), lighten: uniform(0) };
+  /** A plain building colour in the map style's palette. */
+  const mapPalette = (c: ReturnType<typeof vec3>) =>
+    mix(mix(vec3(luminance(c)), c, mapBuildings.saturation), vec3(1), mapBuildings.lighten);
   const wallPlain = new THREE.MeshStandardNodeMaterial({ roughness: 0.88, metalness: 0 });
   {
     const v = uv().y;
@@ -536,7 +545,11 @@ export function createMaterials(): DtMaterials {
       .mul(float(1).sub(outline.mul(0.24)));
     // Windows: the façade's colour, darker and cooler (no glass, no frames).
     const pane = mix(vertexColor().rgb.mul(0.62), vec3(0.36, 0.42, 0.5), 0.55).mul(foot);
-    wallPlain.colorNode = mix(scenarioTint(facade), pane, win.mul(oneMinus(scenarioOn.mul(0.6))));
+    wallPlain.colorNode = mix(
+      scenarioTint(mapPalette(facade)),
+      mapPalette(pane),
+      win.mul(oneMinus(scenarioOn.mul(0.6))),
+    );
     wallPlain.roughnessNode = mix(float(0.88), float(0.4), win);
     wallPlain.emissiveNode = windowLight(win, lightId).add(scenarioGlow().mul(oneMinus(win)));
   }
@@ -654,7 +667,7 @@ export function createMaterials(): DtMaterials {
   );
   roofFlat.emissiveNode = scenarioGlow();
   const roofPlain = new THREE.MeshStandardNodeMaterial({ roughness: 0.9, metalness: 0 });
-  roofPlain.colorNode = scenarioTint(vertexColor().rgb);
+  roofPlain.colorNode = scenarioTint(mapPalette(vertexColor().rgb));
   roofPlain.emissiveNode = scenarioGlow();
 
   // ─── Balconies ────────────────────────────────────────────────────────────
@@ -1741,6 +1754,7 @@ export function createMaterials(): DtMaterials {
     skyTint,
     wall,
     wallPlain,
+    mapBuildings,
     roofPlain,
     trim,
     glass,
