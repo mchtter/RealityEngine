@@ -516,22 +516,28 @@ export function sharpenLandforms(
 /**
  * The terrain under and beside the street surface: every grid node next to a
  * street (any sample of the surface within one cell) sits `STREET_CONFORM`
- * below the street at its nearest sample — level with the asphalt's top
- * there. The compiler applies it once to a tile's terrain
- * (`CityModel.terrainConformed`): what is drawn and what everything stands on
- * (props, fences, the camera) are the same ground.
+ * below the top of the street at its nearest sample — the asphalt's top on a
+ * carriageway, the sidewalk's beside it. The compiler applies it once to a
+ * tile's terrain (`CityModel.terrainConformed`): what is drawn and what
+ * everything stands on (props, fences, the camera) are the same ground.
  *
  * It took the lowest sample around the node, 0.3 m lower still, while the
  * terrain was drawn under the street surfaces (a grid triangle spanning a road
  * and a higher median rose through the asphalt). The one ground layer draws
  * no terrain under a surface (D-004), and that lowering sank verges and
  * medians into pits beside sloping streets: 1.479 street edges with a step
- * over 0.5 m in 12 Kızılay tiles (2026-10-16, street.edge-step). The viewer
- * closes the step either way (kerb face down, retaining face up).
+ * over 0.5 m in 12 Kızılay tiles (2026-10-16, street.edge-step); the street's
+ * own level left 546, mostly behind sidewalks (0.24 m up). The viewer closes
+ * the step either way (kerb face down, retaining face up).
  */
 export const STREET_CONFORM = 0.1;
 
-export function conformTerrainToStreets(t: TerrainGrid, surface: RoadSurface): TerrainGrid {
+export function conformTerrainToStreets(
+  t: TerrainGrid,
+  surface: RoadSurface,
+  /** Height of the top above the street surface: on a carriageway, and beside it (sidewalk). */
+  top: { carriage: number; side: number },
+): TerrainGrid {
   // Surface sampled once on a half-cell grid (NaN off the streets), then the
   // nearest of the 5 × 5 samples around each node.
   const sc = (t.cols - 1) * 2 + 1;
@@ -541,9 +547,10 @@ export function conformTerrainToStreets(t: TerrainGrid, surface: RoadSurface): T
   let any = false;
   for (let j = 0; j < sr; j++) {
     for (let i = 0; i < sc; i++) {
-      const z = surface.heightAt(t.minX + i * half, t.minY + j * half);
-      samples[j * sc + i] = z ?? Number.NaN;
-      if (z !== null) any = true;
+      const s = surface.sample(t.minX + i * half, t.minY + j * half);
+      const on = s !== null && s.w >= 1;
+      samples[j * sc + i] = on ? s.z + (s.carriage ? top.carriage : top.side) : Number.NaN;
+      if (on) any = true;
     }
   }
   if (!any) return t;

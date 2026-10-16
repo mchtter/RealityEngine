@@ -941,7 +941,10 @@ export const LOW_DECK = 2;
  * viewer (which leaves the barrier out there) and the validator.
  */
 export function barrierStops(ground: GroundModel, deckZ: number, x: number, y: number): boolean {
-  return deckZ - ground.streetAt(x, y) < LOW_DECK && ground.supportAt(x, y) === 'asphalt';
+  if (deckZ - ground.streetAt(x, y) >= LOW_DECK) return false;
+  // On a ground road's carriageway, its asphalt drawn there or not (a deck's
+  // end ramp eases in over 90 m and meets the streets at its ends low).
+  return ground.supportAt(x, y) === 'asphalt' || ground.street.sample(x, y)?.carriage === true;
 }
 
 /**

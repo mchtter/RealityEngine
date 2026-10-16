@@ -510,7 +510,9 @@ export function buildGround(
   const streetAt = (x: number, y: number) => surface.heightAt(x, y) ?? terrainHeightAt(t, x, y);
   // Compiled since the compiler conforms the terrain itself (one ground for
   // drawing and placing); older tiles are conformed here.
-  const shown = model.terrainConformed ? t : conformTerrainToStreets(t, surface);
+  const shown = model.terrainConformed
+    ? t
+    : conformTerrainToStreets(t, surface, { carriage: LIFT.asphalt, side: LIFT.sidewalk });
   const trenches = model.terrainCut?.trenches ?? [];
   const lids = model.terrainCut?.lids ?? [];
   const holes = [...trenches, ...lids];

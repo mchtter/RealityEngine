@@ -1372,7 +1372,15 @@ describe('compileCity', () => {
     // At the joint of the two ways the deck stays up; it comes down only at the outer ends.
     expect(deckAt(0) - ground).toBeGreaterThan(5);
     expect(deckAt(-148) - ground).toBeLessThan(1);
-    expect(m.bridges.flatMap((b) => b.piers).length).toBeGreaterThanOrEqual(8);
+    // On piers: wherever the deck stands over 4 m up, a column within 20 m.
+    const piers = m.bridges.flatMap((b) => b.piers);
+    let high = 0;
+    for (let x = -140; x <= 140; x += 10) {
+      if (deckAt(x) - ground <= 4) continue;
+      high++;
+      expect(Math.min(...piers.map((p) => Math.hypot(p.at[0] - x, p.at[1])))).toBeLessThan(20);
+    }
+    expect(high).toBeGreaterThan(15);
     // The two ways form one continuous structure (no joint in the deck).
     expect(m.bridges).toHaveLength(1);
     // No lane markings painted on the ground under the deck.
@@ -1693,6 +1701,80 @@ describe('compileCity', () => {
       else expect(b.provenance.footprint).toBe('observed');
     }
     expect(m.buildings.find((b) => b.osmId === 100)!.provenance.levels).toBe('inferred');
+  });
+});
+
+describe('bridges', () => {
+  it('a short bridge down a slope is one vertical curve, not steps over the ground', () => {
+    const [west, south] = ll(-400, -400);
+    const [east, north] = ll(400, 400);
+    const road = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'road' as const,
+      geometry: { type: 'LineString' as const, coordinates: pts.map(([x, y]) => ll(x, y)) },
+      tags,
+    });
+    // Falling 8 % to the north; the bridge runs straight down it.
+    const m = compileCity(
+      {
+        ...gridSource(),
+        osm: [],
+        terrain: {
+          source: 'test',
+          west,
+          east,
+          north,
+          south,
+          cols: 9,
+          rows: 9,
+          heights: Array.from(
+            { length: 81 },
+            (_, k) => 200 - 0.08 * (400 - Math.floor(k / 9) * 100),
+          ),
+        },
+        features: [
+          road(
+            'osm:a',
+            [
+              [0, -200],
+              [0, -80],
+            ],
+            { highway: 'secondary' },
+          ),
+          road(
+            'osm:b',
+            [
+              [0, -80],
+              [0, 80],
+            ],
+            { highway: 'secondary', bridge: 'yes', layer: '1' },
+          ),
+          road(
+            'osm:c',
+            [
+              [0, 80],
+              [0, 200],
+            ],
+            { highway: 'secondary' },
+          ),
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    const deck = m.bridges.find((b) => b.roadId.includes('osm:b'))!;
+    const p = deck.path.slice(1, -1);
+    const grades: number[] = [];
+    for (let k = 1; k < p.length; k++) {
+      const run = Math.hypot(p[k][0] - p[k - 1][0], p[k][1] - p[k - 1][1]);
+      if (run > 0.5) grades.push((p[k][2] - p[k - 1][2]) / run);
+    }
+    // One vertical curve: the grade only ever falls (no flat, then steep, then flat).
+    for (let k = 1; k < grades.length; k++)
+      expect(grades[k]).toBeLessThanOrEqual(grades[k - 1] + 1e-6);
+    // Rising at most 6 % over the 8 % slope: ~14 % at the low end (5.5 m in 25 m: ~30 %).
+    expect(Math.max(...grades.map(Math.abs))).toBeLessThan(0.16);
   });
 });
 

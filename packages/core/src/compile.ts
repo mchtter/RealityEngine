@@ -123,7 +123,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '98';
+export const COMPILER_VERSION = '99';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -620,7 +620,10 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   // and fences on a verge stood on the terrain before that lowering, up to
   // 2 m above the drawn ground on sloping streets (2026-10-15). Over the
   // whole region, before the tile is cut out: neighbours agree on the seam.
-  const lowered = conformTerrainToStreets(terrain, streetSurface);
+  const lowered = conformTerrainToStreets(terrain, streetSurface, {
+    carriage: SURFACE_LIFT.asphalt,
+    side: SURFACE_LIFT.sidewalk,
+  });
   for (let i = 0; i < terrain.heights.length; i++) terrain.heights[i] = lowered.heights[i];
   // Trench wall tops from the street beside them; the ground there kept below.
   settleTrenchRims(cuttings, terrain, streetAt, SURFACE_LIFT.sidewalk);
@@ -1373,7 +1376,11 @@ function buildBridges(
         ? landAt(p)
         : terrainHeightAt(terrain, p[0], p[1]),
     );
-    // A short bridge spans straight between its ground ends. A long viaduct
+    // A short bridge spans straight between its ground ends, rising from each
+    // at most DECK_RISE above the ground's own grade to its clearance, as one
+    // vertical curve. Its clearance came within the 25 m ramps: down a
+    // hillside the deck went in steps, flat then steep, and dropped 19 % into
+    // its landing (Ankara 2026-10-16). A long viaduct
     // follows the ground (averaged over ±60 m) at clearance height: that depends
     // only on nearby terrain, so neighbouring tiles compute the same deck.
     const straight = !startInner && !endInner && total < 400;
@@ -1387,7 +1394,7 @@ function buildBridges(
       if (straight) {
         base = Math.max(
           za + (zb - za) * (total > 0 ? s / total : 0),
-          grounds[k] + clearance * ramp,
+          grounds[k] + Math.min(clearance, DECK_RISE * Math.min(fromStart, fromEnd)),
         );
       } else {
         let sum = 0;
@@ -1404,6 +1411,7 @@ function buildBridges(
       }
       return [p[0], p[1], base];
     });
+    if (straight) concaveMajorant(at, path);
     // Where the deck meets the ground road it runs on under the road surface,
     // so no seam opens between the two. Where it meets another deck it runs
     // 1 m into it: decks meeting end to end at an angle (a Y split) overlap
@@ -1436,12 +1444,47 @@ function buildBridges(
       edgeLines: chain.some((r) => ['motorway', 'trunk', 'primary'].includes(r.cls)),
       piers: [],
     };
-    return { bridge, pts, layer, chain, startInner, endInner };
+    // A short bridge's ends that land on a street (one ends there): their
+    // heights, kept for after the joint passes.
+    const n = path.length;
+    const lands = (p: Vec2) =>
+      roadIndex.nearest(
+        p,
+        2,
+        (r) =>
+          r.grade === 'ground' &&
+          [r.centerline[0], r.centerline[r.centerline.length - 1]].some((q) => dist(q, p) < 2),
+      ) !== null;
+    const landing =
+      straight && n >= 4
+        ? {
+            start: lands(pts[0]) ? [path[0][2], path[1][2]] : null,
+            end: lands(pts[pts.length - 1]) ? [path[n - 2][2], path[n - 1][2]] : null,
+          }
+        : null;
+    return { bridge, pts, layer, chain, startInner, endInner, straight, landing };
   });
   settleJoinedDecks(decks);
   matchDeckEnds(decks);
   spreadSplitDecks(decks);
   if (harmony) for (const d of decks) raiseOverEnvelope(d, harmony, roads, terrain);
+  // Raised over what it crosses, a short bridge is one vertical curve again
+  // (the raise left a hump with flats either side).
+  for (const d of decks) {
+    if (!d.landing || d.bridge.path.length < 4) continue;
+    // Its ends stay on the street they land on: joining a twin deck's end
+    // there (matchDeckEnds) lifted them up to 1.7 m over it.
+    const all = d.bridge.path;
+    const last = all.length - 1;
+    if (d.landing.start) [all[0][2], all[1][2]] = d.landing.start;
+    if (d.landing.end) [all[last - 1][2], all[last][2]] = d.landing.end;
+    // Not the two end points run on under the street (they sit 3 cm under its asphalt).
+    const p = all.slice(1, -1);
+    const at = [0];
+    for (let k = 1; k < p.length; k++)
+      at.push(at[k - 1] + Math.hypot(p[k][0] - p[k - 1][0], p[k][1] - p[k - 1][1]));
+    concaveMajorant(at, p);
+  }
   // Deck segments in a 20 m grid (a column checks only the decks around it).
   const deckSegs = new GridIndex<{ bridge: Bridge; a: Vec3; b: Vec3 }>(20);
   for (const { bridge } of decks) {
@@ -1467,6 +1510,38 @@ function buildBridges(
   };
   for (const { bridge, pts } of decks) bridge.piers = placePiers(bridge, pts, ctx);
   return decks.map((d) => d.bridge);
+}
+
+/** Steepest a short bridge's deck rises from a ground end, over the ground's own grade. */
+const DECK_RISE = 0.06;
+
+/**
+ * Raises a profile (heights `path[k][2]` at distances `at[k]`) to its least
+ * concave majorant: straight runs between the points it must clear, its grade
+ * only ever falling — a deck's vertical curve, no flats and steps.
+ */
+function concaveMajorant(at: number[], path: Vec3[]): void {
+  const hull: number[] = [];
+  for (let k = 0; k < path.length; k++) {
+    while (hull.length >= 2) {
+      const a = hull[hull.length - 2];
+      const b = hull[hull.length - 1];
+      // b lies on or under the chord a–k: not a vertex of the upper hull.
+      const cross =
+        (at[b] - at[a]) * (path[k][2] - path[a][2]) - (path[b][2] - path[a][2]) * (at[k] - at[a]);
+      if (cross >= 0) hull.pop();
+      else break;
+    }
+    hull.push(k);
+  }
+  for (let h = 1; h < hull.length; h++) {
+    const a = hull[h - 1];
+    const b = hull[h];
+    for (let k = a + 1; k < b; k++) {
+      const t = (at[k] - at[a]) / (at[b] - at[a] || 1);
+      path[k][2] = path[a][2] + (path[b][2] - path[a][2]) * t;
+    }
+  }
 }
 
 /** Steepest grade a deck may be raised with: a footbridge takes stairs, a road a ramp. */
