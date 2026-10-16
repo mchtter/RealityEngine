@@ -123,7 +123,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '101';
+export const COMPILER_VERSION = '102';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -463,8 +463,13 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       return { outer: [q(0, -w), q(0, w), q(len, w), q(len, -w)], holes: [] };
     });
   const markings = clipLines(buildMarkings(roads, junctions), inRegion);
-  const crossings = buildCrossings(roads, junctions, features.points).filter((c) =>
-    inRegion(c.center),
+  // No zebra in an underpass trench or on a tunnel mouth's lid (crossing.in-cut):
+  // there is no street to walk across there.
+  const crossings = buildCrossings(roads, junctions, features.points).filter(
+    (c) =>
+      inRegion(c.center) &&
+      !cutGround.inTrench(c.center[0], c.center[1]) &&
+      !cutGround.inLid(c.center[0], c.center[1]),
   );
   const roadIndex = new RoadIndex(roads);
   // Uyum motoru: rails and the network are fixed; everything after gives way

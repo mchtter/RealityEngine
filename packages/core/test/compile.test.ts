@@ -1234,10 +1234,20 @@ describe('compileCity', () => {
           ],
           { highway: 'secondary' },
         ),
+        // A zebra mapped on the ramp road, down in the trench: none is drawn there.
+        {
+          ref: 'osm:n-zebra',
+          source: 'osm',
+          priority: 0,
+          kind: 'point' as const,
+          geometry: { type: 'Point' as const, coordinates: ll(-60, 0) },
+          tags: { highway: 'crossing', crossing: 'zebra' },
+        },
       ],
     };
     const m = compileCity(src, { infill: false, decorate: false });
     expect(m.cuttings).toHaveLength(2);
+    expect(validateCity(m).counts['crossing.in-cut'] ?? 0).toBe(0);
     expect(m.portals).toHaveLength(2);
     // The terrain keeps street level; the trench is a footprint with a floor of its own.
     expect(terrainHeightAt(m.terrain, -42, 0)).toBeGreaterThan(49.5);
