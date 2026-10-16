@@ -1,4 +1,4 @@
-import { closestOnSegment } from './geo';
+import { closestOnSegment, pointInRing } from './geo';
 import type {
   Crossing,
   Junction,
@@ -265,9 +265,37 @@ const ARROW_LENGTH = 5;
  * of a lower class than another there; turn arrows on the lanes driving in
  * where there are two or more of them, or the source gives their turns.
  */
-export function junctionMarkings(junctions: Junction[], roads: Road[]): Marking[] {
+export function junctionMarkings(
+  junctions: Junction[],
+  roads: Road[],
+  crossings: Crossing[] = [],
+): Marking[] {
   const byId = new Map(roads.map((r) => [r.id, r]));
   const out: Marking[] = [];
+  // Paint stays out of every junction area (a short street between two
+  // junctions has no room for its arrows) and off the crossings.
+  const areas = junctions.filter((j) => j.polygon && j.polygon.outer.length >= 3);
+  const inJunction = (p: Vec2) => areas.some((j) => pointInRing(p, j.polygon!.outer));
+  const onCrossing = (p: Vec2) =>
+    crossings.some((c) => {
+      const dx = p[0] - c.center[0];
+      const dy = p[1] - c.center[1];
+      return (
+        Math.abs(dx * c.dir[0] + dy * c.dir[1]) < CROSSING_WIDTH / 2 + 0.25 &&
+        Math.abs(-dx * c.dir[1] + dy * c.dir[0]) < c.length / 2
+      );
+    });
+  const mid = (pts: Vec2[]): Vec2 => [
+    (pts[0][0] + pts[pts.length - 1][0]) / 2,
+    (pts[0][1] + pts[pts.length - 1][1]) / 2,
+  ];
+  const push = (m: Marking) => {
+    const at = mid(m.points);
+    if (inJunction(at) || inJunction(m.points[0]) || inJunction(m.points[m.points.length - 1]))
+      return;
+    if (m.kind !== 'arrow' && onCrossing(at)) return;
+    out.push(m);
+  };
   for (const j of junctions) {
     const arms = (j.arms ?? []).filter((a) => byId.get(a.roadId)?.grade === 'ground');
     const top = Math.max(...arms.map((a) => RANK[byId.get(a.roadId)!.cls] ?? 0));
@@ -285,8 +313,8 @@ export function junctionMarkings(junctions: Junction[], roads: Road[]): Marking[
       const hi = Math.max(...lanes.map((l) => l.offset + l.width / 2)) - 0.2;
       const lo = Math.min(...lanes.map((l) => l.offset - l.width / 2)) + 0.2;
       const minor = (RANK[road.cls] ?? 0) < top;
-      if (j.signalised) out.push({ kind: 'stop', points: [across(hi), across(lo)] });
-      else if (minor) out.push({ kind: 'give-way', points: [across(hi), across(lo)] });
+      if (j.signalised) push({ kind: 'stop', points: [across(hi), across(lo)] });
+      else if (minor) push({ kind: 'give-way', points: [across(hi), across(lo)] });
       if (!arm.turns || (lanes.length < 2 && arm.turnsProvenance !== 'observed')) continue;
       if (length < arm.stop + ARROW_BACK + ARROW_LENGTH + 2) continue;
       const head = armPoint(road, arm, arm.stop + ARROW_BACK);
@@ -294,7 +322,7 @@ export function junctionMarkings(junctions: Junction[], roads: Road[]): Marking[
       lanes.forEach((lane, k) => {
         const turns = arm.turns![k];
         if (!turns?.length) return;
-        out.push({
+        push({
           kind: 'arrow',
           points: [across(lane.offset, tail), across(lane.offset, head)],
           turns,

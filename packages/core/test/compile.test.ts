@@ -1845,6 +1845,9 @@ describe('junctions', () => {
     expect(crossings).toHaveLength(4);
     // Two-lane approaches get an arrow per lane.
     expect(m.markings.filter((mk) => mk.kind === 'arrow')).toHaveLength(8);
+    const rules = validateCity(m).counts;
+    expect(rules['junction.paint-inside'] ?? 0).toBe(0);
+    expect(rules['junction.stop-on-crossing'] ?? 0).toBe(0);
     // No lane line reaches in past a stop line.
     const minStop = Math.min(...j.arms!.map((a) => a.stop!));
     for (const mk of m.markings)

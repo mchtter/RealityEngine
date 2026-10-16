@@ -124,7 +124,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '105';
+export const COMPILER_VERSION = '106';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -478,7 +478,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   // lines and turn arrows at the junctions (D-012).
   setStops(junctions, roads, crossings);
   const markings = clipLines(
-    [...buildMarkings(roads, junctions), ...junctionMarkings(junctions, roads)],
+    [...buildMarkings(roads, junctions), ...junctionMarkings(junctions, roads, crossings)],
     inRegion,
   );
   const roadIndex = new RoadIndex(roads);

@@ -84,6 +84,9 @@ export const RULES = {
   'fence.float': 'Bahçe duvarı / çit tabanı ile zemin arasında boşluk (> 3 cm, havada)',
   'building.float': 'Bina duvarının dibi ile zemin arasında boşluk (> 3 cm, havada)',
   'terrain.spike': 'Arazide tek düğümlük sivri tepe / çukur (dört komşusundan > 1,5 m)',
+  'junction.paint-inside':
+    'Durma / yol ver çizgisi ya da dönüş oku kavşak alanının içinde (kolda olmalı)',
+  'junction.stop-on-crossing': 'Durma / yol ver çizgisi yaya geçidinin üstünde',
   'bridge.ground-through': 'Zemin köprü tabliyesinin içinden çıkıyor (tabliye üstünden yüksek)',
   'street.edge-step':
     'Sokak kenarında bordürden yüksek basamak (> 0,5 m): yandaki zemin çukurda ya da sokağın üstünde',
@@ -437,6 +440,7 @@ export function validateCity(model: CityModel): ValidationReport {
   }
 
   groundContactRules(model, ground, add);
+  junctionPaintRules(model, add);
 
   return { counts, samples, ms: Date.now() - started };
 }
@@ -1034,6 +1038,40 @@ function groundThroughDeck(
       at,
       `${kind} ${worst.toFixed(2)} m, ucundan ${where.toFixed(0)} m`,
     );
+}
+
+/**
+ * Junction paint (D-012): stop / give-way lines and arrows lie on the arms,
+ * not in the junction area; a stop / give-way line is not on a crossing.
+ */
+function junctionPaintRules(
+  model: CityModel,
+  add: (rule: RuleId, at: Vec2, note?: string) => void,
+): void {
+  const areas = model.junctions.filter((j) => j.polygon && j.polygon.outer.length >= 3);
+  const paint = model.markings.filter(
+    (m) => m.kind === 'stop' || m.kind === 'give-way' || m.kind === 'arrow',
+  );
+  for (const m of paint) {
+    const mid: Vec2 = [
+      (m.points[0][0] + m.points[m.points.length - 1][0]) / 2,
+      (m.points[0][1] + m.points[m.points.length - 1][1]) / 2,
+    ];
+    if (areas.some((j) => pointInRing(mid, j.polygon!.outer)))
+      add('junction.paint-inside', mid, m.kind);
+    if (m.kind === 'arrow') continue;
+    for (const c of model.crossings) {
+      // The zebra: along the road ±1.5 m, across it ±length / 2.
+      const dx = mid[0] - c.center[0];
+      const dy = mid[1] - c.center[1];
+      const along = Math.abs(dx * c.dir[0] + dy * c.dir[1]);
+      const across = Math.abs(-dx * c.dir[1] + dy * c.dir[0]);
+      if (along < 1.5 + 0.25 && across < c.length / 2) {
+        add('junction.stop-on-crossing', mid, m.kind);
+        break;
+      }
+    }
+  }
 }
 
 /** Street land a deck end may meet: the street surfaces and footpaths. */
