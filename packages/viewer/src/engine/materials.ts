@@ -522,9 +522,18 @@ export function createMaterials(): DtMaterials {
       .mul(step(v, fl.z));
     // Ambient occlusion at the foot: the façade darkens towards the street.
     const foot = mix(float(0.8), float(1), smoothstep(0, 5, v.sub(fl.x.sub(3.6))));
+    // Outline (about 1.5 px): the façade's corners (far walls know their edge's
+    // length) and the top of the wall, so blocks read apart as on a map.
+    const u = uv().x;
+    const edgeLen = attribute<'float'>('edgeLen', 'float');
+    const corner = min(u, edgeLen.sub(u));
+    const cornerLine = oneMinus(smoothstep(0, fwidth(u).mul(1.5), corner)).mul(step(0.01, edgeLen));
+    const topLine = oneMinus(smoothstep(0, fwidth(v).mul(1.5), fl.z.add(0.3).sub(v)));
+    const outline = max(cornerLine, topLine);
     const facade = vertexColor()
       .rgb.mul(float(1).sub(slab.mul(0.1)))
-      .mul(foot);
+      .mul(foot)
+      .mul(float(1).sub(outline.mul(0.24)));
     // Windows: the façade's colour, darker and cooler (no glass, no frames).
     const pane = mix(vertexColor().rgb.mul(0.62), vec3(0.36, 0.42, 0.5), 0.55).mul(foot);
     wallPlain.colorNode = mix(scenarioTint(facade), pane, win.mul(oneMinus(scenarioOn.mul(0.6))));

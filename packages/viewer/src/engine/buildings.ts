@@ -1004,10 +1004,14 @@ export function buildBuildingLayer(
   // floorInfo = (top of ground floor, floor height, top of the last window row).
   walls.defineAttribute('bay', 3);
   walls.defineAttribute('floorInfo', 3);
+  // Length of the façade edge a far quad lies on (its corners for the map look's
+  // outline); 0 on bay walls and gables (copied into the far walls).
+  walls.defineAttribute('edgeLen', 1);
   // Far walls: bay = (−window period, window width, window height) repeats the window.
   const farWalls = new MeshBuilder();
   farWalls.defineAttribute('bay', 3);
   farWalls.defineAttribute('floorInfo', 3);
+  farWalls.defineAttribute('edgeLen', 1);
   const trims = new MeshBuilder();
   const tiles = new MeshBuilder();
   const flats = new MeshBuilder();
@@ -1276,6 +1280,7 @@ export function buildBuildingLayer(
       if (z1 - z0 < 0.01) return;
       const p0 = along(e, u0, 0);
       const p1 = along(e, u1, 0);
+      farWalls.setAttribute('edgeLen', [e.len]);
       farWalls.quad(
         [
           [p0[0], p0[1], z0],
