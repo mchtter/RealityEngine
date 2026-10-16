@@ -2542,6 +2542,15 @@ export class DtEngine {
     this.drapedKey = '';
   }
 
+  /**
+   * The ground drawn as one picture (the clipmap; F3, D-011) — no paint or
+   * surface laid over another to z-fight up close. The UI's "map mode". Off:
+   * the layered ground.
+   */
+  setDrape(on: boolean): void {
+    this.debugSet({ drape: on });
+  }
+
   /** Development aid: toggle post-processing / shadows to isolate frame cost. */
   debugSet(flags: Partial<{ post: boolean; shadows: boolean; ao: boolean; drape: boolean }>): void {
     const wasDrape = this.debugFlags.drape;
