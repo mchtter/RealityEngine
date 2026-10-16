@@ -369,6 +369,51 @@ function densify(pts: [number, number][], step: number): [number, number][] {
   return out;
 }
 
+/**
+ * A turn arrow painted on a lane, tail → head along the lane: a shaft, an
+ * arrowhead ahead for `through`, a branch and a head to the side for
+ * left / right (slight / sharp alike).
+ */
+function turnArrow(
+  mb: MeshBuilder,
+  heightAt: (x: number, y: number) => number,
+  tail: [number, number],
+  head: [number, number],
+  turns: string[],
+  lift: number,
+): void {
+  const len = Math.hypot(head[0] - tail[0], head[1] - tail[1]);
+  if (len < 1) return;
+  const u: [number, number] = [(head[0] - tail[0]) / len, (head[1] - tail[1]) / len];
+  const n: [number, number] = [-u[1], u[0]];
+  const at = (s: number, o = 0): [number, number] => [
+    tail[0] + u[0] * s + n[0] * o,
+    tail[1] + u[1] * s + n[1] * o,
+  ];
+  const tri = (a: [number, number], b: [number, number], c: [number, number]) => {
+    const cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    const [p, q] = cross > 0 ? [b, c] : [c, b];
+    const v = [a, p, q].map((w) =>
+      mb.vertex(toThree(w[0], w[1], heightAt(w[0], w[1]) + lift), [0, 1, 0]),
+    );
+    mb.triangle(v[0], v[1], v[2]);
+  };
+  const ahead = turns.includes('through');
+  const sides = [
+    ...(turns.some((t) => t.endsWith('left')) ? [1] : []),
+    ...(turns.some((t) => t.endsWith('right')) ? [-1] : []),
+  ];
+  const branch = len * 0.55;
+  ribbon(mb, heightAt, [tail, at(ahead ? len - 1.2 : branch)], 0.18, lift);
+  if (ahead) tri(at(len), at(len - 1.2, 0.35), at(len - 1.2, -0.35));
+  for (const side of sides) {
+    const c = at(branch + 0.5, side * 0.6);
+    ribbon(mb, heightAt, [at(branch), c], 0.18, lift);
+    const tip: [number, number] = [c[0] + n[0] * side * 0.8, c[1] + n[1] * side * 0.8];
+    tri(tip, [c[0] + u[0] * 0.35, c[1] + u[1] * 0.35], [c[0] - u[0] * 0.35, c[1] - u[1] * 0.35]);
+  }
+}
+
 function ribbon(
   mb: MeshBuilder,
   heightAt: (x: number, y: number) => number,
@@ -816,6 +861,12 @@ export function buildGround(
             ribbon(marks, groundAt, pts, 1.8, MARKING_LIFT);
           } else if (m.kind === 'center-dashed' || m.kind === 'lane-dashed') {
             for (const d of dashes(pts, 3, 5)) ribbon(marks, groundAt, d, 0.13, MARKING_LIFT);
+          } else if (m.kind === 'stop') {
+            ribbon(marks, groundAt, pts, 0.5, MARKING_LIFT);
+          } else if (m.kind === 'give-way') {
+            for (const d of dashes(pts, 0.6, 0.4)) ribbon(marks, groundAt, d, 0.4, MARKING_LIFT);
+          } else if (m.kind === 'arrow') {
+            turnArrow(marks, groundAt, pts[0], pts[pts.length - 1], m.turns ?? [], MARKING_LIFT);
           } else {
             ribbon(marks, groundAt, pts, m.kind === 'edge' ? 0.15 : 0.13, MARKING_LIFT);
           }

@@ -1799,6 +1799,87 @@ describe('junctions', () => {
     expect(arm.turnsProvenance).toBe('observed');
   });
 
+  it('paints stop lines at a signalised crossroads, behind its crossings, with lane lines ending there', () => {
+    const m = compileCity(
+      {
+        ...gridSource(),
+        osm: [],
+        features: [
+          road(
+            'osm:ew',
+            [
+              [-150, 0],
+              [0, 0],
+              [150, 0],
+            ],
+            { highway: 'secondary', lanes: '4' },
+          ),
+          road(
+            'osm:ns',
+            [
+              [0, -150],
+              [0, 0],
+              [0, 150],
+            ],
+            { highway: 'secondary', lanes: '4' },
+          ),
+          {
+            ref: 'osm:n-signals',
+            source: 'osm',
+            priority: 0,
+            kind: 'point' as const,
+            geometry: { type: 'Point' as const, coordinates: ll(5, 5) },
+            tags: { highway: 'traffic_signals' },
+          },
+        ],
+      },
+      { infill: false, decorate: false },
+    );
+    const j = m.junctions.find((x) => Math.hypot(x.center[0], x.center[1]) < 0.1)!;
+    expect(j.signalised).toBe(true);
+    const stops = m.markings.filter((mk) => mk.kind === 'stop');
+    expect(stops).toHaveLength(4);
+    // Each behind its arm's crossing (crossing 3 m wide just outside the junction).
+    for (const arm of j.arms!) expect(arm.stop!).toBeGreaterThan(arm.edge + 3);
+    const crossings = m.crossings.filter((c) => Math.hypot(c.center[0], c.center[1]) < 30);
+    expect(crossings).toHaveLength(4);
+    // Two-lane approaches get an arrow per lane.
+    expect(m.markings.filter((mk) => mk.kind === 'arrow')).toHaveLength(8);
+    // No lane line reaches in past a stop line.
+    const minStop = Math.min(...j.arms!.map((a) => a.stop!));
+    for (const mk of m.markings)
+      if (mk.kind === 'lane-dashed' || mk.kind === 'center-solid')
+        for (const [x, y] of mk.points)
+          expect(Math.max(Math.abs(x), Math.abs(y))).toBeGreaterThan(minStop - 0.5);
+  });
+
+  it('paints a give-way line where a lower road meets a higher one', () => {
+    const m = compile([
+      road(
+        'osm:main',
+        [
+          [-150, 0],
+          [0, 0],
+          [150, 0],
+        ],
+        { highway: 'secondary' },
+      ),
+      road(
+        'osm:side',
+        [
+          [0, 0],
+          [0, 150],
+        ],
+        { highway: 'residential' },
+      ),
+    ]);
+    const gw = m.markings.filter((mk) => mk.kind === 'give-way');
+    expect(gw).toHaveLength(1);
+    // Across the side road's lane driving in (its west half), north of the main road.
+    for (const [, y] of gw[0].points) expect(y).toBeGreaterThan(3);
+    expect(m.markings.filter((mk) => mk.kind === 'stop')).toHaveLength(0);
+  });
+
   it('gives the side road of a T junction left and right turns only', () => {
     const m = compile([
       road(

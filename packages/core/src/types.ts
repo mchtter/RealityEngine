@@ -201,7 +201,12 @@ export type MarkingKind =
   | 'center-solid'
   | 'lane-dashed'
   | 'edge'
+  /** Stop line across the lanes driving into a signalised junction. */
   | 'stop'
+  /** Give-way line (dashed) across a minor road's lanes into a junction. */
+  | 'give-way'
+  /** Turn arrow on a lane: `points` tail → head, `turns` the allowed turns. */
+  | 'arrow'
   /** Parking stall lines. */
   | 'stall'
   /** Walking / cycle path: white edge lines, dashed centre (on the path surface). */
@@ -228,6 +233,8 @@ export interface Marking {
   points: Vec2[];
   /** Paint width (m) where the kind has none of its own (airfield paint). */
   width?: number;
+  /** Turns an `arrow` shows. */
+  turns?: LaneTurn[];
 }
 
 /**
@@ -306,12 +313,20 @@ export interface JunctionArm {
   /** Distance (m) out from the centre where the junction area ends on this arm. */
   edge: number;
   /**
+   * No edge within reach: the road joins another at a shallow angle and runs
+   * inside its carriageway (a slip road merging) — no crossing, stop line or
+   * arrows on it.
+   */
+  merging?: true;
+  /**
    * Turns of the lanes driving into the junction on this arm, from the centre
    * line outwards: the road's own (`turn:lanes`) where it ends here, else by
    * rule (inferTurns).
    */
   turns?: LaneTurn[][];
   turnsProvenance?: Provenance;
+  /** Distance (m) out from the centre where traffic driving in stops (before the crossing). */
+  stop?: number;
 }
 
 export type SurfaceKind =

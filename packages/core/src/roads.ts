@@ -1,4 +1,15 @@
-import { add, closestOnSegment, dist, normalize, perp, polylineLength, scale, sub } from './geo';
+import {
+  add,
+  closestOnSegment,
+  dist,
+  normalize,
+  perp,
+  pointInRing,
+  polylineLength,
+  scale,
+  sub,
+} from './geo';
+import { CROSSING_GAP, CROSSING_WIDTH, armLength, armPoint } from './junctions';
 import { laneLayout } from './lanes';
 import { ENTITY_TAG, type SourcePoint, type SourceRoad } from './osm';
 import {
@@ -550,11 +561,17 @@ function runsOutside(
   points: Vec2[],
   junctions: Junction[],
   covered: (p: Vec2) => boolean = () => false,
+  /** Junction areas out to their stop lines, where known (else the circle). */
+  areas?: Map<Junction, Vec2[]>,
 ): Vec2[][] {
   const runs: Vec2[][] = [];
   let current: Vec2[] = [];
   for (const p of points) {
-    const inside = junctions.some((j) => dist(p, j.center) < j.radius) || covered(p);
+    const inside =
+      junctions.some((j) => {
+        const area = areas?.get(j);
+        return area ? pointInRing(p, area) : dist(p, j.center) < j.radius;
+      }) || covered(p);
     if (inside) {
       if (current.length >= 2) runs.push(current);
       current = [];
@@ -572,6 +589,29 @@ const roadPriority = (a: Road, b: Road) =>
 
 export function buildMarkings(roads: Road[], junctions: Junction[]): Marking[] {
   const out: Marking[] = [];
+  // Each junction out to where traffic stops on its arms: lane lines end there.
+  const byId = new Map(roads.map((r) => [r.id, r]));
+  const areas = new Map<Junction, Vec2[]>();
+  for (const j of junctions) {
+    if (!j.arms?.length || j.arms.some((a) => a.stop === undefined)) continue;
+    const ring: Vec2[] = [];
+    for (const arm of j.arms) {
+      const road = byId.get(arm.roadId);
+      if (!road) continue;
+      const at = armPoint(road, arm, arm.stop!);
+      const half = road.width / 2;
+      ring.push(
+        [at.p[0] + at.left[0] * half, at.p[1] + at.left[1] * half],
+        [at.p[0] - at.left[0] * half, at.p[1] - at.left[1] * half],
+      );
+    }
+    ring.sort(
+      (a, b) =>
+        Math.atan2(a[1] - j.center[1], a[0] - j.center[0]) -
+        Math.atan2(b[1] - j.center[1], b[0] - j.center[0]),
+    );
+    if (ring.length >= 3) areas.set(j, ring);
+  }
   // Where two roads merge or run into each other at a shallow angle (beyond
   // the junction circle) their carriageways overlap: the road that owns the
   // surface keeps its lane lines, the other one's stop there; edge lines stop
@@ -597,10 +637,23 @@ export function buildMarkings(roads: Road[], junctions: Junction[]): Marking[] {
         r !== road && (edge || roadPriority(r, road) < 0) ? r.width / 2 - 0.2 : 0,
       ) !== null;
     const add = (kind: Marking['kind'], d: number) => {
-      for (const run of runsOutside(offsetPolyline(line, d), near, inside(kind === 'edge')))
+      for (const run of runsOutside(offsetPolyline(line, d), near, inside(kind === 'edge'), areas))
         out.push({ kind, points: run });
     };
-    if (road.oneway) {
+    const lanes = road.laneLayout;
+    if (lanes && lanes.length === road.lanes) {
+      // Between lanes (D-012): the centre line where the directions meet
+      // (double solid on a road of four or more lanes), dashed between lanes
+      // of one direction.
+      for (let k = 1; k < lanes.length; k++) {
+        const d = lanes[k - 1].offset - lanes[k - 1].width / 2;
+        if (lanes[k - 1].forward === lanes[k].forward) add('lane-dashed', d);
+        else if (road.lanes >= 4) {
+          add('center-solid', d + 0.12);
+          add('center-solid', d - 0.12);
+        } else add('center-dashed', d);
+      }
+    } else if (road.oneway) {
       for (let k = 1; k < road.lanes; k++) add('lane-dashed', -road.width / 2 + k * laneW);
     } else {
       const perSide = Math.floor(road.lanes / 2);
@@ -760,6 +813,25 @@ export function buildCrossings(
     const armRoads = vehicular.filter((r) => j.roadIds.includes(r.id));
     if (!armRoads.some((r) => major.includes(r.cls))) continue;
     const provenance: Provenance = j.signalised ? 'inferred' : 'synthetic';
+    // On each arm just outside where the junction ends (D-012).
+    if (j.arms) {
+      for (const arm of j.arms) {
+        const road = armRoads.find((r) => r.id === arm.roadId);
+        if (!road || arm.merging) continue;
+        const s = arm.edge + CROSSING_GAP + CROSSING_WIDTH / 2;
+        if (armLength(road, arm) < s + 2) continue;
+        const hit = armPoint(road, arm, s);
+        if (out.some((c) => dist(c.center, hit.p) < 12)) continue;
+        out.push({
+          id: `x${j.id}-${road.id}-${arm.at}${arm.outward ? '+' : '-'}`,
+          center: hit.p,
+          dir: hit.out,
+          length: road.width,
+          provenance,
+        });
+      }
+      continue;
+    }
     for (const road of armRoads) {
       const line = road.centerline;
       const total = polylineLength(line);

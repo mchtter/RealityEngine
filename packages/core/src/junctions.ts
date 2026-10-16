@@ -1,5 +1,14 @@
 import { closestOnSegment } from './geo';
-import type { Junction, JunctionArm, LaneTurn, Polygon, Road, Vec2 } from './types';
+import type {
+  Crossing,
+  Junction,
+  JunctionArm,
+  LaneTurn,
+  Marking,
+  Polygon,
+  Road,
+  Vec2,
+} from './types';
 
 /** How far out (m) an arm is followed to find where the junction ends. */
 const ARM_REACH = 40;
@@ -72,6 +81,7 @@ export function layoutJunctions(junctions: Junction[], roads: Road[]): void {
           (o, n) => n === i || distToLine(q, o.line.slice(0, 12)) >= o.road.width / 2 + CLEAR,
         );
       let edge = ARM_REACH;
+      let found = false;
       let at = along(arm.line, edge);
       for (let s = STEP; s <= ARM_REACH; s += STEP) {
         const here = along(arm.line, s);
@@ -81,6 +91,7 @@ export function layoutJunctions(junctions: Junction[], roads: Road[]): void {
         if (clear(l) && clear(r)) {
           edge = s;
           at = here;
+          found = true;
           break;
         }
       }
@@ -95,6 +106,7 @@ export function layoutJunctions(junctions: Junction[], roads: Road[]): void {
         outward: arm.outward,
         dir: along(arm.line, 0).t,
         edge,
+        ...(found ? {} : { merging: true as const }),
       });
     }
     corners.sort(
@@ -170,4 +182,125 @@ export function inferTurns(junctions: Junction[], roads: Road[]): void {
       arm.turnsProvenance = 'inferred';
     }
   }
+}
+
+/** Point on an arm `s` metres out from the junction centre, with the road's left normal there. */
+export function armPoint(
+  road: Road,
+  arm: JunctionArm,
+  s: number,
+): { p: Vec2; out: Vec2; left: Vec2 } {
+  const { p, t } = along(armLine(road, arm.at, arm.outward), s);
+  // The road's drawing direction runs out along the arm when it is drawn away from the junction.
+  const draw: Vec2 = arm.outward ? t : [-t[0], -t[1]];
+  return { p, out: t, left: [-draw[1], draw[0]] };
+}
+
+/** Length (m) of an arm's road from the junction outwards. */
+export function armLength(road: Road, arm: JunctionArm): number {
+  const line = armLine(road, arm.at, arm.outward);
+  let l = 0;
+  for (let k = 1; k < line.length; k++)
+    l += Math.hypot(line[k][0] - line[k - 1][0], line[k][1] - line[k - 1][1]);
+  return l;
+}
+
+/** Gap (m) between the junction edge and a crossing's near side; stop line 1 m behind its far side. */
+export const CROSSING_GAP = 0.5;
+export const CROSSING_WIDTH = 3;
+const STOP_BEHIND = 1;
+
+/**
+ * Where traffic driving in on each arm stops (`arm.stop`): 1 m behind a
+ * crossing on the arm next to the junction, else just outside its edge.
+ */
+export function setStops(junctions: Junction[], roads: Road[], crossings: Crossing[]): void {
+  const byId = new Map(roads.map((r) => [r.id, r]));
+  for (const j of junctions)
+    for (const arm of j.arms ?? []) {
+      if (arm.merging) continue;
+      const road = byId.get(arm.roadId);
+      let stop = arm.edge + CROSSING_GAP;
+      if (road) {
+        const line = armLine(road, arm.at, arm.outward).slice(0, 12);
+        for (const c of crossings) {
+          let walked = 0;
+          for (let k = 1; k < line.length; k++) {
+            const hit = closestOnSegment(c.center, line[k - 1], line[k]);
+            const seg = Math.hypot(line[k][0] - line[k - 1][0], line[k][1] - line[k - 1][1]);
+            if (hit.d < 1) {
+              const at = walked + seg * hit.t;
+              if (at > arm.edge - 1 && at < arm.edge + 10)
+                stop = Math.max(stop, at + CROSSING_WIDTH / 2 + STOP_BEHIND);
+              break;
+            }
+            walked += seg;
+          }
+        }
+      }
+      arm.stop = stop;
+    }
+}
+
+const RANK: Record<string, number> = {
+  motorway: 7,
+  trunk: 6,
+  primary: 5,
+  secondary: 4,
+  tertiary: 3,
+  unclassified: 2,
+  residential: 2,
+  living_street: 1,
+  service: 0,
+  track: 0,
+};
+
+/** Arrows sit this far (m) behind the stop line, this long. */
+const ARROW_BACK = 2;
+const ARROW_LENGTH = 5;
+
+/**
+ * Paint at each junction from the lane model (D-012): a stop line across the
+ * lanes driving in where the junction has signals, a give-way line on an arm
+ * of a lower class than another there; turn arrows on the lanes driving in
+ * where there are two or more of them, or the source gives their turns.
+ */
+export function junctionMarkings(junctions: Junction[], roads: Road[]): Marking[] {
+  const byId = new Map(roads.map((r) => [r.id, r]));
+  const out: Marking[] = [];
+  for (const j of junctions) {
+    const arms = (j.arms ?? []).filter((a) => byId.get(a.roadId)?.grade === 'ground');
+    const top = Math.max(...arms.map((a) => RANK[byId.get(a.roadId)!.cls] ?? 0));
+    for (const arm of arms) {
+      const road = byId.get(arm.roadId)!;
+      const lanes = lanesInto(road, arm);
+      if (!lanes.length || arm.stop === undefined) continue;
+      const length = armLength(road, arm);
+      if (length < arm.stop + 2) continue;
+      const at = armPoint(road, arm, arm.stop);
+      const across = (offset: number, q = at): Vec2 => [
+        q.p[0] + q.left[0] * offset,
+        q.p[1] + q.left[1] * offset,
+      ];
+      const hi = Math.max(...lanes.map((l) => l.offset + l.width / 2)) - 0.2;
+      const lo = Math.min(...lanes.map((l) => l.offset - l.width / 2)) + 0.2;
+      const minor = (RANK[road.cls] ?? 0) < top;
+      if (j.signalised) out.push({ kind: 'stop', points: [across(hi), across(lo)] });
+      else if (minor) out.push({ kind: 'give-way', points: [across(hi), across(lo)] });
+      if (!arm.turns || (lanes.length < 2 && arm.turnsProvenance !== 'observed')) continue;
+      if (length < arm.stop + ARROW_BACK + ARROW_LENGTH + 2) continue;
+      const head = armPoint(road, arm, arm.stop + ARROW_BACK);
+      const tail = armPoint(road, arm, arm.stop + ARROW_BACK + ARROW_LENGTH);
+      lanes.forEach((lane, k) => {
+        const turns = arm.turns![k];
+        if (!turns?.length) return;
+        out.push({
+          kind: 'arrow',
+          points: [across(lane.offset, tail), across(lane.offset, head)],
+          turns,
+        });
+      });
+    }
+  }
+  return out;
 }

@@ -42,7 +42,7 @@ import { GroundModel, SURFACE_LIFT } from './ground-model';
 import { furnishGrounds } from './grounds';
 import { RAIL_DECK, layGuideways } from './guideways';
 import { type Envelope, Harmonizer } from './harmony/engine';
-import { inferTurns, layoutJunctions } from './junctions';
+import { inferTurns, junctionMarkings, layoutJunctions, setStops } from './junctions';
 import {
   ENTITY_TAG,
   LANDFORM_LINES,
@@ -124,7 +124,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '104';
+export const COMPILER_VERSION = '105';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -466,7 +466,6 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       ];
       return { outer: [q(0, -w), q(0, w), q(len, w), q(len, -w)], holes: [] };
     });
-  const markings = clipLines(buildMarkings(roads, junctions), inRegion);
   // No zebra in an underpass trench or on a tunnel mouth's lid (crossing.in-cut):
   // there is no street to walk across there.
   const crossings = buildCrossings(roads, junctions, features.points).filter(
@@ -474,6 +473,13 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       inRegion(c.center) &&
       !cutGround.inTrench(c.center[0], c.center[1]) &&
       !cutGround.inLid(c.center[0], c.center[1]),
+  );
+  // Traffic stops behind the crossings; lane lines end there; stop / give-way
+  // lines and turn arrows at the junctions (D-012).
+  setStops(junctions, roads, crossings);
+  const markings = clipLines(
+    [...buildMarkings(roads, junctions), ...junctionMarkings(junctions, roads)],
+    inRegion,
   );
   const roadIndex = new RoadIndex(roads);
   // Uyum motoru: rails and the network are fixed; everything after gives way
