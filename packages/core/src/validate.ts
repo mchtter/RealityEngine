@@ -11,7 +11,7 @@ import {
   offset,
   polygonArea,
 } from './poly';
-import { PROP_RADIUS, carriageReach, poleReach } from './props';
+import { CUT_TRUNK_CLEAR, PROP_RADIUS, carriageReach, poleReach } from './props';
 import { GridIndex, PolygonSet, RoadIndex } from './spatial';
 import type {
   Bridge,
@@ -52,7 +52,7 @@ export const RULES = {
   'prop.height': 'Nesne zeminine oturmuyor (havada ya da gömülü, > 8 cm)',
   'prop.fence': 'Nesne bahçe duvarı / çitin içinde',
   'pole.kerb': 'Direk / lamba bordüre 0,4 m’den yakın ya da yolda',
-  'tree.over-cut': 'Ağaç tacı hendek / tünel ağzının üstüne taşıyor',
+  'tree.over-cut': 'Ağaç gövdesi hendek / tünel ağzı duvarında (kenara < 1 m; taç taşabilir)',
   // Seams
   'seam.trench-rim': 'Kaldırım / yol hendek duvarının içine giriyor',
   'seam.wall-top': 'Hendek duvarının yanındaki zemin duvar tepesinden yüksek',
@@ -264,15 +264,16 @@ export function validateCity(model: CityModel): ValidationReport {
       );
     if (Math.abs(p.position[2] - s.z) > 0.08)
       add('prop.height', q, `${p.kind} ${(p.position[2] - s.z).toFixed(2)} m`);
-    const r = (PROP_RADIUS[p.kind] ?? 0) * p.scale;
     if (inFence(p, fenceSegs)) add('prop.fence', q, p.kind);
     if (POLES.has(p.kind) && p.provenance !== 'observed') {
       const hit = roadIndex.covering(q, poleReach);
       if (hit) add('pole.kerb', q, p.kind);
     }
     if (p.kind === 'tree' && s.support !== 'trench') {
-      for (const c of cutIndex.query(q[0] - r, q[1] - r, q[0] + r, q[1] + r)) {
-        if (distToPolygon(q, c) < r * 0.8) {
+      // The trunk, not the crown: a crown over an underpass wall is what trees do.
+      const reach = CUT_TRUNK_CLEAR;
+      for (const c of cutIndex.query(q[0] - reach, q[1] - reach, q[0] + reach, q[1] + reach)) {
+        if (distToPolygon(q, c) < reach) {
           add('tree.over-cut', q);
           break;
         }

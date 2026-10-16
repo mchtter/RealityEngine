@@ -107,7 +107,6 @@ import type {
   CitySource,
   CompileOptions,
   Fence,
-  Marking,
   Polygon,
   Prop,
   RailLine,

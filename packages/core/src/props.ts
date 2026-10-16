@@ -168,7 +168,7 @@ const STRUCTURE_RADIUS: Partial<Record<PropKind, number>> = {
  * edge. Street and park trees stood in the wall: 110 of 178 trees flagged
  * tree.over-cut in three Kızılay tiles (2026-10-16).
  */
-const CUT_TRUNK_CLEAR = 1;
+export const CUT_TRUNK_CLEAR = 1;
 
 /** Generated trees kept off the walls of underpass trenches and tunnel mouths. */
 export function clearOfCuts(props: Prop[], cut: { trenches: Polygon[]; lids: Polygon[] }): Prop[] {
