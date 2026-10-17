@@ -60,6 +60,17 @@ const TOWER_FORM: Record<string, BuildingForm> = {
   clock_tower: 'clock',
 };
 
+/**
+ * A building wholly under the ground: a layer below 0 and no storey above it
+ * (a metro station's concourse, an underground car park). It is not drawn on
+ * the surface, nor cut by the streets over it.
+ */
+export function undergroundBuilding(tags: Record<string, string>): boolean {
+  const layer = Number.parseInt(tags.layer ?? '', 10);
+  const levels = Number.parseFloat(tags['building:levels'] ?? '');
+  return layer <= -1 && !(levels > 0);
+}
+
 export function formOf(tags: Record<string, string>, area: number): BuildingForm {
   const b = tags.building ?? '';
   if (tags.man_made === 'tower') return TOWER_FORM[tags['tower:type'] ?? ''] ?? 'tower';
@@ -79,14 +90,15 @@ export function formOf(tags: Record<string, string>, area: number): BuildingForm
     return 'hut';
   if (tags.amenity === 'place_of_worship' && (tags.religion ?? 'muslim') === 'muslim')
     return 'mosque';
-  // A mall / hypermarket, not an office or hotel tower (`commercial`): low and wide.
+  // A mall / hypermarket, not an office or hotel tower (`commercial`): low and
+  // wide — a mall said so (shop=mall) at any height (Kızılay AVM, 8.5 storeys).
   const levels = Number.parseInt(tags['building:levels'] ?? '', 10);
   if (
     (['retail', 'supermarket'].includes(b) ||
       tags.shop === 'mall' ||
       tags.shop === 'supermarket') &&
     area >= BOX_AREA &&
-    !(levels > 4)
+    (!(levels > 4) || tags.shop === 'mall')
   )
     return 'box';
   return 'block';

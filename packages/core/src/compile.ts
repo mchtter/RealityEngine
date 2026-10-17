@@ -24,6 +24,7 @@ import {
   placeObservedBuildings,
 } from './buildings';
 import { CutGround, buildCuttings, settleTrenchRims } from './cuttings';
+import { undergroundBuilding } from './forms';
 import { dressStations, fuelStations, stationCanopies } from './fuel';
 import {
   LocalProjection,
@@ -131,7 +132,7 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '108';
+export const COMPILER_VERSION = '109';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -351,6 +352,11 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       src.features ? readFeatures(src.features, proj) : EMPTY,
     ),
   );
+  // Buildings under the ground are not surface buildings (Kızılay's metro
+  // station under Güvenpark was drawn as a house the streets cut up).
+  const undergroundCount = features.buildings.filter((b) => undergroundBuilding(b.tags)).length;
+  if (undergroundCount)
+    features.buildings = features.buildings.filter((b) => !undergroundBuilding(b.tags));
   // Rail lines and the airfield (road-theme lines that are not roads).
   const guide = layGuideways(
     features.roads,
@@ -1152,6 +1158,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       junctions: outJunctions.length,
       blocks: outBlocks.length,
       buildingsObserved: observedOut.length,
+      buildingsUnderground: undergroundCount,
       buildingsSynthetic: buildings.length - observedOut.length,
       buildingsSuperseded: superseded.filter((c) => inCore(c)).length,
       ...Object.fromEntries(

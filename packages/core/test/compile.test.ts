@@ -111,6 +111,31 @@ const carriageway = (m: CityModel) =>
   );
 
 describe('compileCity', () => {
+  it('does not draw a building under the ground on the surface', () => {
+    const src = gridSource();
+    const square = (x: number, y: number, r: number) => [
+      ll(x - r, y - r),
+      ll(x + r, y - r),
+      ll(x + r, y + r),
+      ll(x - r, y + r),
+      ll(x - r, y - r),
+    ];
+    src.features = [
+      ...(src.features ?? []),
+      {
+        ref: 'osm:w-station',
+        source: 'osm',
+        priority: 0,
+        kind: 'building' as const,
+        geometry: { type: 'Polygon' as const, coordinates: [square(30, 35, 12)] },
+        tags: { building: 'train_station', layer: '-1' },
+      },
+    ];
+    const m = compileCity(src);
+    expect(m.buildings.some((b) => b.ref === 'osm:w-station')).toBe(false);
+    expect(m.stats.buildingsUnderground).toBe(1);
+  });
+
   it('places points of interest on the ground with their kind and name', () => {
     const src = gridSource();
     src.features = [

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BLANK_FORMS, formLevels, formOf } from '../src/forms';
+import { BLANK_FORMS, formLevels, formOf, undergroundBuilding } from '../src/forms';
 import { Rng } from '../src/random';
 
 describe('building forms', () => {
@@ -42,11 +42,24 @@ describe('building forms', () => {
     expect(hut.levels * hut.floorHeight).toBeLessThan(3);
   });
 
+  it('tells a building wholly under the ground', () => {
+    expect(undergroundBuilding({ building: 'train_station', layer: '-1' })).toBe(true);
+    // A sunken building with storeys above ground stays on the surface.
+    expect(undergroundBuilding({ building: 'yes', layer: '-1', 'building:levels': '3' })).toBe(
+      false,
+    );
+    expect(undergroundBuilding({ building: 'yes' })).toBe(false);
+  });
+
   it('makes a mall a box, but not an office tower or a corner shop', () => {
     expect(formOf({ building: 'retail' }, 12000)).toBe('box');
     expect(formOf({ building: 'retail' }, 300)).toBe('block');
     expect(formOf({ building: 'commercial' }, 5000)).toBe('block');
     expect(formOf({ building: 'retail', 'building:levels': '20' }, 5000)).toBe('block');
+    // A mall said so stays a mall however tall (Kızılay AVM: 8.5 storeys).
+    expect(formOf({ building: 'retail', shop: 'mall', 'building:levels': '8.5' }, 3000)).toBe(
+      'box',
+    );
   });
 
   it('gives sheds one or two high storeys and silos their height', () => {
