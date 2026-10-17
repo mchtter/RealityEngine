@@ -14,6 +14,7 @@ import {
   INSTANCE_MATRIX_ATTRIBUTES,
   instancedVariant,
 } from './materials';
+import { type StationSign, stationSigns } from './station-signs';
 import { type StreetLine, streetLines } from './street-lines';
 import { CONCOURSE_HEIGHT, CORRIDOR_HALF, CORRIDOR_HEIGHT } from './underground';
 
@@ -100,6 +101,8 @@ export interface TileSummary {
   decks: { path: [number, number, number][]; half: number; clear?: number }[];
   /** Floors one can walk on under the ground (station concourses): outline, level, clear height. */
   floors?: { ring: [number, number][]; z: number; clear: number }[];
+  /** Station name boards over underground platforms. */
+  signs?: StationSign[];
   /** Named ground streets (centreline on the street surface), for their names on the map. */
   streets?: StreetLine[];
   /** Points of interest (tile coords, on the ground), for the map's icons. */
@@ -188,6 +191,7 @@ export function summarize(model: CityModel): TileSummary {
           clear: CORRIDOR_HEIGHT,
         })),
     ],
+    signs: stationSigns(model),
     floors: (model.underground?.structures ?? []).map((s) => ({
       ring: s.footprint.outer,
       z: s.floorZ,

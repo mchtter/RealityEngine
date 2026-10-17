@@ -92,6 +92,8 @@ export const RULES = {
   'bridge.ground-through': 'Zemin köprü tabliyesinin içinden çıkıyor (tabliye üstünden yüksek)',
   'street.edge-step':
     'Sokak kenarında bordürden yüksek basamak (> 0,5 m): yandaki zemin çukurda ya da sokağın üstünde',
+  'underground.level':
+    'Peron ile yanındaki raylı hat farklı kot katmanında (motor hattı peron seviyesine çekti): katmanları doğrulayın',
   'tunnel.clash':
     'İki tünel tüpü bağlanmadan kesişiyor ve aralarında tüp yüksekliği kadar kot farkı yok: kot katmanını (layer -1 / -2) ya da birleşip birleşmediklerini doğrulayın',
 } as const;
@@ -213,6 +215,7 @@ export function validateCity(model: CityModel): ValidationReport {
     }
   overlapRules(model, add);
   tunnelRules(model, add);
+  undergroundLevelRules(model, add);
   for (const sf of model.surfaces)
     for (const p of sf.polygons)
       if (meanThickness(p) < HAIRLINE) add('surface.hairline', centroidOf(p), sf.kind);
@@ -1231,4 +1234,41 @@ function crossing(
     za: a0[2] + t * (a1[2] - a0[2]),
     zb: b0[2] + u * (b1[2] - b0[2]),
   };
+}
+
+/** A platform and the track beside it with different layers in the source (the engine levels them). */
+function undergroundLevelRules(
+  model: CityModel,
+  add: (rule: RuleId, at: Vec2, note?: string) => void,
+): void {
+  const ug = model.underground;
+  if (!ug?.tracks?.length) return;
+  for (const p of ug.structures) {
+    if (p.kind !== 'platform') continue;
+    const ring = p.footprint.outer;
+    const c: Vec2 = [
+      ring.reduce((a, q) => a + q[0], 0) / ring.length,
+      ring.reduce((a, q) => a + q[1], 0) / ring.length,
+    ];
+    const layers = new Set<number>();
+    for (const t of ug.tracks)
+      if (
+        t.layer !== p.layer &&
+        t.path.some((q) => pointInRing([q[0], q[1]], ring) || closestToRing([q[0], q[1]], ring) < 6)
+      )
+        layers.add(t.layer);
+    if (layers.size)
+      add(
+        'underground.level',
+        c,
+        `peron ${p.ref} kot ${p.layer}, hat kot ${[...layers].join(', ')}`,
+      );
+  }
+}
+
+function closestToRing(p: Vec2, ring: Vec2[]): number {
+  let best = Infinity;
+  for (let k = 1; k < ring.length; k++)
+    best = Math.min(best, closestOnSegment(p, ring[k - 1], ring[k]).d);
+  return best;
 }

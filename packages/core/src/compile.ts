@@ -200,6 +200,63 @@ const PLATFORM_HEIGHT = 1.1;
 /** Profile points along an underground track at most this far apart (m). */
 const TRACK_STEP = 10;
 
+/**
+ * A track this close to a platform's outline (rail axis to edge is ~1.7 m),
+ * running along its long side, runs beside it at its level (m).
+ */
+const BESIDE_PLATFORM = 3.5;
+/** Steepest grade a track takes to and from a platform's level. */
+const TRACK_GRADE = 0.04;
+
+/** Plan distance from a point to a ring (0 inside). */
+function distToRing(p: Vec2, ring: Vec2[]): number {
+  if (pointInRing(p, ring)) return 0;
+  let best = Infinity;
+  for (let k = 1; k < ring.length; k++)
+    best = Math.min(best, closestOnSegment(p, ring[k - 1], ring[k]).d);
+  return best;
+}
+
+/**
+ * A track beside a platform runs at the platform's level (rails a platform's
+ * height under its floor), easing to and from it at most TRACK_GRADE. The
+ * source's layers are an order, not storeys: Kızılay's M2 platforms are
+ * tagged −2 and their tracks −3, which put the rails 6 m under the platform.
+ */
+function alongPlatforms(path: Vec3[], platforms: UndergroundStructure[]): Vec3[] {
+  const axes = platforms.map((p) => longAxis(p.footprint.outer));
+  const fixed: (number | null)[] = path.map((q, k) => {
+    const a = path[Math.max(0, k - 1)];
+    const b = path[Math.min(path.length - 1, k + 1)];
+    const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    const dir: Vec2 = [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+    for (let i = 0; i < platforms.length; i++) {
+      // Along the platform (a line crossing under or over it keeps its level).
+      if (Math.abs(dir[0] * axes[i][0] + dir[1] * axes[i][1]) < 0.9) continue;
+      if (distToRing([q[0], q[1]], platforms[i].footprint.outer) < BESIDE_PLATFORM)
+        return platforms[i].floorZ - PLATFORM_HEIGHT;
+    }
+    return null;
+  });
+  if (fixed.every((z) => z === null)) return path;
+  const at = [0];
+  for (let k = 1; k < path.length; k++)
+    at.push(at[k - 1] + Math.hypot(path[k][0] - path[k - 1][0], path[k][1] - path[k - 1][1]));
+  return path.map((q, k) => {
+    if (fixed[k] !== null) return [q[0], q[1], fixed[k]!];
+    // Between the grade limits from every point held at a platform.
+    let lo = -Infinity;
+    let hi = Infinity;
+    for (let j = 0; j < path.length; j++) {
+      if (fixed[j] === null) continue;
+      const d = Math.abs(at[k] - at[j]);
+      lo = Math.max(lo, fixed[j]! - TRACK_GRADE * d);
+      hi = Math.min(hi, fixed[j]! + TRACK_GRADE * d);
+    }
+    return [q[0], q[1], Math.min(hi, Math.max(lo, q[2]))];
+  });
+}
+
 /** Direction (unit) of a ring's longest edge: a platform's long side. */
 function longAxis(ring: Vec2[]): Vec2 {
   let best: Vec2 = [1, 0];
@@ -258,7 +315,7 @@ const ENTRANCE_STREET = 40;
 /** An entrance leads into the underground structure whose middle lies within this distance (m). */
 const ENTRANCE_REACH = 200;
 
-export const COMPILER_VERSION = '116';
+export const COMPILER_VERSION = '117';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -1341,11 +1398,14 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     .flatMap((r) => {
       const layer = Number.parseInt(r.tags.layer ?? '-1', 10);
       const depth = STATION_CONCOURSE * Math.max(1, -layer) + PLATFORM_HEIGHT;
-      const path: Vec3[] = densify(r.points, TRACK_STEP).map((q) => [
-        q[0],
-        q[1],
-        groundModel.surfaceAt(q[0], q[1]).z - depth,
-      ]);
+      const path: Vec3[] = alongPlatforms(
+        densify(r.points, TRACK_STEP).map((q) => [
+          q[0],
+          q[1],
+          groundModel.surfaceAt(q[0], q[1]).z - depth,
+        ]),
+        structures.filter((s) => s.kind === 'platform'),
+      );
       return corePathRuns(path, inCore).map((run, k) => ({
         id: k ? `ut:${r.ref}~${k}` : `ut:${r.ref}`,
         ref: r.ref,

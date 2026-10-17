@@ -712,9 +712,10 @@ function trackTunnel(
   platforms: UndergroundStructure[],
   mb: MeshBuilder,
 ): void {
-  // A platform at this line's level (rails 1.1 m under its floor), not one passing over it.
-  const level = platforms.filter((s) => Math.abs(s.floorZ - 1.1 - t.path[0][2]) < 2.5);
-  const beside = (p: [number, number]) => level.some((s) => pointInRing(p, s.footprint.outer));
+  // A platform at the line's level here (rails 1.1 m under its floor), not one
+  // passing over it — measured per segment: a city's ground slopes.
+  const beside = (p: [number, number], z: number) =>
+    platforms.some((s) => Math.abs(s.floorZ - 1.1 - z) < 2.5 && pointInRing(p, s.footprint.outer));
   for (let k = 1; k < t.path.length; k++) {
     const a = t.path[k - 1];
     const b = t.path[k];
@@ -747,7 +748,7 @@ function trackTunnel(
     const mid: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
     for (const side of [1, -1]) {
       // Beside a platform: no wall, no roof on that side (the platform's ceiling covers it).
-      if (beside([mid[0] + lx * side * 2.2, mid[1] + ly * side * 2.2])) continue;
+      if (beside([mid[0] + lx * side * 2.2, mid[1] + ly * side * 2.2], (a[2] + b[2]) / 2)) continue;
       const wall: [number, number, number][] = [
         P(a, side * TRACK_HALF, -0.3),
         P(b, side * TRACK_HALF, -0.3),

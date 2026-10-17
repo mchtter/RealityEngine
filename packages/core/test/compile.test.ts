@@ -215,6 +215,15 @@ describe('compileCity', () => {
         },
         tags: { highway: 'subway', tunnel: 'yes', layer: '-2' },
       },
+      // The other side's track tagged a layer lower than its platform (as at Kızılay).
+      {
+        ref: 'osm:w-metro-low',
+        source: 'osm',
+        priority: 0,
+        kind: 'road' as const,
+        geometry: { type: 'LineString' as const, coordinates: [ll(-150, 24), ll(150, 24)] },
+        tags: { highway: 'subway', tunnel: 'yes', layer: '-3' },
+      },
     ];
     const m = compileCity(src);
     const hall = m.underground!.structures.find((s) => s.ref === 'osm:w-hall')!;
@@ -230,6 +239,11 @@ describe('compileCity', () => {
     const mid = track.path.reduce((a, q) => (Math.abs(q[0]) < Math.abs(a[0]) ? q : a));
     expect(platform.floorZ - mid[2]).toBeGreaterThan(0.5);
     expect(platform.floorZ - mid[2]).toBeLessThan(2);
+    // Beside the platform the lower-tagged track runs at its level, and the mismatch is reported.
+    const low = m.underground!.tracks!.find((t) => t.ref === 'osm:w-metro-low')!;
+    const lowMid = low.path.reduce((a, q) => (Math.abs(q[0]) < Math.abs(a[0]) ? q : a));
+    expect(platform.floorZ - lowMid[2]).toBeCloseTo(1.1, 5);
+    expect(validateCity(m).counts['underground.level'] ?? 0).toBe(1);
   });
 
   it('places points of interest on the ground with their kind and name', () => {
