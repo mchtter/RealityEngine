@@ -74,6 +74,12 @@ export const POI_ICON_KINDS: readonly string[] = Object.keys(DEFAULT_MAP_STYLE.p
 const QUAD = new THREE.PlaneGeometry(1, 1);
 
 export class PoiLabeller {
+  /**
+   * The pins' own scene (world coordinates): the engine draws it apart and
+   * lays it over the finished frame — in the main pass the post effects (AO,
+   * tone mapping) darkened the quads round them and greyed their names.
+   */
+  readonly scene = new THREE.Scene();
   private on = false;
   private style = DEFAULT_MAP_STYLE.pois;
   private readonly icons = new Map<string, HTMLImageElement>();
@@ -84,7 +90,6 @@ export class PoiLabeller {
   private readonly p = new THREE.Vector3();
   private readonly scale = new THREE.Vector3();
   private readonly offset = new THREE.Vector3();
-  private readonly inverse = new THREE.Matrix4();
   /** Icons shown in the last update. */
   shown = 0;
 
@@ -177,7 +182,7 @@ export class PoiLabeller {
       ];
       if (placed.some((q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1])) continue;
       placed.push(r);
-      const mesh = (m.mesh ??= this.mesh(c.group));
+      const mesh = (m.mesh ??= this.mesh());
       mesh.material = art.material;
       // Upright to the screen: the camera's orientation, sized in pixels at its distance.
       this.scale.set(art.width * mpp, art.height * mpp, 1);
@@ -185,7 +190,6 @@ export class PoiLabeller {
         .set((art.width / 2 - art.ax) * mpp, (art.ay - art.height / 2) * mpp, 0)
         .applyQuaternion(camera.quaternion);
       mesh.matrix.compose(this.world.add(this.offset), camera.quaternion, this.scale);
-      mesh.matrix.premultiply(this.inverse.copy(c.group.matrixWorld).invert());
       mesh.matrixWorldNeedsUpdate = true;
       mesh.visible = true;
       this.shown++;
@@ -201,13 +205,13 @@ export class PoiLabeller {
     this.iconArt.clear();
   }
 
-  private mesh(group: THREE.Group): THREE.Mesh {
+  private mesh(): THREE.Mesh {
     const mesh = new THREE.Mesh(QUAD);
     mesh.matrixAutoUpdate = false;
     mesh.frustumCulled = false;
     mesh.renderOrder = 901;
     mesh.name = 'poi';
-    group.add(mesh);
+    this.scene.add(mesh);
     return mesh;
   }
 
@@ -283,6 +287,7 @@ export class PoiLabeller {
       depthWrite: false,
     });
     material.fog = false;
+    material.alphaTest = 0.04;
     return { material, width, height, ax: cx, ay: y0 + tile + stem };
   }
 }

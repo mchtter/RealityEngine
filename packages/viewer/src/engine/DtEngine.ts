@@ -28,7 +28,11 @@ import {
   positionWorld,
   rangeFogFactor,
   renderOutput,
+  screenUV,
+  sRGBTransferOETF,
+  texture,
   uniform,
+  vec4,
   vibrance,
 } from 'three/tsl';
 import * as THREE from 'three/webgpu';
@@ -355,6 +359,10 @@ export class DtEngine {
   /** Ground pictures of the loaded tiles (ground-atlas.ts). */
   private readonly groundAtlas: GroundAtlas;
   private readonly pipeline: THREE.RenderPipeline;
+  /** The map pins' layer over the frame (see drawPins). */
+  private readonly pinTarget = new THREE.RenderTarget(1, 1, { depthBuffer: false });
+  private readonly pinSize = new THREE.Vector2();
+  private pinsDrawn = false;
   private glow: ReturnType<typeof bloom> | null = null;
   private readonly tiles = new Map<string, CityTile>();
   /** Shared prop module geometry, reused by every tile. */
@@ -628,7 +636,12 @@ export class DtEngine {
     // HDR grade: an S-curve (deeper shadows, brighter highlights), then vibrance.
     const curved = mix(shown, shown.mul(shown).mul(shown.mul(-2).add(3)), this.tune.contrast);
     const graded = vibrance(curved, this.tune.vibrance);
-    this.pipeline.outputNode = fxaa(mix(shown, graded, this.grade));
+    // Map pins, drawn apart (drawPins) and laid over the finished frame: no
+    // post effect touches them. Their target holds linear colour, alpha-weighted.
+    const pins = texture(this.pinTarget.texture, screenUV);
+    const pinColour = sRGBTransferOETF(pins.rgb.div(pins.a.max(1e-4)));
+    const framed = vec4(fxaa(mix(shown, graded, this.grade)) as never);
+    this.pipeline.outputNode = mix(framed, vec4(pinColour, 1), pins.a);
 
     this.setLook(this.look);
 
@@ -2932,6 +2945,7 @@ export class DtEngine {
       ),
     );
 
+    this.drawPins();
     const cpu0 = performance.now();
     if (this.debugFlags.post) this.pipeline.render();
     else this.renderer.render(this.scene, this.camera);
@@ -2962,6 +2976,25 @@ export class DtEngine {
       this.lastStats = now;
     }
   };
+
+  /** Draws the map pins into their own transparent layer (cleared once they are gone). */
+  private drawPins(): void {
+    const show = this.poiLabeller.shown > 0;
+    if (!show && !this.pinsDrawn) return;
+    const size = this.renderer.getDrawingBufferSize(this.pinSize);
+    if (this.pinTarget.width !== size.x || this.pinTarget.height !== size.y)
+      this.pinTarget.setSize(size.x, size.y);
+    const prev = this.renderer.getRenderTarget();
+    const clear = this.renderer.getClearColor(new THREE.Color() as never) as THREE.Color;
+    const alpha = this.renderer.getClearAlpha();
+    this.renderer.setRenderTarget(this.pinTarget);
+    this.renderer.setClearColor(0x000000, 0);
+    this.renderer.clear();
+    if (show) this.renderer.render(this.poiLabeller.scene, this.camera);
+    this.renderer.setRenderTarget(prev);
+    this.renderer.setClearColor(clear, alpha);
+    this.pinsDrawn = show;
+  }
 
   private onResize(): void {
     const w = this.container.clientWidth;
