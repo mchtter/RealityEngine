@@ -920,6 +920,22 @@ export interface UndergroundStructure {
    * tile): its walls are left open there.
    */
   doors?: Vec2[];
+  /**
+   * A platform's stairs up to its concourse (kind `platform`): from the top
+   * (on the concourse floor) to the bottom (on the platform), `width` wide.
+   */
+  stairs?: { from: Vec3; to: Vec3; width: number };
+  /** Openings in a concourse floor where platform stairs go down (corner rings). */
+  openings?: Vec2[][];
+}
+
+/** A rail line under the ground (a metro tunnel): rail level along it. */
+export interface UndergroundTrack {
+  id: string;
+  ref: string;
+  name?: string;
+  layer: number;
+  path: Vec3[];
 }
 
 /** A way down into a station: a metro entrance on the surface. */
@@ -998,7 +1014,12 @@ export interface CityModel {
   /** Points of interest (businesses, services) for the map's icons and names. */
   pois?: Poi[];
   /** Under the ground: station concourses and the like, and the entrances down to them. */
-  underground?: { structures: UndergroundStructure[]; entrances: StationEntrance[] };
+  underground?: {
+    structures: UndergroundStructure[];
+    entrances: StationEntrance[];
+    /** Metro lines in their tunnels. */
+    tracks?: UndergroundTrack[];
+  };
   /**
    * Street land outside the road corridors: gaps narrower than 3 m between two
    * sidewalks, drawn as sidewalk and levelled to the street surface (see

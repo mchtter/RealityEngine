@@ -475,6 +475,7 @@ const BUILDING_USES: Record<string, string> = {
   substation: 'Trafo binası / köşkü',
   terminal: 'Terminal binası (havalimanı / otogar)',
   train_station: 'Tren / metro istasyonu',
+  platform: 'Peron (yer altı istasyonu; kot katmanıyla)',
 };
 
 export const BUILDING_CONTRACT_V2: CityThemeContract = {

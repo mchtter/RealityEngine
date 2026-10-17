@@ -125,6 +125,7 @@ import type {
   Polygon,
   StationEntrance,
   UndergroundStructure,
+  UndergroundTrack,
   Prop,
   RailLine,
   Road,
@@ -190,6 +191,28 @@ function entranceHeading(roads: Road[], p: Vec2, stations: { polygons: Polygon[]
   return toward < 0 ? heading + Math.PI : heading;
 }
 
+/** A platform's stairs go up to a concourse whose middle lies within this distance (m). */
+const PLATFORM_REACH = 150;
+/** Platform stairs' width (m). */
+const PLATFORM_STAIRS = 3;
+/** Rail level below a platform's floor (m). */
+const PLATFORM_HEIGHT = 1.1;
+/** Profile points along an underground track at most this far apart (m). */
+const TRACK_STEP = 10;
+
+/** Direction (unit) of a ring's longest edge: a platform's long side. */
+function longAxis(ring: Vec2[]): Vec2 {
+  let best: Vec2 = [1, 0];
+  let len = 0;
+  for (let k = 1; k < ring.length; k++) {
+    const dx = ring[k][0] - ring[k - 1][0];
+    const dy = ring[k][1] - ring[k - 1][1];
+    const l = Math.hypot(dx, dy);
+    if (l > len) [len, best] = [l, [dx / l, dy / l]];
+  }
+  return best;
+}
+
 /** A level down under the street: a station's concourse floor this far below its ground (m). */
 const STATION_CONCOURSE = 6;
 /** A passage ends this far inside the station's outline (m). */
@@ -235,7 +258,7 @@ const ENTRANCE_STREET = 40;
 /** An entrance leads into the underground structure whose middle lies within this distance (m). */
 const ENTRANCE_REACH = 200;
 
-export const COMPILER_VERSION = '115';
+export const COMPILER_VERSION = '116';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -1275,9 +1298,67 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       .map((e): Vec2 => [e.passage![1][0], e.passage![1][1]]);
     if (doors.length) s.doors = doors;
   }
+  // Platforms reach their concourse by stairs along their long side, from
+  // its floor down to theirs; the concourse floor is open over them.
+  for (const p of structures) {
+    if (p.kind !== 'platform') continue;
+    const c = ringCentroid(p.footprint.outer);
+    const above = structures
+      .filter((s) => s.kind !== 'platform' && s.layer > p.layer)
+      .map((s) => ({ s, d: Math.hypot(...sub(ringCentroid(s.footprint.outer), c)) }))
+      .filter((o) => o.d < PLATFORM_REACH || pointInRing(c, o.s.footprint.outer))
+      .sort((a, b) => a.d - b.d)[0]?.s;
+    if (!above) continue;
+    const drop = above.floorZ - p.floorZ;
+    if (drop <= 0.5) continue;
+    const axis = longAxis(p.footprint.outer);
+    const half = drop / Math.tan(Math.PI / 6) / 2;
+    const a: Vec2 = [c[0] - axis[0] * half, c[1] - axis[1] * half];
+    const b: Vec2 = [c[0] + axis[0] * half, c[1] + axis[1] * half];
+    p.stairs = {
+      from: [a[0], a[1], above.floorZ],
+      to: [b[0], b[1], p.floorZ],
+      width: PLATFORM_STAIRS,
+    };
+    const w: Vec2 = [-axis[1] * (PLATFORM_STAIRS / 2), axis[0] * (PLATFORM_STAIRS / 2)];
+    (above.openings ??= []).push([
+      [a[0] - w[0], a[1] - w[1]],
+      [b[0] - w[0], b[1] - w[1]],
+      [b[0] + w[0], b[1] + w[1]],
+      [a[0] + w[0], a[1] + w[1]],
+    ]);
+  }
+  // Metro lines in their tunnels: rail level a level down per layer under the
+  // street, a platform's height below its floor.
+  const tracks: UndergroundTrack[] = features.roads
+    .filter(
+      (r) =>
+        (r.tags.highway === 'subway' || r.tags.highway === 'rail') &&
+        !!r.tags.tunnel &&
+        r.tags.tunnel !== 'no' &&
+        r.points.length >= 2,
+    )
+    .flatMap((r) => {
+      const layer = Number.parseInt(r.tags.layer ?? '-1', 10);
+      const depth = STATION_CONCOURSE * Math.max(1, -layer) + PLATFORM_HEIGHT;
+      const path: Vec3[] = densify(r.points, TRACK_STEP).map((q) => [
+        q[0],
+        q[1],
+        groundModel.surfaceAt(q[0], q[1]).z - depth,
+      ]);
+      return corePathRuns(path, inCore).map((run, k) => ({
+        id: k ? `ut:${r.ref}~${k}` : `ut:${r.ref}`,
+        ref: r.ref,
+        ...(r.tags.name ? { name: r.tags.name } : {}),
+        layer,
+        path: run,
+      }));
+    });
   const coreStructures = structures.filter((s) => inCore(ringCentroid(s.footprint.outer)));
   const outUnderground =
-    coreStructures.length || entrances.length ? { structures: coreStructures, entrances } : null;
+    coreStructures.length || entrances.length || tracks.length
+      ? { structures: coreStructures, entrances, ...(tracks.length ? { tracks } : {}) }
+      : null;
 
   const observedOut = buildings.filter((b) => b.source !== 'synthetic');
   const count = (pred: (p: Prop) => boolean) => props.filter(pred).length;

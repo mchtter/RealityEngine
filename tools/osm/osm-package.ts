@@ -463,7 +463,10 @@ export type OsmTheme = (typeof OSM_THEMES)[number];
 export function osmTheme(t: Record<string, string>, g: Geometry): OsmTheme | null {
   // Silos and tanks are often mapped as man_made only: they are buildings here.
   const built =
-    (t.building && t.building !== 'no') || t.man_made === 'silo' || t.man_made === 'storage_tank';
+    (t.building && t.building !== 'no') ||
+    t.man_made === 'silo' ||
+    t.man_made === 'storage_tank' ||
+    undergroundPlatform(t);
   return built && (g.type === 'Polygon' || g.type === 'MultiPolygon')
     ? 'building'
     : (t.highway || AIRFIELD_CLASS[t.aeroway ?? ''] || RAIL_CLASS[t.railway ?? '']) &&
@@ -516,7 +519,13 @@ export function inOsmArea(
 }
 
 /** building use (contract `use`) from a building's tags. */
+/** A station platform under the ground (its layer below 0): carried as a building of use `platform`. */
+export function undergroundPlatform(t: Record<string, string>): boolean {
+  return t.railway === 'platform' && Number.parseInt(t.layer ?? '', 10) < 0;
+}
+
 export function buildingUse(t: Record<string, string>): string | undefined {
+  if (undergroundPlatform(t)) return 'platform';
   return (
     (t.man_made === 'tower' ? (TOWER_USE[t['tower:type'] ?? ''] ?? 'tower') : undefined) ??
     (t.power === 'substation' ? 'substation' : undefined) ??

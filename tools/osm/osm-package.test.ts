@@ -108,6 +108,10 @@ describe('osmTheme', () => {
     );
     assert.equal(buildingUse({ building: 'yes', amenity: 'place_of_worship' }), 'mosque');
     assert.equal(buildingUse({ building: 'apartments' }), 'residential');
+    // A platform under the ground is carried as a building (with its layer), one on the surface is not.
+    assert.equal(osmTheme({ railway: 'platform', layer: '-2' }, a), 'building');
+    assert.equal(buildingUse({ railway: 'platform', layer: '-2' }), 'platform');
+    assert.equal(osmTheme({ railway: 'platform' }, a), null);
     const road = osmRow('road', 'r', line([0, 0], [1, 1]), { highway: 'path', oneway: 'yes' });
     assert.ok(!('drop' in road));
     assert.equal(road.attrs.class, 'footway');

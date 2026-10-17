@@ -177,6 +177,61 @@ describe('compileCity', () => {
     );
   });
 
+  it('takes a platform under its concourse by stairs, and keeps the metro line in its tunnel', () => {
+    const src = gridSource();
+    const square = (x: number, y: number, rx: number, ry: number) => [
+      ll(x - rx, y - ry),
+      ll(x + rx, y - ry),
+      ll(x + rx, y + ry),
+      ll(x - rx, y + ry),
+      ll(x - rx, y - ry),
+    ];
+    src.features = [
+      ...(src.features ?? []),
+      {
+        ref: 'osm:w-hall',
+        source: 'osm',
+        priority: 0,
+        kind: 'building' as const,
+        geometry: { type: 'Polygon' as const, coordinates: [square(0, 30, 40, 20)] },
+        tags: { building: 'train_station', layer: '-1' },
+      },
+      {
+        ref: 'osm:w-platform',
+        source: 'osm',
+        priority: 0,
+        kind: 'building' as const,
+        geometry: { type: 'Polygon' as const, coordinates: [square(0, 30, 50, 4)] },
+        tags: { building: 'platform', layer: '-2' },
+      },
+      {
+        ref: 'osm:w-metro',
+        source: 'osm',
+        priority: 0,
+        kind: 'road' as const,
+        geometry: {
+          type: 'LineString' as const,
+          coordinates: [ll(-150, 36), ll(150, 36)],
+        },
+        tags: { highway: 'subway', tunnel: 'yes', layer: '-2' },
+      },
+    ];
+    const m = compileCity(src);
+    const hall = m.underground!.structures.find((s) => s.ref === 'osm:w-hall')!;
+    const platform = m.underground!.structures.find((s) => s.ref === 'osm:w-platform')!;
+    // A level per layer: the platform 6 m under the concourse.
+    expect(hall.floorZ - platform.floorZ).toBeCloseTo(6, 0);
+    // Stairs from the concourse floor down to the platform, the floor open over them.
+    expect(platform.stairs!.from[2]).toBeCloseTo(hall.floorZ, 5);
+    expect(platform.stairs!.to[2]).toBeCloseTo(platform.floorZ, 5);
+    expect(hall.openings).toHaveLength(1);
+    // The metro line kept under the ground, at rail level below the platform.
+    const track = m.underground!.tracks!.find((t) => t.ref === 'osm:w-metro')!;
+    const mid = track.path.reduce((a, q) => (Math.abs(q[0]) < Math.abs(a[0]) ? q : a));
+    expect(platform.floorZ - mid[2]).toBeGreaterThan(0.5);
+    expect(platform.floorZ - mid[2]).toBeLessThan(2);
+  });
+
   it('places points of interest on the ground with their kind and name', () => {
     const src = gridSource();
     src.features = [

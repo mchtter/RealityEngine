@@ -658,6 +658,7 @@ export const CITY_CLASSES: readonly CityClassDef[] = withPoiBindings([
   }),
   c('transit.metro_platform', 'Metro peronu', 'building', 'volume', {
     parents: ['transit.metro_station'],
+    theme: t('building', { use: 'platform' }),
   }),
   c('transit.station_entrance', 'İstasyon girişi', 'building', 'point', {
     parents: ['transit.metro_station', 'transit.rail_station'],
