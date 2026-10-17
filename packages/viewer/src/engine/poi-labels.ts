@@ -20,9 +20,9 @@ export interface PoiPoint {
 
 /** Canvas pixels per screen pixel (crisp on high-density screens). */
 const DPR = 2;
-/** Gap before the name (screen px); the quad is the disc's height plus a margin. */
+/** Gap before the name's pill and the margin round the pin (screen px). */
 const GAP = 4;
-const MARGIN = 4;
+const EDGE = 2;
 /** The point sits this far (m) above the ground. */
 const LIFT = 1.5;
 
@@ -39,9 +39,11 @@ export interface PoiMark {
 
 interface Art {
   material: THREE.MeshBasicNodeMaterial;
-  /** Size (screen px). */
+  /** Size (screen px), and the anchor — the stem's foot, on the point — from its top left. */
   width: number;
   height: number;
+  ax: number;
+  ay: number;
 }
 
 export function poiMarks(points: PoiPoint[] | undefined): PoiMark[] {
@@ -131,11 +133,14 @@ export class PoiLabeller {
     height: number,
     placed: [number, number, number, number][],
     changed: boolean,
+    /** The camera's height over the ground (m): the icons' reach grows with it. */
+    cameraHeight: number,
   ): void {
     if (!this.on || (!changed && !this.dirty)) return;
     this.dirty = false;
     const perPx = (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / height;
     const eye = camera.position;
+    const reach = Math.max(this.style.reach.near, cameraHeight * this.style.reach.perHeight);
     type Candidate = { m: PoiMark; rank: number; group: THREE.Group; d: number; mpp: number };
     const candidates: Candidate[] = [];
     for (const t of tiles) {
@@ -148,14 +153,13 @@ export class PoiLabeller {
         const d = this.world.distanceTo(eye);
         const mpp = d * perPx;
         const range = rangeOf(this.style.ranges, cat.rank);
-        if (d > range.distance || mpp > range.mpp) continue;
+        if (d > Math.min(range.distance, reach) || mpp > range.mpp) continue;
         this.p.copy(this.world).project(camera);
         if (this.p.z > 1 || Math.abs(this.p.x) > 1.1 || Math.abs(this.p.y) > 1.1) continue;
         candidates.push({ m, rank: cat.rank, group: t.group, d, mpp });
       }
     }
     candidates.sort((a, b) => b.rank - a.rank || a.d - b.d);
-    const centre = this.centre;
     this.shown = 0;
     for (const c of candidates) {
       const { m, mpp } = c;
@@ -164,12 +168,12 @@ export class PoiLabeller {
       this.p.copy(this.world).project(camera);
       const sx = ((this.p.x + 1) / 2) * width;
       const sy = ((1 - this.p.y) / 2) * height;
-      // The icon's centre on the point; a name runs to its right.
+      // The stem's foot on the point; the pin stands above it, a name to its right.
       const r: [number, number, number, number] = [
-        sx - centre,
-        sy - art.height / 2,
-        sx - centre + art.width,
-        sy + art.height / 2,
+        sx - art.ax,
+        sy - art.ay,
+        sx - art.ax + art.width,
+        sy - art.ay + art.height,
       ];
       if (placed.some((q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1])) continue;
       placed.push(r);
@@ -177,7 +181,9 @@ export class PoiLabeller {
       mesh.material = art.material;
       // Upright to the screen: the camera's orientation, sized in pixels at its distance.
       this.scale.set(art.width * mpp, art.height * mpp, 1);
-      this.offset.set((art.width / 2 - centre) * mpp, 0, 0).applyQuaternion(camera.quaternion);
+      this.offset
+        .set((art.width / 2 - art.ax) * mpp, (art.ay - art.height / 2) * mpp, 0)
+        .applyQuaternion(camera.quaternion);
       mesh.matrix.compose(this.world.add(this.offset), camera.quaternion, this.scale);
       mesh.matrix.premultiply(this.inverse.copy(c.group.matrixWorld).invert());
       mesh.matrixWorldNeedsUpdate = true;
@@ -193,11 +199,6 @@ export class PoiLabeller {
       art.material.dispose();
     }
     this.iconArt.clear();
-  }
-
-  /** The disc's centre from the quad's left edge (screen px). */
-  private get centre(): number {
-    return this.style.discPx / 2 + 2;
   }
 
   private mesh(group: THREE.Group): THREE.Mesh {
@@ -223,42 +224,55 @@ export class PoiLabeller {
     return (m.named ??= this.draw(m.kind, m.name));
   }
 
-  /** The icon disc (and the name beside it) on a canvas. */
+  /**
+   * The pin on a canvas: the rounded square in the category's colour with
+   * the icon, its stem down to the point, and the name's pill beside it.
+   */
   private draw(kind: string, name?: string): Art {
-    const { discPx: disc, fontPx } = this.style;
+    const { tilePx: tile, stemPx: stem, fontPx } = this.style;
     const cat = this.style.categories[kind];
-    const height = disc + MARGIN;
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d')!;
     const font = (px: number) => `600 ${px}px Inter, system-ui, sans-serif`;
     ctx.font = font(fontPx * DPR);
-    const textW = name ? ctx.measureText(name).width / DPR + GAP + 4 : 0;
-    const width = Math.ceil(disc + 4 + textW);
+    const padX = 6;
+    const pillW = name ? ctx.measureText(name).width / DPR + padX * 2 : 0;
+    const pillH = fontPx + 9;
+    const width = Math.ceil(EDGE + tile + (name ? GAP + pillW : 0) + EDGE);
+    const height = Math.ceil(EDGE + tile + stem + 3);
     canvas.width = width * DPR;
     canvas.height = height * DPR;
     ctx.scale(DPR, DPR);
-    const cx = this.centre;
-    const cy = height / 2;
+    const x0 = EDGE;
+    const y0 = EDGE;
+    const cx = x0 + tile / 2;
+    // Stem and its foot (the point).
+    ctx.fillStyle = this.style.border;
+    ctx.fillRect(cx - 1, y0 + tile, 2, stem);
     ctx.beginPath();
-    ctx.arc(cx, cy, disc / 2, 0, Math.PI * 2);
+    ctx.arc(cx, y0 + tile + stem, 2.2, 0, Math.PI * 2);
+    ctx.fillStyle = cat.colour;
+    ctx.fill();
+    // The square.
+    roundRect(ctx, x0, y0, tile, tile, 6);
     ctx.fillStyle = cat.colour;
     ctx.fill();
     ctx.lineWidth = 1.5;
-    ctx.strokeStyle = this.style.stroke;
+    ctx.strokeStyle = this.style.border;
     ctx.stroke();
     const img = this.icons.get(kind);
-    const s = disc * 0.6;
-    if (img) ctx.drawImage(img, cx - s / 2, cy - s / 2, s, s);
+    const s = tile * 0.62;
+    if (img) ctx.drawImage(img, cx - s / 2, y0 + tile / 2 - s / 2, s, s);
     if (name) {
+      const px = x0 + tile + GAP;
+      const py = y0 + (tile - pillH) / 2;
+      roundRect(ctx, px, py, pillW, pillH, 6);
+      ctx.fillStyle = this.style.pill;
+      ctx.fill();
       ctx.font = font(fontPx);
       ctx.textBaseline = 'middle';
-      ctx.lineJoin = 'round';
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = this.style.halo;
-      const x = disc + 2 + GAP;
-      ctx.strokeText(name, x, cy);
-      ctx.fillStyle = shade(cat.colour, this.style.nameShade);
-      ctx.fillText(name, x, cy);
+      ctx.fillStyle = this.style.nameColor;
+      ctx.fillText(name, px + padX, py + pillH / 2 + 0.5);
     }
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
@@ -269,16 +283,25 @@ export class PoiLabeller {
       depthWrite: false,
     });
     material.fog = false;
-    return { material, width, height };
+    return { material, width, height, ax: cx, ay: y0 + tile + stem };
   }
 }
 
-/** A category colour for its names: `k` below 1 darker, above 1 towards white. */
-function shade(hex: string, k: number): string {
-  const c = new THREE.Color(hex);
-  if (k <= 1) c.multiplyScalar(k);
-  else c.lerp(new THREE.Color(1, 1, 1), Math.min(1, k - 1));
-  return `#${c.getHexString()}`;
+function roundRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+): void {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
 }
 
 /** Frees a tile's name quads (icon quads are shared by kind). */

@@ -35,14 +35,23 @@ export interface MapStyle {
     ranges: Record<string, LabelRange>;
     /** Names show beside the icons where a pixel covers at most this many metres. */
     nameMpp: number;
-    /** Icon disc diameter and name font size (screen px). */
-    discPx: number;
+    /**
+     * Reach grows with the camera's height over the ground: within
+     * max(near, height × perHeight) m (and the rank's distance) — at street
+     * level what is around, from up high the district.
+     */
+    reach: { near: number; perHeight: number };
+    /**
+     * The pin (as the special areas' one): a rounded square in the
+     * category's colour with the icon, on a short stem whose foot is the
+     * point; closer in, the name in a pill beside it. Sizes in screen px.
+     */
+    tilePx: number;
+    stemPx: number;
     fontPx: number;
-    /** Ring round the disc and halo round the names. */
-    stroke: string;
-    halo: string;
-    /** Names in their category's colour: below 1 darker, above 1 towards white. */
-    nameShade: number;
+    border: string;
+    pill: string;
+    nameColor: string;
   };
 }
 
@@ -113,15 +122,17 @@ export const DEFAULT_MAP_STYLE: MapStyle = {
       1: { distance: 600, mpp: 0.4 },
     },
     nameMpp: 0.5,
-    discPx: 22,
+    reach: { near: 150, perHeight: 6 },
+    tilePx: 24,
+    stemPx: 10,
     fontPx: 12,
-    stroke: 'rgba(255,255,255,0.95)',
-    halo: 'rgba(255,255,255,0.95)',
-    nameShade: 0.62,
+    border: 'rgba(255,255,255,0.92)',
+    pill: 'rgba(0,0,0,0.62)',
+    nameColor: '#ffffff',
   },
 };
 
-/** Night: light names on a dark halo (the lit city behind them), the same rules. */
+/** Night: light street names on a dark halo (the lit city behind them), the same rules. */
 export const NIGHT_MAP_STYLE: MapStyle = {
   ...DEFAULT_MAP_STYLE,
   id: 'night',
@@ -133,9 +144,7 @@ export const NIGHT_MAP_STYLE: MapStyle = {
   },
   pois: {
     ...DEFAULT_MAP_STYLE.pois,
-    stroke: 'rgba(16,20,28,0.9)',
-    halo: 'rgba(16,20,28,0.9)',
-    nameShade: 1.45,
+    pill: 'rgba(8,10,16,0.78)',
   },
 };
 

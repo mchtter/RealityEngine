@@ -2893,6 +2893,10 @@ export class DtEngine {
       this.container.clientHeight,
       [...this.streetLabeller.placed],
       moved,
+      Math.max(
+        0,
+        this.camera.position.y - this.heightAt(this.camera.position.x, -this.camera.position.z),
+      ),
     );
 
     const cpu0 = performance.now();
