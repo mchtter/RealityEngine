@@ -116,17 +116,19 @@ export function buildStationSigns(
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.anisotropy = 4;
     const width = (BOARD_HEIGHT * canvas.width) / canvas.height;
-    const mesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(width, BOARD_HEIGHT),
-      new THREE.MeshBasicNodeMaterial({ map: texture, side: THREE.DoubleSide }),
-    );
-    mesh.position.set(...toThree(s.at[0], s.at[1], s.at[2]));
-    // The plane faces +z (three): turn it to face across the platform.
+    const geometry = new THREE.PlaneGeometry(width, BOARD_HEIGHT);
+    const material = new THREE.MeshBasicNodeMaterial({ map: texture });
+    // The plane faces +z (three): turn it to face across the platform. Both
+    // faces read left to right (a double-sided plane would mirror the back).
     const [fx, fy] = s.facing;
-    mesh.rotation.y = Math.atan2(fx, -fy);
-    mesh.name = 'station-sign';
-    group.add(mesh);
-    out.push(mesh);
+    for (const turn of [0, Math.PI]) {
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.set(...toThree(s.at[0], s.at[1], s.at[2]));
+      mesh.rotation.y = Math.atan2(fx, -fy) + turn;
+      mesh.name = 'station-sign';
+      group.add(mesh);
+      out.push(mesh);
+    }
   }
   return out;
 }
@@ -134,6 +136,7 @@ export function buildStationSigns(
 export function disposeStationSigns(meshes: THREE.Mesh[]): void {
   for (const m of meshes) {
     m.removeFromParent();
+    // The two faces of a board share geometry and material (disposing twice is harmless).
     m.geometry.dispose();
     const mat = m.material as THREE.MeshBasicNodeMaterial;
     mat.map?.dispose();
