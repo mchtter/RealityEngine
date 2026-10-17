@@ -913,6 +913,8 @@ export interface UndergroundStructure {
   footprint: Polygon;
   /** Ground surface over its middle (m). */
   groundZ: number;
+  /** Concourse floor (m): a level down per layer (STATION_CONCOURSE). */
+  floorZ: number;
 }
 
 /** A way down into a station: a metro entrance on the surface. */
@@ -926,6 +928,12 @@ export interface StationEntrance {
   heading: number;
   /** The underground structure it leads into (its `ref`), when one lies within reach. */
   station?: string;
+  /**
+   * The walk from the stair pit's bottom (its door) into the station: a
+   * corridor centreline with floor heights, ending inside the station's
+   * outline at its concourse level (STATION_CONCOURSE below its ground).
+   */
+  passage?: Vec3[];
 }
 
 /** Access point of a buried network: a manhole / chamber or a valve. */

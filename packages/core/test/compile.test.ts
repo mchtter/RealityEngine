@@ -158,6 +158,12 @@ describe('compileCity', () => {
     expect(e.position[2] - ground.heightAt(...into(STATION_PIT_LENGTH - 1))).toBeGreaterThan(
       STATION_PIT.depth - 1,
     );
+    // A passage from the pit's door into the station, ending inside it at its concourse.
+    const s = m.underground!.structures[0];
+    const end = e.passage![e.passage!.length - 1];
+    expect(e.passage![0][2]).toBeCloseTo(e.position[2] - STATION_PIT.depth, 1);
+    expect(end[2]).toBeCloseTo(s.floorZ, 5);
+    expect(pointInRing([end[0], end[1]], s.footprint.outer)).toBe(true);
   });
 
   it('places points of interest on the ground with their kind and name', () => {

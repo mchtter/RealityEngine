@@ -23,7 +23,13 @@ import {
   lowestGroundAround,
   placeObservedBuildings,
 } from './buildings';
-import { CutGround, buildCuttings, settleTrenchRims } from './cuttings';
+import {
+  CutGround,
+  STATION_PIT,
+  STATION_PIT_LENGTH,
+  buildCuttings,
+  settleTrenchRims,
+} from './cuttings';
 import { undergroundBuilding } from './forms';
 import { dressStations, fuelStations, stationCanopies } from './fuel';
 import {
@@ -159,13 +165,52 @@ function streetHeading(roads: Road[], p: Vec2): number {
   return heading;
 }
 
+/** A level down under the street: a station's concourse floor this far below its ground (m). */
+const STATION_CONCOURSE = 6;
+/** A passage ends this far inside the station's outline (m). */
+const PASSAGE_INTO = 3;
+
+/**
+ * The corridor from a stair pit's bottom to the nearest edge of its station
+ * and on into it: from the pit's floor level down (or up) to the concourse.
+ */
+function stationPassage(
+  at: Vec2,
+  heading: number,
+  top: number,
+  station: UndergroundStructure,
+): Vec3[] {
+  const f: Vec2 = [Math.cos(heading), Math.sin(heading)];
+  const door: Vec2 = [at[0] + f[0] * STATION_PIT_LENGTH, at[1] + f[1] * STATION_PIT_LENGTH];
+  const z0 = top - STATION_PIT.depth;
+  const ring = station.footprint.outer;
+  const inside = pointInRing(door, ring);
+  let edge: Vec2 = door;
+  let best = Infinity;
+  if (!inside)
+    for (let k = 1; k < ring.length; k++) {
+      const cl = closestOnSegment(door, ring[k - 1], ring[k]);
+      if (cl.d < best) [best, edge] = [cl.d, cl.point];
+    }
+  // On past the edge into the concourse (towards the station's middle).
+  const mid = ringCentroid(ring);
+  const into = Math.hypot(mid[0] - edge[0], mid[1] - edge[1]);
+  const t = into > 0 ? Math.min(1, PASSAGE_INTO / into) : 0;
+  const end: Vec2 = [edge[0] + (mid[0] - edge[0]) * t, edge[1] + (mid[1] - edge[1]) * t];
+  return [
+    [door[0], door[1], z0],
+    ...(inside ? [] : [[edge[0], edge[1], station.floorZ] as Vec3]),
+    [end[0], end[1], station.floorZ],
+  ];
+}
+
 /** A metro entrance's stairs follow a street within this distance (m). */
 const ENTRANCE_STREET = 40;
 
 /** An entrance leads into the underground structure whose middle lies within this distance (m). */
 const ENTRANCE_REACH = 200;
 
-export const COMPILER_VERSION = '112';
+export const COMPILER_VERSION = '113';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -1162,27 +1207,37 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
         layer: Number.parseInt(b.tags.layer ?? '-1', 10),
         footprint,
         groundZ: groundModel.surfaceAt(c[0], c[1]).z,
+        floorZ:
+          groundModel.surfaceAt(c[0], c[1]).z -
+          STATION_CONCOURSE * Math.max(1, -Number.parseInt(b.tags.layer ?? '-1', 10)),
       };
     }),
   );
   const entrances: StationEntrance[] = features.points
     .filter((pt) => pt.tags.railway === 'subway_entrance' && inCore(pt.p))
     .map((pt) => {
-      let station: string | undefined;
+      let station: UndergroundStructure | undefined;
       let best = ENTRANCE_REACH;
       for (const s of structures) {
         const c = ringCentroid(s.footprint.outer);
         const d = Math.hypot(c[0] - pt.p[0], c[1] - pt.p[1]);
-        if (d < best) [best, station] = [d, s.ref];
+        if (d < best) [best, station] = [d, s];
       }
+      const heading = streetHeading(roads, pt.p);
+      const top = groundModel.surfaceAt(pt.p[0], pt.p[1]).z;
       return {
         id: `se:${pt.ref}`,
         ref: pt.ref,
         ...(pt.tags[ENTITY_TAG] ? { entity: pt.tags[ENTITY_TAG] } : {}),
         ...(pt.tags.name ? { name: pt.tags.name } : {}),
-        position: [pt.p[0], pt.p[1], groundModel.surfaceAt(pt.p[0], pt.p[1]).z],
-        heading: streetHeading(roads, pt.p),
-        ...(station ? { station } : {}),
+        position: [pt.p[0], pt.p[1], top],
+        heading,
+        ...(station
+          ? {
+              station: station.ref,
+              passage: stationPassage(pt.p, heading, top, station),
+            }
+          : {}),
       };
     });
   const coreStructures = structures.filter((s) => inCore(ringCentroid(s.footprint.outer)));
