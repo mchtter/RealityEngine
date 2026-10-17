@@ -174,13 +174,6 @@ export class GroundClipmap {
     return t;
   }
 
-  /** Removes a mesh's twin (back to the layered ground). */
-  static untwin(m: THREE.Mesh): void {
-    const t = m.userData.clipTwin as THREE.Mesh | undefined;
-    t?.removeFromParent();
-    delete m.userData.clipTwin;
-  }
-
   private readonly dirty = Array.from({ length: CLIP_LEVELS }, () => true);
   private readonly wanted = Array.from({ length: CLIP_LEVELS }, () => new THREE.Vector2());
 

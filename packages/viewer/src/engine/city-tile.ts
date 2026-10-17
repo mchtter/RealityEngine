@@ -2,6 +2,7 @@ import { CutGround, type UtilityKind } from '@opentwin/city-core';
 import * as THREE from 'three/webgpu';
 import { toThree } from './geom';
 import { DRAPED } from './ground-clipmap';
+import { setLook } from './look-twin';
 import { BUILDING_SLOT, type DtMaterials } from './materials';
 import { type PoiMark, disposePoiMarks, poiMarks } from './poi-labels';
 import type { PropMode } from './props';
@@ -348,20 +349,27 @@ export class CityTile {
   }
 
   private applyShells(): void {
-    const own = (m: THREE.Material) => (this.plain ? this.plainOf(m) : m);
+    // The map look's plain walls and roofs by a twin (setLook), not a material swap.
+    const plain = (s: { mesh: THREE.Mesh; material: THREE.Material }, holo: boolean) => {
+      const p = this.plainOf(s.material);
+      setLook(s.mesh, 'plain', this.plain && !holo && p !== s.material ? p : null);
+    };
     // Synthetic buildings become translucent holograms so observed data stands
     // out (data view); in the underground view every building does.
     for (const s of this.synShells) {
+      const holo = this.under || this.data;
       s.mesh.material = this.under
         ? this.mats.holoGhost
         : this.data
           ? this.mats.holoBuilding
-          : own(s.material);
-      s.mesh.castShadow = !this.data && !this.under;
+          : s.material;
+      s.mesh.castShadow = !holo;
+      plain(s, holo);
     }
     for (const s of this.obsShells) {
-      s.mesh.material = this.under ? this.mats.holoGhost : own(s.material);
+      s.mesh.material = this.under ? this.mats.holoGhost : s.material;
       s.mesh.castShadow = !this.under;
+      plain(s, this.under);
     }
   }
 

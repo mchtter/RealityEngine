@@ -52,6 +52,7 @@ import { GroundClipmap, HIDDEN_LAYER } from './ground-clipmap';
 import { HorizonLayer } from './horizon';
 import { openLandAlbedo } from './landcover';
 import { LiveObjectLayer, type LiveRef, type LiveScreen } from './live-objects';
+import { allLayersRay, setLook } from './look-twin';
 import type { MapStyle } from './map-style';
 import {
   type DtMaterials,
@@ -277,6 +278,9 @@ const NOON_ELEVATION = 48;
  * CityModel; React only passes the container and receives events.
  */
 export type DtLook = 'hdr' | 'classic';
+
+/** Work slower than this (ms) is logged in debugSlow. */
+const SLOW_MS = 100;
 
 export class DtEngine {
   readonly backend: 'webgpu' | 'webgl';
@@ -663,6 +667,28 @@ export class DtEngine {
    * UTM zone are skipped (not needed for a single city).
    */
   addTile(key: string, payload: TilePayload, level: TileLevel = 'full'): boolean {
+    const t0 = performance.now();
+    try {
+      return this.addTileNow(key, payload, level);
+    } finally {
+      this.logSlow('tile', performance.now() - t0, { key });
+    }
+  }
+
+  /**
+   * Development aid: work that took over SLOW_MS (frames by phase, tile
+   * assembly), the last 60 — what a stutter was spent on.
+   */
+  readonly debugSlow: { at: number; kind: string; ms: number; parts?: Record<string, unknown> }[] =
+    [];
+
+  private logSlow(kind: string, ms: number, parts?: Record<string, unknown>): void {
+    if (ms < SLOW_MS) return;
+    this.debugSlow.push({ at: Math.round(performance.now()), kind, ms: Math.round(ms), parts });
+    if (this.debugSlow.length > 60) this.debugSlow.shift();
+  }
+
+  private addTileNow(key: string, payload: TilePayload, level: TileLevel): boolean {
     const { frame, bounds } = payload.summary;
     if (frame) {
       if (!this.world) {
@@ -959,7 +985,7 @@ export class DtEngine {
     const m = this.overview;
     if (!m || !this.world) return null;
     const rect = this.renderer.domElement.getBoundingClientRect();
-    const ray = new THREE.Raycaster();
+    const ray = allLayersRay();
     ray.setFromCamera(
       new THREE.Vector2(
         ((clientX - rect.left) / rect.width) * 2 - 1,
@@ -1947,7 +1973,7 @@ export class DtEngine {
   /** Geographic point on the ground under a canvas point (CSS pixels); null off the city. */
   lonLatAt(clientX: number, clientY: number): LonLat | null {
     const rect = this.renderer.domElement.getBoundingClientRect();
-    const ray = new THREE.Raycaster();
+    const ray = allLayersRay();
     ray.setFromCamera(
       new THREE.Vector2(
         ((clientX - rect.left) / rect.width) * 2 - 1,
@@ -1995,7 +2021,7 @@ export class DtEngine {
   private readonly vehicles = new VehicleLayer();
   private vehicleList: VehicleState[] = [];
 
-  private readonly downRay = new THREE.Raycaster();
+  private readonly downRay = allLayersRay();
 
   /**
    * Height of the drawn ground at a world point (street surface, sidewalk,
@@ -2522,12 +2548,15 @@ export class DtEngine {
     const meshes: THREE.Mesh[] = [];
     for (const tile of this.tiles.values())
       for (const m of tile.drapedGround()) {
-        if (m.userData.own === undefined) {
-          m.userData.own = m.material;
+        if (!m.userData.draped) {
+          m.userData.draped = true;
           if (/^markings/.test(m.name)) m.layers.set(HIDDEN_LAYER);
           else
-            m.material =
-              m.material === this.mats.ground ? this.clipmap.drapeSurface : this.clipmap.drape;
+            setLook(
+              m,
+              'drape',
+              m.material === this.mats.ground ? this.clipmap.drapeSurface : this.clipmap.drape,
+            );
         }
         meshes.push(m);
       }
@@ -2544,11 +2573,11 @@ export class DtEngine {
   private undrape(): void {
     for (const tile of this.tiles.values())
       for (const m of tile.drapedGround()) {
-        if (m.userData.own === undefined) continue;
-        m.material = m.userData.own as THREE.Material;
-        m.layers.set(0);
-        delete m.userData.own;
-        GroundClipmap.untwin(m);
+        if (!m.userData.draped) continue;
+        delete m.userData.draped;
+        if (/^markings/.test(m.name)) m.layers.set(0);
+        else setLook(m, 'drape', null);
+        // The clipmap's own twins stay (hidden off its layer's pass), ready for the next time.
       }
     this.drapedKey = '';
   }
@@ -2677,7 +2706,7 @@ export class DtEngine {
       ((clientX - rect.left) / rect.width) * 2 - 1,
       -((clientY - rect.top) / rect.height) * 2 + 1,
     );
-    const ray = new THREE.Raycaster();
+    const ray = allLayersRay();
     ray.setFromCamera(ndc, this.camera);
     let best: ReturnType<CityTile['inspect']> = null;
     for (const tile of this.tiles.values()) {
@@ -2879,7 +2908,9 @@ export class DtEngine {
     }
 
     this.tickPin();
+    const tDrape = performance.now();
     if (this.debugFlags.drape) this.tickDrape();
+    const tLabels = performance.now();
     const moved = this.streetLabeller.update(
       this.tiles.values(),
       this.camera,
@@ -2902,7 +2933,15 @@ export class DtEngine {
     const cpu0 = performance.now();
     if (this.debugFlags.post) this.pipeline.render();
     else this.renderer.render(this.scene, this.camera);
-    this.cpuMs += performance.now() - cpu0;
+    const end = performance.now();
+    this.cpuMs += end - cpu0;
+    this.logSlow('frame', end - now0, {
+      update: Math.round(tDrape - now0),
+      drape: Math.round(tLabels - tDrape),
+      labels: Math.round(cpu0 - tLabels),
+      render: Math.round(end - cpu0),
+      clip: this.clipmap ? { ...this.clipmap.stats } : null,
+    });
 
     this.frames++;
     const now = performance.now();
@@ -2973,7 +3012,7 @@ export class DtEngine {
       ((e.clientX - rect.left) / rect.width) * 2 - 1,
       -((e.clientY - rect.top) / rect.height) * 2 + 1,
     );
-    const ray = new THREE.Raycaster();
+    const ray = allLayersRay();
     ray.setFromCamera(ndc, this.camera);
     if (this.pointRequest) {
       const resolve = this.pointRequest;
