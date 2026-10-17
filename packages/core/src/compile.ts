@@ -124,6 +124,7 @@ import type {
   Poi,
   Polygon,
   StationEntrance,
+  StationFitting,
   UndergroundStructure,
   UndergroundTrack,
   Prop,
@@ -315,7 +316,98 @@ const ENTRANCE_STREET = 40;
 /** An entrance leads into the underground structure whose middle lies within this distance (m). */
 const ENTRANCE_REACH = 200;
 
-export const COMPILER_VERSION = '117';
+/** A lift mapped outside a station but this close to its outline (m) comes up from it. */
+const ELEVATOR_REACH = 25;
+
+/** Plan distance from a point to a ring's outline. */
+function ringDistance(p: Vec2, ring: Vec2[]): number {
+  let best = Infinity;
+  for (let k = 1; k < ring.length; k++)
+    best = Math.min(best, closestOnSegment(p, ring[k - 1], ring[k]).d);
+  return best;
+}
+
+/**
+ * Fare gates and lifts at their mapped points (OSM gives no floor for them):
+ * a gate line stands on the shallowest concourse it lies in — one mapped in
+ * no station is a gate somewhere else and is left out; it is walked through
+ * from the doors towards the platform stairs. A lift runs from the deepest
+ * floor it lies over to the shallowest, up to the street when it serves one
+ * floor only (or stands just outside a station).
+ */
+export function stationFittings(
+  points: { p: Vec2; ref: string; tags: Record<string, string> }[],
+  structures: UndergroundStructure[],
+  groundAt: (x: number, y: number) => number,
+): StationFitting[] {
+  const out: StationFitting[] = [];
+  for (const pt of points) {
+    const gate = pt.tags.barrier === 'turnstile';
+    if (!gate && pt.tags.highway !== 'elevator') continue;
+    const over = structures.filter((s) => pointInRing(pt.p, s.footprint.outer));
+    const halls = over.filter((s) => s.kind !== 'platform');
+    const entity = pt.tags[ENTITY_TAG] ? { entity: pt.tags[ENTITY_TAG] } : {};
+    if (gate) {
+      const on = (halls.length ? halls : over).sort((a, b) => b.floorZ - a.floorZ)[0];
+      if (!on) continue;
+      // Paid side: the nearest platform stair top in this concourse; else away from the nearest door.
+      const stairTops = structures
+        .filter(
+          (s) => s.stairs && pointInRing([s.stairs.from[0], s.stairs.from[1]], on.footprint.outer),
+        )
+        .map((s): Vec2 => [s.stairs!.from[0], s.stairs!.from[1]]);
+      const nearest = (qs: Vec2[]) =>
+        qs.sort((a, b) => dist(a, pt.p) - dist(b, pt.p))[0] as Vec2 | undefined;
+      const stair = nearest(stairTops);
+      const door = nearest(on.doors ? [...on.doors] : []);
+      let facing: Vec2 = stair
+        ? sub(stair, pt.p)
+        : door
+          ? sub(pt.p, door)
+          : longAxis(on.footprint.outer);
+      if (Math.hypot(facing[0], facing[1]) < 0.5) facing = longAxis(on.footprint.outer);
+      out.push({
+        id: `sf:${pt.ref}`,
+        ref: pt.ref,
+        ...entity,
+        kind: 'gate',
+        position: [pt.p[0], pt.p[1], on.floorZ],
+        facing: normalize(facing),
+        station: on.ref,
+      });
+      continue;
+    }
+    let floors = over;
+    if (!floors.length) {
+      const near = structures
+        .filter((s) => s.kind !== 'platform')
+        .map((s) => ({ s, d: ringDistance(pt.p, s.footprint.outer) }))
+        .filter((o) => o.d < ELEVATOR_REACH)
+        .sort((a, b) => a.d - b.d)[0];
+      if (!near) continue;
+      floors = [near.s];
+    }
+    const bottom = floors.reduce((a, b) => (b.floorZ < a.floorZ ? b : a));
+    const topFloor = floors.reduce((a, b) => (b.floorZ > a.floorZ ? b : a));
+    const surface = topFloor.floorZ - bottom.floorZ < 0.5;
+    const home = halls[0] ?? bottom;
+    const towards = sub(ringCentroid(home.footprint.outer), pt.p);
+    out.push({
+      id: `sf:${pt.ref}`,
+      ref: pt.ref,
+      ...entity,
+      kind: 'elevator',
+      position: [pt.p[0], pt.p[1], bottom.floorZ],
+      facing: Math.hypot(towards[0], towards[1]) > 0.5 ? normalize(towards) : [1, 0],
+      top: surface ? groundAt(pt.p[0], pt.p[1]) : topFloor.floorZ,
+      ...(surface ? { surface: true } : {}),
+      station: home.ref,
+    });
+  }
+  return out;
+}
+
+export const COMPILER_VERSION = '118';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -1414,10 +1506,20 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
         path: run,
       }));
     });
+  const fittings = stationFittings(
+    features.points.filter((pt) => inCore(pt.p)),
+    structures,
+    (x, y) => groundModel.surfaceAt(x, y).z,
+  );
   const coreStructures = structures.filter((s) => inCore(ringCentroid(s.footprint.outer)));
   const outUnderground =
-    coreStructures.length || entrances.length || tracks.length
-      ? { structures: coreStructures, entrances, ...(tracks.length ? { tracks } : {}) }
+    coreStructures.length || entrances.length || tracks.length || fittings.length
+      ? {
+          structures: coreStructures,
+          entrances,
+          ...(tracks.length ? { tracks } : {}),
+          ...(fittings.length ? { fittings } : {}),
+        }
       : null;
 
   const observedOut = buildings.filter((b) => b.source !== 'synthetic');

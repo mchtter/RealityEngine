@@ -246,6 +246,72 @@ describe('compileCity', () => {
     expect(validateCity(m).counts['underground.level'] ?? 0).toBe(1);
   });
 
+  it('stands fare gates on the concourse and runs lifts between the floors they serve', () => {
+    const src = gridSource();
+    const square = (x: number, y: number, rx: number, ry: number) => [
+      ll(x - rx, y - ry),
+      ll(x + rx, y - ry),
+      ll(x + rx, y + ry),
+      ll(x - rx, y + ry),
+      ll(x - rx, y - ry),
+    ];
+    const point = (ref: string, x: number, y: number, tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'point' as const,
+      geometry: { type: 'Point' as const, coordinates: ll(x, y) },
+      tags,
+    });
+    src.features = [
+      ...(src.features ?? []),
+      {
+        ref: 'osm:w-hall',
+        source: 'osm',
+        priority: 0,
+        kind: 'building' as const,
+        geometry: { type: 'Polygon' as const, coordinates: [square(0, 30, 40, 20)] },
+        tags: { building: 'train_station', layer: '-1' },
+      },
+      {
+        ref: 'osm:w-platform',
+        source: 'osm',
+        priority: 0,
+        kind: 'building' as const,
+        geometry: { type: 'Polygon' as const, coordinates: [square(0, 30, 50, 4)] },
+        tags: { building: 'platform', layer: '-2' },
+      },
+      // Over the platform too: the gate stands on the concourse, not down there.
+      point('osm:n-gate', -20, 31, { barrier: 'turnstile' }),
+      point('osm:n-lift', 10, 30, { highway: 'elevator' }),
+      point('osm:n-street-lift', 0, 15, { highway: 'elevator' }),
+      // Somewhere else (a park gate): not a station's.
+      point('osm:n-park-gate', 120, 120, { barrier: 'turnstile' }),
+    ];
+    const m = compileCity(src);
+    const ug = m.underground!;
+    const hall = ug.structures.find((s) => s.ref === 'osm:w-hall')!;
+    const platform = ug.structures.find((s) => s.ref === 'osm:w-platform')!;
+    const byRef = (ref: string) => ug.fittings?.find((f) => f.ref === ref);
+    const gate = byRef('osm:n-gate')!;
+    expect(gate.kind).toBe('gate');
+    expect(gate.position[2]).toBeCloseTo(hall.floorZ, 5);
+    // Walked through towards the platform stairs (they start west of the middle).
+    const stair = platform.stairs!.from;
+    const to = [stair[0] - gate.position[0], stair[1] - gate.position[1]];
+    expect(gate.facing[0] * to[0] + gate.facing[1] * to[1]).toBeGreaterThan(0);
+    // Over both floors: platform up to the concourse.
+    const lift = byRef('osm:n-lift')!;
+    expect(lift.position[2]).toBeCloseTo(platform.floorZ, 5);
+    expect(lift.top).toBeCloseTo(hall.floorZ, 5);
+    expect(lift.surface).toBeUndefined();
+    // Over the concourse only: up to the street.
+    const street = byRef('osm:n-street-lift')!;
+    expect(street.surface).toBe(true);
+    expect(street.top! - street.position[2]).toBeCloseTo(6, 0);
+    expect(byRef('osm:n-park-gate')).toBeUndefined();
+  });
+
   it('places points of interest on the ground with their kind and name', () => {
     const src = gridSource();
     src.features = [

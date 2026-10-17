@@ -5,6 +5,7 @@ import {
   pointInRing,
   STATION_PIT_LENGTH,
   type StationEntrance,
+  type StationFitting,
   type UndergroundStructure,
   type UndergroundTrack,
   pitDepthAt,
@@ -35,7 +36,7 @@ const STATION_COLOUR = new THREE.Color('#a8322b');
 
 export function buildUnderground(model: CityModel, mats: DtMaterials): THREE.Group | null {
   const ug = model.underground;
-  if (!ug || (!ug.entrances.length && !ug.structures.length)) return null;
+  if (!ug || (!ug.entrances.length && !ug.structures.length && !ug.fittings?.length)) return null;
   const group = new THREE.Group();
   group.name = 'underground';
   if (ug.entrances.length) {
@@ -93,6 +94,27 @@ export function buildUnderground(model: CityModel, mats: DtMaterials): THREE.Gro
     m.userData.role = 'underground:structure';
     m.renderOrder = 3;
     group.add(m);
+  }
+  if (ug.fittings?.length) {
+    const solid = new MeshBuilder();
+    const glass = new MeshBuilder();
+    const lights = new MeshBuilder();
+    for (const f of ug.fittings)
+      if (f.kind === 'gate') gateLine(f, solid, glass, lights);
+      else elevator(f, solid, glass);
+    for (const [mb, material, name] of [
+      [solid, mats.tunnelFixture, 'station-fittings'],
+      [glass, mats.railGlass, 'station-fittings-glass'],
+      [lights, mats.tunnelGlow, 'station-fittings-lights'],
+    ] as const) {
+      if (!mb.indices.length) continue;
+      const m = new THREE.Mesh(mb.build({ color: true }), material);
+      m.name = name;
+      m.castShadow = name === 'station-fittings';
+      m.receiveShadow = true;
+      m.userData.role = 'underground:entrance';
+      group.add(m);
+    }
   }
   return group;
 }
@@ -848,5 +870,157 @@ function volume(s: UndergroundStructure, mb: MeshBuilder): void {
   for (const z of [top, bottom]) {
     const base = pts.map((p) => mb.vertex(toThree(p[0], p[1], z), [0, 1, 0], STATION_COLOUR));
     for (const [i, j, l] of tris) mb.triangle(base[i], base[j], base[l]);
+  }
+}
+
+/** Fare gates: this many aisles this wide between cabinets (m). */
+const GATE_AISLES = 5;
+const GATE_AISLE = 0.55;
+const GATE_CABINET = { width: 0.22, length: 1.4, height: 1.0 };
+const GATE_GO = new THREE.Color('#3ccf6a');
+const LIFT_SHAFT = 2.2;
+const LIFT_DOOR = { width: 1.1, height: 2.1 };
+/** A street lift's glass cabin over the ground (m). */
+const LIFT_KIOSK = 2.7;
+const LIFT_PANEL = new THREE.Color('#9fa4aa');
+const LIFT_DOOR_COLOUR = new THREE.Color('#5b6168');
+const LIFT_FRAME = new THREE.Color('#2f3337');
+
+/**
+ * A box in a fitting's frame: `f` its forward direction, centred at `c`
+ * (along / across offsets), half sizes, from z0 to z1; walls and top face out.
+ */
+function box(
+  mb: MeshBuilder,
+  o: number[],
+  f: number[],
+  c: [number, number],
+  half: [number, number],
+  z0: number,
+  z1: number,
+  colour: THREE.Color,
+  top = true,
+): void {
+  const n = [-f[1], f[0]];
+  const at = (u: number, v: number): [number, number] => [
+    o[0] + f[0] * (c[0] + u) + n[0] * (c[1] + v),
+    o[1] + f[1] * (c[0] + u) + n[1] * (c[1] + v),
+  ];
+  // Counter-clockwise in plan.
+  const ring = [
+    at(-half[0], -half[1]),
+    at(half[0], -half[1]),
+    at(half[0], half[1]),
+    at(-half[0], half[1]),
+  ];
+  for (let k = 0; k < 4; k++) {
+    const a = ring[k];
+    const b = ring[(k + 1) % 4];
+    face(
+      mb,
+      [
+        [a[0], a[1], z0],
+        [b[0], b[1], z0],
+        [b[0], b[1], z1],
+        [a[0], a[1], z1],
+      ],
+      colour,
+    );
+  }
+  if (top)
+    face(
+      mb,
+      ring.map((q): [number, number, number] => [q[0], q[1], z1]),
+      colour,
+    );
+}
+
+/**
+ * A fare-gate line across the way people walk (`facing`): stainless
+ * cabinets with aisles between them, glass flaps in each aisle, a green light
+ * on each cabinet's end towards the free side.
+ */
+function gateLine(
+  f: StationFitting,
+  solid: MeshBuilder,
+  glass: MeshBuilder,
+  lights: MeshBuilder,
+): void {
+  const [x, y, z] = f.position;
+  const G = GATE_CABINET;
+  const pitch = G.width + GATE_AISLE;
+  const span = GATE_AISLES * pitch + G.width;
+  for (let i = 0; i <= GATE_AISLES; i++) {
+    const v = -span / 2 + G.width / 2 + i * pitch;
+    box(solid, [x, y], f.facing, [0, v], [G.length / 2, G.width / 2], z, z + G.height, STAINLESS);
+    // The light on its top at the free end (people come from behind `facing`).
+    box(
+      lights,
+      [x, y],
+      f.facing,
+      [-G.length / 2 + 0.12, v],
+      [0.08, 0.06],
+      z + G.height,
+      z + G.height + 0.01,
+      GATE_GO,
+    );
+    if (i === GATE_AISLES) continue;
+    // Flaps from both cabinets into the aisle, closed across it.
+    for (const side of [1, -1]) {
+      const from = v + (side > 0 ? G.width / 2 : G.width / 2 + GATE_AISLE);
+      const to = from + (side > 0 ? 0.24 : -0.24);
+      const mid = (from + to) / 2;
+      box(glass, [x, y], f.facing, [0, mid], [0.01, 0.12], z + 0.45, z + 1.15, STAINLESS);
+    }
+  }
+}
+
+/**
+ * A lift: a steel shaft from its lowest floor to the ceiling over its top
+ * stop, doors facing `facing` at each stop; a street lift ends in a glass
+ * cabin on the ground with a roof.
+ */
+function elevator(f: StationFitting, solid: MeshBuilder, glass: MeshBuilder): void {
+  const [x, y, z] = f.position;
+  const top = f.top ?? z + CONCOURSE_HEIGHT;
+  const h = LIFT_SHAFT / 2;
+  const o = [x, y];
+  const shaftTop = f.surface ? top : top + CONCOURSE_HEIGHT;
+  box(solid, o, f.facing, [0, 0], [h, h], z, shaftTop, LIFT_PANEL, !f.surface);
+  // Doors at the bottom and the top stop (just proud of the wall).
+  const door = (floor: number) =>
+    box(
+      solid,
+      o,
+      f.facing,
+      [h + 0.01, 0],
+      [0.01, LIFT_DOOR.width / 2],
+      floor,
+      floor + LIFT_DOOR.height,
+      LIFT_DOOR_COLOUR,
+    );
+  door(z);
+  if (!f.surface) door(top);
+  else {
+    // The cabin on the street: glass walls, steel corner posts, a roof, its door.
+    box(glass, o, f.facing, [0, 0], [h, h], top, top + LIFT_KIOSK, LIFT_PANEL, false);
+    for (const [u, v] of [
+      [h, h],
+      [h, -h],
+      [-h, h],
+      [-h, -h],
+    ] as const)
+      box(solid, o, f.facing, [u, v], [0.06, 0.06], top, top + LIFT_KIOSK, LIFT_FRAME);
+    box(
+      solid,
+      o,
+      f.facing,
+      [0, 0],
+      [h + 0.15, h + 0.15],
+      top + LIFT_KIOSK,
+      top + LIFT_KIOSK + 0.2,
+      LIFT_FRAME,
+    );
+    door(top);
   }
 }

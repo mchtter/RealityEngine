@@ -664,6 +664,11 @@ export const CITY_CLASSES: readonly CityClassDef[] = withPoiBindings([
     parents: ['transit.metro_station', 'transit.rail_station'],
     theme: t('asset', { kind: 'subway_entrance' }),
   }),
+  c('transit.station_elevator', 'İstasyon asansörü', 'building', 'volume', {
+    parents: ['transit.metro_station', 'transit.rail_station'],
+    capabilities: ['telemetry', 'state', 'alarm'],
+    theme: t('asset', { kind: 'elevator' }),
+  }),
   c('transit.metro_train', 'Metro treni (canlı)', 'city', 'point', {
     ...LIVE_VEHICLE,
     standards: ['GTFS-RT', 'SIRI'],
@@ -723,6 +728,7 @@ export const CITY_CLASSES: readonly CityClassDef[] = withPoiBindings([
   c('transit.fare_gate', 'Turnike', 'building', 'point', {
     parents: ['transit.station_entrance'],
     capabilities: ['telemetry', 'state'],
+    theme: t('asset', { kind: 'turnstile' }),
   }),
 
   // ── Havacılık

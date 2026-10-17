@@ -938,6 +938,27 @@ export interface UndergroundTrack {
   path: Vec3[];
 }
 
+/**
+ * A station fitting at its mapped position: a fare-gate line (`gate`, an
+ * OSM turnstile) on a concourse floor, or a lift (`elevator`) from one floor
+ * up to another — the street when it is the top floor it serves.
+ */
+export interface StationFitting {
+  id: string;
+  ref: string;
+  entity?: string;
+  kind: 'gate' | 'elevator';
+  /** On the floor it stands on (the lowest it serves). */
+  position: Vec3;
+  /** Gates: the direction people walk through (unit, plan); elevators: the way the doors face. */
+  facing: Vec2;
+  /** Elevators: the floor height of the top stop; set to `surface` when that is the street. */
+  top?: number;
+  surface?: boolean;
+  /** The structure it stands in. */
+  station: string;
+}
+
 /** A way down into a station: a metro entrance on the surface. */
 export interface StationEntrance {
   id: string;
@@ -1019,6 +1040,8 @@ export interface CityModel {
     entrances: StationEntrance[];
     /** Metro lines in their tunnels. */
     tracks?: UndergroundTrack[];
+    /** Fare gates and lifts. */
+    fittings?: StationFitting[];
   };
   /**
    * Street land outside the road corridors: gaps narrower than 3 m between two
