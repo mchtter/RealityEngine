@@ -915,6 +915,11 @@ export interface UndergroundStructure {
   groundZ: number;
   /** Concourse floor (m): a level down per layer (STATION_CONCOURSE). */
   floorZ: number;
+  /**
+   * Where entrance passages come through its outline (from entrances in any
+   * tile): its walls are left open there.
+   */
+  doors?: Vec2[];
 }
 
 /** A way down into a station: a metro entrance on the surface. */

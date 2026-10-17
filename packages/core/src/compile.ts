@@ -210,7 +210,7 @@ const ENTRANCE_STREET = 40;
 /** An entrance leads into the underground structure whose middle lies within this distance (m). */
 const ENTRANCE_REACH = 200;
 
-export const COMPILER_VERSION = '113';
+export const COMPILER_VERSION = '114';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -1213,8 +1213,10 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       };
     }),
   );
-  const entrances: StationEntrance[] = features.points
-    .filter((pt) => pt.tags.railway === 'subway_entrance' && inCore(pt.p))
+  // Every entrance of the region (a passage may reach a station in this tile
+  // from an entrance in the next one); the tile keeps its own.
+  const allEntrances: StationEntrance[] = features.points
+    .filter((pt) => pt.tags.railway === 'subway_entrance')
     .map((pt) => {
       let station: UndergroundStructure | undefined;
       let best = ENTRANCE_REACH;
@@ -1240,6 +1242,14 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
           : {}),
       };
     });
+  const entrances = allEntrances.filter((e) => inCore([e.position[0], e.position[1]]));
+  for (const s of structures) {
+    // A passage with a point on the outline (it starts outside) comes through there.
+    const doors = allEntrances
+      .filter((e) => e.station === s.ref && e.passage && e.passage.length > 2)
+      .map((e): Vec2 => [e.passage![1][0], e.passage![1][1]]);
+    if (doors.length) s.doors = doors;
+  }
   const coreStructures = structures.filter((s) => inCore(ringCentroid(s.footprint.outer)));
   const outUnderground =
     coreStructures.length || entrances.length ? { structures: coreStructures, entrances } : null;

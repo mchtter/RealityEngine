@@ -164,6 +164,11 @@ describe('compileCity', () => {
     expect(e.passage![0][2]).toBeCloseTo(e.position[2] - STATION_PIT.depth, 1);
     expect(end[2]).toBeCloseTo(s.floorZ, 5);
     expect(pointInRing([end[0], end[1]], s.footprint.outer)).toBe(true);
+    // The station's wall is left open where the passage comes through.
+    expect(s.doors).toHaveLength(1);
+    expect(Math.hypot(s.doors![0][0] - e.passage![1][0], s.doors![0][1] - e.passage![1][1])).toBe(
+      0,
+    );
   });
 
   it('places points of interest on the ground with their kind and name', () => {
