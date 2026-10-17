@@ -420,7 +420,7 @@ export function stationFittings(
   return out;
 }
 
-export const COMPILER_VERSION = '119';
+export const COMPILER_VERSION = '120';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [

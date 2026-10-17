@@ -1054,7 +1054,21 @@ export interface CityModel {
   buildings: Building[];
   props: Prop[];
   fixes: Fix[];
+  /**
+   * Source data to verify (validateCity's data rules: a layer mismatch, a
+   * tunnel clash, a road attribute out of range …), up to a few a rule;
+   * added after compiling, by whoever validates the tile.
+   */
+  checks?: DataCheck[];
   stats: Record<string, number>;
+}
+
+/** A place where the source data needs a look: the rule, where, what. */
+export interface DataCheck {
+  rule: string;
+  /** Model coordinates (x east, y north). */
+  at: Vec2;
+  note?: string;
 }
 
 export interface CompileOptions {

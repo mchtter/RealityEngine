@@ -1,6 +1,7 @@
 import type {
   Building,
   CityModel,
+  DataCheck,
   Fix,
   TerrainCut,
   TerrainGrid,
@@ -91,6 +92,8 @@ export interface TileSummary {
   attribution: string[];
   terrain: TerrainGrid;
   fixes: Fix[];
+  /** Source data to verify (tile coords). */
+  checks?: DataCheck[];
   buildings: BuildingInfo[];
   /** Underpass trenches and tunnel lids cut into the terrain. */
   terrainCut?: TerrainCut;
@@ -163,6 +166,7 @@ export function summarize(model: CityModel): TileSummary {
     terrain: model.terrain,
     ...(model.terrainCut ? { terrainCut: model.terrainCut } : {}),
     fixes: model.fixes,
+    ...(model.checks?.length ? { checks: model.checks } : {}),
     utilities: utilityStats(model),
     empty: isEmptyTile(model),
     streets: streetLines(model.roads),

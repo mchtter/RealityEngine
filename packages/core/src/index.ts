@@ -29,6 +29,7 @@ export {
 export { CutGround, STATION_PIT, STATION_PIT_LENGTH, TWIN_MEDIAN, pitDepthAt } from './cuttings';
 export { GroundModel, STREET_SURFACES, SURFACE_LIFT, type Support } from './ground-model';
 export {
+  DATA_RULES,
   FENCE_WIDTH,
   RULES,
   barrierOnRoad,

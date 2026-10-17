@@ -100,6 +100,15 @@ export const RULES = {
 
 export type RuleId = keyof typeof RULES;
 
+/** Rules whose violations are the source data's to fix: listed for someone to verify. */
+export const DATA_RULES: ReadonlySet<RuleId> = new Set<RuleId>([
+  'data.prop-support',
+  'data.overlap',
+  'data.road-attr',
+  'underground.level',
+  'tunnel.clash',
+]);
+
 export interface Violation {
   rule: RuleId;
   /** Model coordinates (x east, y north). */
