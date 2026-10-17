@@ -1,18 +1,22 @@
-import type { CityModel, StationEntrance, UndergroundStructure } from '@opentwin/city-core';
+import {
+  type CityModel,
+  STATION_PIT,
+  STATION_PIT_LENGTH,
+  type StationEntrance,
+  type UndergroundStructure,
+  pitDepthAt,
+} from '@opentwin/city-core';
 import * as THREE from 'three/webgpu';
 import { MeshBuilder, toThree } from './geom';
 import type { DtMaterials } from './materials';
 
 /**
- * Under the ground (F5b): metro entrances on the street — the dark mouth of
- * the stairs with railings round it — and, in the underground view, the
- * stations as glowing red volumes at their depth. (The stairs themselves need
- * the ground opened over them: a later step.)
+ * Under the ground (F5b): metro entrances — a stair pit down to the
+ * concourse in the ground the compiler opened for it — and, in the
+ * underground view, the stations as glowing red volumes at their depth.
  */
 
-/** Stair mouth: length along the street, width across (m); railing height. */
-const MOUTH_LENGTH = 4;
-const MOUTH_WIDTH = 1.9;
+/** Railing height round a stair pit's opening (m). */
 const RAIL_HEIGHT = 1.05;
 /** A level down is about this deep (m): concourse ceiling to floor and slab. */
 const LEVEL_DEPTH = 6;
@@ -25,15 +29,23 @@ export function buildUnderground(model: CityModel, mats: DtMaterials): THREE.Gro
   const group = new THREE.Group();
   group.name = 'underground';
   if (ug.entrances.length) {
-    const mouth = new MeshBuilder();
+    const solid = new MeshBuilder();
     const rails = new MeshBuilder();
-    for (const e of ug.entrances) entrance(e, mouth, rails);
-    const m1 = new THREE.Mesh(mouth.build({ uv: true }), mats.tunnelDark);
-    m1.name = 'station-entrance-mouth';
-    const m2 = new THREE.Mesh(rails.build({ uv: true }), mats.railMetal);
-    m2.name = 'station-entrance-rails';
-    m2.castShadow = true;
-    for (const m of [m1, m2]) {
+    const glass = new MeshBuilder();
+    const door = new MeshBuilder();
+    for (const e of ug.entrances) entrance(e, { solid, rails, glass, door });
+    const parts: [MeshBuilder, THREE.Material, string][] = [
+      [solid, mats.tunnelFixture, 'station-entrance'],
+      [rails, mats.railMetal, 'station-entrance-rails'],
+      [glass, mats.railGlass, 'station-entrance-glass'],
+      [door, mats.tunnelDark, 'station-entrance-door'],
+    ];
+    for (const [mb, material, name] of parts) {
+      if (!mb.indices.length) continue;
+      const m = new THREE.Mesh(mb.build({ color: true, uv: true }), material);
+      m.name = name;
+      m.castShadow = name === 'station-entrance';
+      m.receiveShadow = true;
       m.userData.role = 'underground:entrance';
       group.add(m);
     }
@@ -52,34 +64,179 @@ export function buildUnderground(model: CityModel, mats: DtMaterials): THREE.Gro
   return group;
 }
 
-/** The stair mouth (a dark rectangle on the ground) and railings on three sides. */
-function entrance(e: StationEntrance, mouth: MeshBuilder, rails: MeshBuilder): void {
-  const [x, y, z] = e.position;
-  const c = Math.cos(e.heading);
-  const s = Math.sin(e.heading);
-  const at = (u: number, v: number, h: number): [number, number, number] => [
-    x + c * u - s * v,
-    y + s * u + c * v,
-    z + h,
+const CONCRETE = new THREE.Color('#b8b4ab');
+const GRANITE = new THREE.Color('#8e8a83');
+const NOSING = new THREE.Color('#d9b23a');
+const ESCALATOR = new THREE.Color('#3b3e42');
+const UV: [number, number][] = [
+  [0, 0],
+  [1, 0],
+  [1, 1],
+  [0, 1],
+];
+
+/**
+ * A metro entrance's stair pit (the compiler opens the ground there,
+ * STATION_PIT): walls down to the concourse, a door at the bottom, stairs
+ * two escalator widths wide beside one escalator, landings at the top and
+ * the bottom, and railings round the opening on the street.
+ */
+function entrance(
+  e: StationEntrance,
+  b: { solid: MeshBuilder; rails: MeshBuilder; glass: MeshBuilder; door: MeshBuilder },
+): void {
+  const [x, y, z0] = e.position;
+  const f: [number, number] = [Math.cos(e.heading), Math.sin(e.heading)];
+  const l: [number, number] = [-f[1], f[0]];
+  /** A point `s` along the pit, `v` to its left, at height z. */
+  const at = (s: number, v: number, z: number): [number, number, number] => [
+    x + f[0] * s + l[0] * v,
+    y + f[1] * s + l[1] * v,
+    z,
   ];
-  const hl = MOUTH_LENGTH / 2;
-  const hw = MOUTH_WIDTH / 2;
-  mouth.quad(
-    [at(-hl, -hw, 0.04), at(hl, -hw, 0.04), at(hl, hw, 0.04), at(-hl, hw, 0.04)],
-    [0, 0, 1],
-    undefined,
+  const floor = (s: number) => z0 - pitDepthAt(s);
+  const P = STATION_PIT;
+  const L = STATION_PIT_LENGTH;
+  const half = P.width / 2;
+  const inner = half - P.wall;
+  const quad = (
+    mb: MeshBuilder,
+    pts: [number, number, number][],
+    n: [number, number, number],
+    c?: THREE.Color,
+  ) => mb.quad(pts, n, c, UV);
+  // Side walls (inner faces) down to the floor, and the end wall with its door.
+  const breaks = [0, P.top, P.top + P.run, L];
+  for (const side of [1, -1] as const) {
+    const v = side * inner;
+    const n: [number, number, number] = [-l[0] * side, -l[1] * side, 0];
+    for (let k = 1; k < breaks.length; k++) {
+      const s0 = breaks[k - 1];
+      const s1 = breaks[k];
+      const pts: [number, number, number][] = [
+        at(s0, v, floor(s0)),
+        at(s1, v, floor(s1)),
+        at(s1, v, z0 + 0.05),
+        at(s0, v, z0 + 0.05),
+      ];
+      quad(b.solid, side > 0 ? pts : [pts[1], pts[0], pts[3], pts[2]], n, CONCRETE);
+    }
+  }
+  const back: [number, number, number] = [-f[0], -f[1], 0];
+  quad(
+    b.solid,
     [
-      [0, 0],
-      [1, 0],
-      [1, 1],
-      [0, 1],
+      at(L, inner, floor(L)),
+      at(L, -inner, floor(L)),
+      at(L, -inner, z0 + 0.05),
+      at(L, inner, z0 + 0.05),
     ],
+    back,
+    CONCRETE,
   );
-  // The open end (+u) is where one walks in; railings on the long sides and the far end.
-  const fence = (a: [number, number], b: [number, number]) => {
-    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    const p0 = at(a[0], a[1], 0);
-    const p1 = at(b[0], b[1], 0);
+  quad(
+    b.door,
+    [
+      at(L - 0.03, 1.2, floor(L)),
+      at(L - 0.03, -1.2, floor(L)),
+      at(L - 0.03, -1.2, floor(L) + 2.6),
+      at(L - 0.03, 1.2, floor(L) + 2.6),
+    ],
+    back,
+  );
+  const up: [number, number, number] = [0, 0, 1];
+  // Landings.
+  quad(
+    b.solid,
+    [
+      at(0, -inner, z0 + 0.02),
+      at(P.top, -inner, z0 + 0.02),
+      at(P.top, inner, z0 + 0.02),
+      at(0, inner, z0 + 0.02),
+    ],
+    up,
+    GRANITE,
+  );
+  const zb = floor(L) + 0.02;
+  quad(
+    b.solid,
+    [
+      at(P.top + P.run, -inner, zb),
+      at(L, -inner, zb),
+      at(L, inner, zb),
+      at(P.top + P.run, inner, zb),
+    ],
+    up,
+    GRANITE,
+  );
+  // Stairs (two escalator widths, on the left) and the escalator (on the right).
+  const split = inner - 2 * P.escalator;
+  const steps = Math.ceil(P.depth / 0.16);
+  const rise = P.depth / steps;
+  const tread = P.run / steps;
+  for (let i = 0; i < steps; i++) {
+    const s0 = P.top + i * tread;
+    const s1 = s0 + tread;
+    const zTop = z0 - i * rise;
+    const zLow = zTop - rise;
+    // Riser down from this step's front edge, then the tread.
+    quad(
+      b.solid,
+      [at(s0, split, zTop), at(s0, inner, zTop), at(s0, inner, zLow), at(s0, split, zLow)],
+      back,
+      GRANITE,
+    );
+    quad(
+      b.solid,
+      [at(s0, split, zLow), at(s1, split, zLow), at(s1, inner, zLow), at(s0, inner, zLow)],
+      up,
+      GRANITE,
+    );
+    // A yellow nosing strip on each step's edge.
+    quad(
+      b.solid,
+      [
+        at(s0, split, zLow + 0.005),
+        at(s0 + 0.05, split, zLow + 0.005),
+        at(s0 + 0.05, inner, zLow + 0.005),
+        at(s0, inner, zLow + 0.005),
+      ],
+      up,
+      NOSING,
+    );
+  }
+  const esc0 = -inner;
+  const esc1 = split;
+  const sTop = P.top;
+  const sLow = P.top + P.run;
+  const n30: [number, number, number] = [-f[0] * 0.5, -f[1] * 0.5, Math.sqrt(3) / 2];
+  quad(
+    b.solid,
+    [
+      at(sTop, esc0, z0 + 0.05),
+      at(sLow, esc0, floor(sLow) + 0.05),
+      at(sLow, esc1, floor(sLow) + 0.05),
+      at(sTop, esc1, z0 + 0.05),
+    ],
+    n30,
+    ESCALATOR,
+  );
+  // Escalator balustrades: glass, a metre over the treads.
+  for (const v of [esc0 + 0.05, esc1 - 0.05]) {
+    const pts: [number, number, number][] = [
+      at(sTop - 0.5, v, z0 + 0.05),
+      at(sLow + 0.5, v, floor(sLow) + 0.05),
+      at(sLow + 0.5, v, floor(sLow) + 1.05),
+      at(sTop - 0.5, v, z0 + 1.05),
+    ];
+    quad(b.glass, pts, [l[0], l[1], 0]);
+    quad(b.glass, [pts[1], pts[0], pts[3], pts[2]], [-l[0], -l[1], 0]);
+  }
+  // Railings round the opening on the street: both long sides and the far end.
+  const fence = (a: [number, number], c: [number, number]) => {
+    const len = Math.hypot(c[0] - a[0], c[1] - a[1]);
+    const p0 = at(a[0], a[1], z0);
+    const p1 = at(c[0], c[1], z0);
     const nx = -(p1[1] - p0[1]) / len;
     const ny = (p1[0] - p0[0]) / len;
     const top = (p: [number, number, number]): [number, number, number] => [
@@ -94,13 +251,12 @@ function entrance(e: StationEntrance, mouth: MeshBuilder, rails: MeshBuilder): v
       [len * 0.3, 1],
       [0, 1],
     ];
-    // Both faces (a railing is seen from either side).
-    rails.quad([p0, p1, top(p1), top(p0)], [nx, ny, 0], undefined, uv);
-    rails.quad([p1, p0, top(p0), top(p1)], [-nx, -ny, 0], undefined, uv);
+    b.rails.quad([p0, p1, top(p1), top(p0)], [nx, ny, 0], undefined, uv);
+    b.rails.quad([p1, p0, top(p0), top(p1)], [-nx, -ny, 0], undefined, uv);
   };
-  fence([-hl, -hw], [hl, -hw]);
-  fence([-hl, hw], [hl, hw]);
-  fence([-hl, -hw], [-hl, hw]);
+  fence([P.top, half], [L, half]);
+  fence([P.top, -half], [L, -half]);
+  fence([L, -half], [L, half]);
 }
 
 /** A station as a volume at its depth: walls round its outline and its ceiling. */

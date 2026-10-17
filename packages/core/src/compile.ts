@@ -165,7 +165,7 @@ const ENTRANCE_STREET = 40;
 /** An entrance leads into the underground structure whose middle lies within this distance (m). */
 const ENTRANCE_REACH = 200;
 
-export const COMPILER_VERSION = '111';
+export const COMPILER_VERSION = '112';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -481,7 +481,11 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   );
   conformed.forEach((r, k) => (r.profile = profiles[k].map((z) => Math.round(z * 100) / 100)));
   // Underpass ramps and tunnel mouths: where they cut the levelled terrain.
-  const { cuttings, portals, tunnels, cut } = buildCuttings(roads, terrain);
+  // Metro entrances open the ground: their stair pits are trenches too.
+  const entrancePits = features.points
+    .filter((pt) => pt.tags.railway === 'subway_entrance')
+    .map((pt) => ({ at: pt.p, heading: streetHeading(roads, pt.p) }));
+  const { cuttings, portals, tunnels, cut } = buildCuttings(roads, terrain, entrancePits);
   const cutGround = new CutGround(terrain, cut);
 
   // Road network.

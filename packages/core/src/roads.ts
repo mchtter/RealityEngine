@@ -572,6 +572,9 @@ export function buildSurfaces(roads: Road[], clipTo: Polygon[]): RoadSurfaces {
 
 /** Offsets a polyline sideways (positive = left) with mitred vertices. */
 export function offsetPolyline(points: Vec2[], d: number): Vec2[] {
+  // A single point has no direction to offset across (a marking run cut down
+  // to one point by a junction crashed a tile's compile).
+  if (points.length < 2) return points.slice();
   return points.map((p, k) => {
     const prev = points[Math.max(0, k - 1)];
     const next = points[Math.min(points.length - 1, k + 1)];

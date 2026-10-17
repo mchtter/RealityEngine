@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runwayMarkings } from '../src/amenities';
 import { compileCity } from '../src/compile';
-import { CutGround } from '../src/cuttings';
+import { CutGround, STATION_PIT, STATION_PIT_LENGTH } from '../src/cuttings';
 import {
   LocalProjection,
   closestOnSegment,
@@ -147,6 +147,17 @@ describe('compileCity', () => {
     expect(m.underground?.entrances).toMatchObject([
       { ref: 'osm:n-exit', name: 'Çıkış', station: 'osm:w-station' },
     ]);
+    // Its stair pit opens the ground: inside it the ground falls to the concourse.
+    const e = m.underground!.entrances[0];
+    const ground = new CutGround(m.terrain, m.terrainCut);
+    const into = (d: number): [number, number] => [
+      e.position[0] + Math.cos(e.heading) * d,
+      e.position[1] + Math.sin(e.heading) * d,
+    ];
+    expect(ground.inTrench(...into(STATION_PIT_LENGTH - 1))).toBe(true);
+    expect(e.position[2] - ground.heightAt(...into(STATION_PIT_LENGTH - 1))).toBeGreaterThan(
+      STATION_PIT.depth - 1,
+    );
   });
 
   it('places points of interest on the ground with their kind and name', () => {

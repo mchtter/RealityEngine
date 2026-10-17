@@ -26,7 +26,7 @@ export {
   rect as rectPolygon,
   union as unionPolygons,
 } from './poly';
-export { CutGround, TWIN_MEDIAN } from './cuttings';
+export { CutGround, STATION_PIT, STATION_PIT_LENGTH, TWIN_MEDIAN, pitDepthAt } from './cuttings';
 export { GroundModel, STREET_SURFACES, SURFACE_LIFT, type Support } from './ground-model';
 export {
   FENCE_WIDTH,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SourceRoad } from '../src/osm';
-import { classifyRoads } from '../src/roads';
+import { classifyRoads, offsetPolyline } from '../src/roads';
 
 const road = (tags: Record<string, string>): SourceRoad =>
   ({
@@ -38,5 +38,23 @@ describe('road width / lanes from the source', () => {
     const [b] = classifyRoads([road({ highway: 'track', bicycle: 'designated' })]);
     const [c] = classifyRoads([road({ highway: 'service' })]);
     expect([a.cls, b.cls, c.cls]).toEqual(['footway', 'footway', 'service']);
+  });
+});
+
+describe('offsetPolyline', () => {
+  it('keeps a single point as it is (a marking run cut down to one point)', () => {
+    expect(offsetPolyline([[3, 4]], 1.5)).toEqual([[3, 4]]);
+    expect(
+      offsetPolyline(
+        [
+          [0, 0],
+          [10, 0],
+        ],
+        2,
+      ),
+    ).toEqual([
+      [0, 2],
+      [10, 2],
+    ]);
   });
 });

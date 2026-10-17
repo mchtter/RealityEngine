@@ -46,6 +46,30 @@ const TUBE_GRADE = 0.07;
 /** Profile points along a tube at most this far apart (m). */
 const TUBE_STEP = 5;
 
+/**
+ * A metro entrance's stair pit (m): three escalator widths (one escalator,
+ * stairs two wide) between walls, down `depth` to the concourse at 30°,
+ * a landing at the top and one at the bottom before the door.
+ */
+export const STATION_PIT = {
+  escalator: 1.2,
+  wall: 0.25,
+  width: 3 * 1.2 + 2 * 0.25,
+  depth: 6,
+  top: 1,
+  run: 6 / Math.tan(Math.PI / 6),
+  bottom: 2.5,
+} as const;
+
+/** The pit's whole length along its heading. */
+export const STATION_PIT_LENGTH = STATION_PIT.top + STATION_PIT.run + STATION_PIT.bottom;
+
+/** How far below its top a stair pit's floor lies `s` metres in. */
+export function pitDepthAt(s: number): number {
+  const x = (s - STATION_PIT.top) / STATION_PIT.run;
+  return STATION_PIT.depth * Math.min(1, Math.max(0, x));
+}
+
 const endKey = (p: Vec2) => `${Math.round(p[0] * 2)},${Math.round(p[1] * 2)}`;
 
 function arcLengths(points: Vec2[]): number[] {
@@ -140,6 +164,8 @@ function dotDir(a: Vec2, b: Vec2): number {
 export function buildCuttings(
   roads: Road[],
   t: TerrainGrid,
+  /** Metro entrances: a stair pit from `at` along `heading` (radians from +x). */
+  pits: { at: Vec2; heading: number }[] = [],
 ): { cuttings: Cutting[]; portals: Portal[]; tunnels: Tunnel[]; cut: TerrainCut } {
   const ground = roads.filter((r) => r.grade === 'ground' && isVehicular(r.cls));
   const byEnd = new Map<string, Road[]>();
@@ -320,6 +346,26 @@ export function buildCuttings(
           : Math.max(TUNNEL_HEIGHT + 0.6, origAt(end.p) - mouthZ[k] + 0.9),
       });
     });
+  }
+  // Stair pits down to stations: a trench whose floor falls from the street
+  // level at its top to STATION_PIT.depth (the viewer draws the steps on it).
+  for (const pit of pits) {
+    const dir: Vec2 = [Math.cos(pit.heading), Math.sin(pit.heading)];
+    const pts: Vec2[] = [
+      pit.at,
+      [pit.at[0] + dir[0] * STATION_PIT_LENGTH, pit.at[1] + dir[1] * STATION_PIT_LENGTH],
+    ];
+    const half = STATION_PIT.width / 2;
+    const top = origAt(pit.at);
+    trenches.push(...bufferPolyline(pts, half, false));
+    setAlong(
+      floorGrid,
+      pts,
+      [0, STATION_PIT_LENGTH],
+      half + reach,
+      (s) => Math.max(floorMin, top - pitDepthAt(s)),
+      -1,
+    );
   }
   const changed = (g: TerrainGrid): Vec3[] => {
     const out: Vec3[] = [];
