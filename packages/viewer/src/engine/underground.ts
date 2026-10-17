@@ -1,6 +1,7 @@
 import {
   type CityModel,
   STATION_PIT,
+  pointInRing,
   STATION_PIT_LENGTH,
   type StationEntrance,
   type UndergroundStructure,
@@ -18,6 +19,13 @@ import type { DtMaterials } from './materials';
 
 /** Railing height round a stair pit's opening (m). */
 const RAIL_HEIGHT = 1.05;
+/** Passage from a stair pit into its station: half width and clear height (m). */
+export const CORRIDOR_HALF = 1.5;
+export const CORRIDOR_HEIGHT = 3;
+/** A station concourse's clear height (m). */
+export const CONCOURSE_HEIGHT = 4.5;
+/** Columns in a concourse stand on a grid this wide (m), kept off its walls. */
+const COLUMN_GRID = 9;
 /** A level down is about this deep (m): concourse ceiling to floor and slab. */
 const LEVEL_DEPTH = 6;
 /** A station's glow in the underground view (metro red, dimmed). */
@@ -33,12 +41,17 @@ export function buildUnderground(model: CityModel, mats: DtMaterials): THREE.Gro
     const rails = new MeshBuilder();
     const glass = new MeshBuilder();
     const door = new MeshBuilder();
-    for (const e of ug.entrances) entrance(e, { solid, rails, glass, door });
+    const glow = new MeshBuilder();
+    for (const e of ug.entrances) {
+      entrance(e, { solid, rails, glass, door });
+      if (e.passage) corridor(e.passage, solid, glow);
+    }
     const parts: [MeshBuilder, THREE.Material, string][] = [
       [solid, mats.tunnelFixture, 'station-entrance'],
       [rails, mats.railMetal, 'station-entrance-rails'],
       [glass, mats.railGlass, 'station-entrance-glass'],
       [door, mats.tunnelDark, 'station-entrance-door'],
+      [glow, mats.tunnelGlow, 'station-passage-lights'],
     ];
     for (const [mb, material, name] of parts) {
       if (!mb.indices.length) continue;
@@ -51,6 +64,21 @@ export function buildUnderground(model: CityModel, mats: DtMaterials): THREE.Gro
     }
   }
   if (ug.structures.length) {
+    // Inside: the concourse one walks into (always drawn, under the ground).
+    const inside = new MeshBuilder();
+    const lights = new MeshBuilder();
+    for (const s of ug.structures) concourse(s, inside, lights);
+    for (const [mb, material, name] of [
+      [inside, mats.tunnelFixture, 'station-concourse'],
+      [lights, mats.tunnelGlow, 'station-concourse-lights'],
+    ] as const) {
+      if (!mb.indices.length) continue;
+      const m = new THREE.Mesh(mb.build({ color: true }), material);
+      m.name = name;
+      m.receiveShadow = true;
+      m.userData.role = 'underground:entrance';
+      group.add(m);
+    }
     const vol = new MeshBuilder();
     // The networks' glowing material (a station reads like a pipe network down there).
     vol.defineAttribute('ua', 1);
@@ -123,27 +151,27 @@ function entrance(
     }
   }
   const back: [number, number, number] = [-f[0], -f[1], 0];
-  quad(
-    b.solid,
-    [
-      at(L, inner, floor(L)),
-      at(L, -inner, floor(L)),
-      at(L, -inner, z0 + 0.05),
-      at(L, inner, z0 + 0.05),
-    ],
-    back,
-    CONCRETE,
-  );
-  quad(
-    b.door,
-    [
-      at(L - 0.03, 1.2, floor(L)),
-      at(L - 0.03, -1.2, floor(L)),
-      at(L - 0.03, -1.2, floor(L) + 2.6),
-      at(L - 0.03, 1.2, floor(L) + 2.6),
-    ],
-    back,
-  );
+  const zf = floor(L);
+  const endWall = (v0: number, v1: number, h0: number, h1: number) =>
+    quad(b.solid, [at(L, v1, h0), at(L, v0, h0), at(L, v0, h1), at(L, v1, h1)], back, CONCRETE);
+  if (e.passage) {
+    // The way on into the station: the end wall open for the passage.
+    endWall(CORRIDOR_HALF, inner, zf, z0 + 0.05);
+    endWall(-inner, -CORRIDOR_HALF, zf, z0 + 0.05);
+    endWall(-CORRIDOR_HALF, CORRIDOR_HALF, zf + CORRIDOR_HEIGHT, z0 + 0.05);
+  } else {
+    endWall(-inner, inner, zf, z0 + 0.05);
+    quad(
+      b.door,
+      [
+        at(L - 0.03, 1.2, zf),
+        at(L - 0.03, -1.2, zf),
+        at(L - 0.03, -1.2, zf + 2.6),
+        at(L - 0.03, 1.2, zf + 2.6),
+      ],
+      back,
+    );
+  }
   const up: [number, number, number] = [0, 0, 1];
   // Landings.
   quad(
@@ -257,6 +285,184 @@ function entrance(
   fence([P.top, half], [L, half]);
   fence([P.top, -half], [L, -half]);
   fence([L, -half], [L, half]);
+}
+
+const TILE_WALL = new THREE.Color('#d8d4cb');
+const CEILING = new THREE.Color('#e6e3dc');
+const FLOOR = new THREE.Color('#9d988f');
+const COLUMN = new THREE.Color('#c7c1b6');
+const LIGHT = new THREE.Color('#fff4dc');
+
+/** A quad from four model points; its normal from the first three (for lighting). */
+function face(mb: MeshBuilder, pts: [number, number, number][], c: THREE.Color): void {
+  const [a, b, d] = pts;
+  const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const v = [d[0] - a[0], d[1] - a[1], d[2] - a[2]];
+  const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+  const l = Math.hypot(n[0], n[1], n[2]) || 1;
+  mb.quad(pts, [n[0] / l, n[1] / l, n[2] / l], c, UV);
+}
+
+/** The corridor from a stair pit's door into its station: floor, walls, ceiling, a light strip. */
+function corridor(path: number[][], mb: MeshBuilder, glow: MeshBuilder): void {
+  const h = CORRIDOR_HEIGHT;
+  const w = CORRIDOR_HALF;
+  for (let k = 1; k < path.length; k++) {
+    const a = path[k - 1];
+    const b = path[k];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (len < 0.05) continue;
+    const lx = (-(b[1] - a[1]) / len) * w;
+    const ly = ((b[0] - a[0]) / len) * w;
+    const P = (q: number[], side: number, dz: number): [number, number, number] => [
+      q[0] + lx * side,
+      q[1] + ly * side,
+      q[2] + dz,
+    ];
+    // Counter-clockwise seen from inside the corridor.
+    face(mb, [P(a, -1, 0.02), P(b, -1, 0.02), P(b, 1, 0.02), P(a, 1, 0.02)], FLOOR);
+    face(mb, [P(a, 1, h), P(b, 1, h), P(b, -1, h), P(a, -1, h)], CEILING);
+    // Walls face in: a quad along the run faces right of it, so the left wall
+    // as it is and the right one reversed.
+    face(mb, [P(a, 1, 0), P(b, 1, 0), P(b, 1, h), P(a, 1, h)], TILE_WALL);
+    face(
+      mb,
+      [P(a, -1, 0), P(b, -1, 0), P(b, -1, h), P(a, -1, h)].reverse() as [number, number, number][],
+      TILE_WALL,
+    );
+    const s = 0.15 / w;
+    const strip = (q: number[], side: number): [number, number, number] => [
+      q[0] + lx * side * s,
+      q[1] + ly * side * s,
+      q[2] + h - 0.02,
+    ];
+    face(glow, [strip(a, 1), strip(b, 1), strip(b, -1), strip(a, -1)], LIGHT);
+  }
+}
+
+/**
+ * A station's concourse one can walk in: floor and ceiling over its
+ * outline, walls facing in (open where passages come through), columns on a
+ * grid and light panels on the ceiling.
+ */
+function concourse(s: UndergroundStructure, mb: MeshBuilder, glow: MeshBuilder): void {
+  const z = s.floorZ;
+  const h = CONCOURSE_HEIGHT;
+  const ring =
+    s.footprint.outer[0][0] === s.footprint.outer.at(-1)![0] &&
+    s.footprint.outer[0][1] === s.footprint.outer.at(-1)![1]
+      ? s.footprint.outer.slice(0, -1)
+      : s.footprint.outer;
+  if (ring.length < 3) return;
+  let area = 0;
+  for (let k = 0; k < ring.length; k++) {
+    const a = ring[k];
+    const b = ring[(k + 1) % ring.length];
+    area += a[0] * b[1] - b[0] * a[1];
+  }
+  // Inside lies left of each edge of a counter-clockwise outline.
+  const ccw = area > 0;
+  const gap = CORRIDOR_HALF + 0.2;
+  for (let k = 0; k < ring.length; k++) {
+    const a = ring[k];
+    const b = ring[(k + 1) % ring.length];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (len < 0.05) continue;
+    // Spans of this edge left open for the passages' doors.
+    const cuts: [number, number][] = [];
+    for (const d of s.doors ?? []) {
+      const t = ((d[0] - a[0]) * (b[0] - a[0]) + (d[1] - a[1]) * (b[1] - a[1])) / (len * len);
+      const px = a[0] + (b[0] - a[0]) * t;
+      const py = a[1] + (b[1] - a[1]) * t;
+      if (t < -0.01 || t > 1.01 || Math.hypot(d[0] - px, d[1] - py) > 0.5) continue;
+      cuts.push([t - gap / len, t + gap / len]);
+    }
+    cuts.sort((p, q) => p[0] - q[0]);
+    const spans: [number, number][] = [];
+    let from = 0;
+    for (const [c0, c1] of cuts) {
+      if (c0 > from) spans.push([from, Math.min(1, c0)]);
+      from = Math.max(from, c1);
+    }
+    if (from < 1) spans.push([from, 1]);
+    for (const [t0, t1] of spans) {
+      const p0: [number, number] = [a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0];
+      const p1: [number, number] = [a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1];
+      const pts: [number, number, number][] = [
+        [p0[0], p0[1], z],
+        [p1[0], p1[1], z],
+        [p1[0], p1[1], z + h],
+        [p0[0], p0[1], z + h],
+      ];
+      face(mb, ccw ? (pts.reverse() as [number, number, number][]) : pts, TILE_WALL);
+    }
+  }
+  // Floor (facing up) and ceiling (facing down) over the outline.
+  const contour = ring.map((p) => new THREE.Vector2(p[0], p[1]));
+  const holes = s.footprint.holes.map((hh) => hh.map((p) => new THREE.Vector2(p[0], p[1])));
+  const tris = THREE.ShapeUtils.triangulateShape(contour, holes);
+  const pts = [...ring, ...s.footprint.holes.flat()];
+  const fl = pts.map((p) => mb.vertex(toThree(p[0], p[1], z + 0.02), [0, 1, 0], FLOOR));
+  for (const [i, j, l] of tris) mb.triangle(fl[i], fl[j], fl[l]);
+  const ce = pts.map((p) => mb.vertex(toThree(p[0], p[1], z + h), [0, -1, 0], CEILING));
+  for (const [i, j, l] of tris) mb.triangle(ce[i], ce[l], ce[j]);
+  // Columns and ceiling lights on a grid, kept two metres off the walls.
+  const xs = ring.map((p) => p[0]);
+  const ys = ring.map((p) => p[1]);
+  const clear = (x: number, y: number) => {
+    if (!pointInRing([x, y], ring)) return false;
+    for (let k = 0; k < ring.length; k++) {
+      const a = ring[k];
+      const b = ring[(k + 1) % ring.length];
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const l2 = dx * dx + dy * dy || 1;
+      const t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / l2));
+      if (Math.hypot(a[0] + dx * t - x, a[1] + dy * t - y) < 2) return false;
+    }
+    return true;
+  };
+  const x0 = Math.min(...xs);
+  const y0 = Math.min(...ys);
+  for (let x = x0 + COLUMN_GRID / 2; x < Math.max(...xs); x += COLUMN_GRID)
+    for (let y = y0 + COLUMN_GRID / 2; y < Math.max(...ys); y += COLUMN_GRID) {
+      if (clear(x, y)) column(mb, x, y, z, z + h);
+      const lx = x + COLUMN_GRID / 2;
+      const ly = y;
+      if (clear(lx, ly)) {
+        const q = (dx: number, dy: number): [number, number, number] => [
+          lx + dx,
+          ly + dy,
+          z + h - 0.02,
+        ];
+        face(glow, [q(-0.6, -0.2), q(-0.6, 0.2), q(0.6, 0.2), q(0.6, -0.2)], LIGHT);
+      }
+    }
+}
+
+/** A square column (0.6 m) from floor to ceiling. */
+function column(mb: MeshBuilder, x: number, y: number, z0: number, z1: number): void {
+  const r = 0.3;
+  const c: [number, number][] = [
+    [x - r, y - r],
+    [x + r, y - r],
+    [x + r, y + r],
+    [x - r, y + r],
+  ];
+  for (let k = 0; k < 4; k++) {
+    const a = c[k];
+    const b = c[(k + 1) % 4];
+    face(
+      mb,
+      [
+        [a[0], a[1], z0],
+        [b[0], b[1], z0],
+        [b[0], b[1], z1],
+        [a[0], a[1], z1],
+      ],
+      COLUMN,
+    );
+  }
 }
 
 /** A station as a volume at its depth: walls round its outline and its ceiling. */

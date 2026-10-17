@@ -15,6 +15,7 @@ import {
   instancedVariant,
 } from './materials';
 import { type StreetLine, streetLines } from './street-lines';
+import { CONCOURSE_HEIGHT, CORRIDOR_HALF, CORRIDOR_HEIGHT } from './underground';
 
 /**
  * Transfer format between the tile worker (builds geometry off the main
@@ -97,6 +98,8 @@ export interface TileSummary {
    * (tile coords); a tunnel road has its clear height.
    */
   decks: { path: [number, number, number][]; half: number; clear?: number }[];
+  /** Floors one can walk on under the ground (station concourses): outline, level, clear height. */
+  floors?: { ring: [number, number][]; z: number; clear: number }[];
   /** Named ground streets (centreline on the street surface), for their names on the map. */
   streets?: StreetLine[];
   /** Points of interest (tile coords, on the ground), for the map's icons. */
@@ -172,7 +175,16 @@ export function summarize(model: CityModel): TileSummary {
     decks: [
       ...(model.bridges ?? []).map((b) => ({ path: b.path, half: b.width / 2 })),
       ...(model.tunnels ?? []).map((t) => ({ path: t.path, half: t.width / 2, clear: t.height })),
+      // The corridors from metro entrances into their stations.
+      ...(model.underground?.entrances ?? [])
+        .filter((e) => e.passage)
+        .map((e) => ({ path: e.passage!, half: CORRIDOR_HALF, clear: CORRIDOR_HEIGHT })),
     ],
+    floors: (model.underground?.structures ?? []).map((s) => ({
+      ring: s.footprint.outer,
+      z: s.floorZ,
+      clear: CONCOURSE_HEIGHT,
+    })),
     buildings: model.buildings.map((b) => ({
       id: b.id,
       source: b.source,

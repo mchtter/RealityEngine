@@ -165,6 +165,31 @@ function streetHeading(roads: Road[], p: Vec2): number {
   return heading;
 }
 
+/**
+ * The way a metro entrance's stairs run down: along the nearest street
+ * (streetHeading), the one of its two ways that leads towards the nearest
+ * station (the street's drawing direction is arbitrary: half the pits ran
+ * away from their station, the passage doubling back under them).
+ */
+function entranceHeading(roads: Road[], p: Vec2, stations: { polygons: Polygon[] }[]): number {
+  const heading = streetHeading(roads, p);
+  let best = ENTRANCE_REACH;
+  let edge: Vec2 | null = null;
+  for (const s of stations)
+    for (const poly of s.polygons) {
+      const c = ringCentroid(poly.outer);
+      if (Math.hypot(c[0] - p[0], c[1] - p[1]) > ENTRANCE_REACH) continue;
+      const ring = poly.outer;
+      for (let k = 1; k < ring.length; k++) {
+        const cl = closestOnSegment(p, ring[k - 1], ring[k]);
+        if (cl.d < best) [best, edge] = [cl.d, cl.point];
+      }
+    }
+  if (!edge) return heading;
+  const toward = (edge[0] - p[0]) * Math.cos(heading) + (edge[1] - p[1]) * Math.sin(heading);
+  return toward < 0 ? heading + Math.PI : heading;
+}
+
 /** A level down under the street: a station's concourse floor this far below its ground (m). */
 const STATION_CONCOURSE = 6;
 /** A passage ends this far inside the station's outline (m). */
@@ -210,7 +235,7 @@ const ENTRANCE_STREET = 40;
 /** An entrance leads into the underground structure whose middle lies within this distance (m). */
 const ENTRANCE_REACH = 200;
 
-export const COMPILER_VERSION = '114';
+export const COMPILER_VERSION = '115';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -529,7 +554,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   // Metro entrances open the ground: their stair pits are trenches too.
   const entrancePits = features.points
     .filter((pt) => pt.tags.railway === 'subway_entrance')
-    .map((pt) => ({ at: pt.p, heading: streetHeading(roads, pt.p) }));
+    .map((pt) => ({ at: pt.p, heading: entranceHeading(roads, pt.p, undergroundSources) }));
   const { cuttings, portals, tunnels, cut } = buildCuttings(roads, terrain, entrancePits);
   const cutGround = new CutGround(terrain, cut);
 
@@ -1225,7 +1250,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
         const d = Math.hypot(c[0] - pt.p[0], c[1] - pt.p[1]);
         if (d < best) [best, station] = [d, s];
       }
-      const heading = streetHeading(roads, pt.p);
+      const heading = entranceHeading(roads, pt.p, undergroundSources);
       const top = groundModel.surfaceAt(pt.p[0], pt.p[1]).z;
       return {
         id: `se:${pt.ref}`,

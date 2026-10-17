@@ -1,4 +1,4 @@
-import { CutGround, type UtilityKind } from '@opentwin/city-core';
+import { CutGround, type UtilityKind, pointInRing } from '@opentwin/city-core';
 import * as THREE from 'three/webgpu';
 import { toThree } from './geom';
 import { DRAPED } from './ground-clipmap';
@@ -420,6 +420,8 @@ export class CityTile {
         }
       }
     }
+    for (const f of this.summary.floors ?? [])
+      if (pointInRing([lx, ly], f.ring)) out.push({ h: f.z, clear: f.clear });
     return out;
   }
 

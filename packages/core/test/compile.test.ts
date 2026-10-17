@@ -158,6 +158,12 @@ describe('compileCity', () => {
     expect(e.position[2] - ground.heightAt(...into(STATION_PIT_LENGTH - 1))).toBeGreaterThan(
       STATION_PIT.depth - 1,
     );
+    // The stairs never run away from the station (here it lies abeam of the street: either way).
+    const st = ringCentroid(m.underground!.structures[0].footprint.outer);
+    expect(
+      (st[0] - e.position[0]) * Math.cos(e.heading) + (st[1] - e.position[1]) * Math.sin(e.heading),
+    ).toBeGreaterThan(-1e-6);
+
     // A passage from the pit's door into the station, ending inside it at its concourse.
     const s = m.underground!.structures[0];
     const end = e.passage![e.passage!.length - 1];
