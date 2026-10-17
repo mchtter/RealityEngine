@@ -1,10 +1,12 @@
 import {
   type CityModel,
   STATION_PIT,
+  offsetPolygons,
   pointInRing,
   STATION_PIT_LENGTH,
   type StationEntrance,
   type UndergroundStructure,
+  type UndergroundTrack,
   pitDepthAt,
 } from '@opentwin/city-core';
 import * as THREE from 'three/webgpu';
@@ -63,11 +65,15 @@ export function buildUnderground(model: CityModel, mats: DtMaterials): THREE.Gro
       group.add(m);
     }
   }
-  if (ug.structures.length) {
+  if (ug.structures.length || ug.tracks?.length) {
     // Inside: the concourse one walks into (always drawn, under the ground).
     const inside = new MeshBuilder();
     const lights = new MeshBuilder();
-    for (const s of ug.structures) concourse(s, inside, lights);
+    const platforms = ug.structures.filter((s) => s.kind === 'platform');
+    for (const s of ug.structures)
+      if (s.kind === 'platform') platform(s, inside, lights);
+      else concourse(s, inside, lights);
+    for (const t of ug.tracks ?? []) trackTunnel(t, platforms, inside);
     for (const [mb, material, name] of [
       [inside, mats.tunnelFixture, 'station-concourse'],
       [lights, mats.tunnelGlow, 'station-concourse-lights'],
@@ -83,6 +89,7 @@ export function buildUnderground(model: CityModel, mats: DtMaterials): THREE.Gro
     // The networks' glowing material (a station reads like a pipe network down there).
     vol.defineAttribute('ua', 1);
     for (const s of ug.structures) volume(s, vol);
+    for (const t of ug.tracks ?? []) trackGlow(t, vol);
     const m = new THREE.Mesh(vol.build({ color: true }), mats.utility);
     m.name = 'station-volumes';
     m.userData.role = 'underground:structure';
@@ -397,11 +404,13 @@ function concourse(s: UndergroundStructure, mb: MeshBuilder, glow: MeshBuilder):
       face(mb, ccw ? (pts.reverse() as [number, number, number][]) : pts, TILE_WALL);
     }
   }
-  // Floor (facing up) and ceiling (facing down) over the outline.
+  // Floor (facing up, open over platform stairs) and ceiling (facing down) over the outline.
   const contour = ring.map((p) => new THREE.Vector2(p[0], p[1]));
-  const holes = s.footprint.holes.map((hh) => hh.map((p) => new THREE.Vector2(p[0], p[1])));
+  const openings = (s.openings ?? []).filter((o) => o.every((p) => pointInRing(p, ring)));
+  const holeRings = [...s.footprint.holes, ...openings];
+  const holes = holeRings.map((hh) => hh.map((p) => new THREE.Vector2(p[0], p[1])));
   const tris = THREE.ShapeUtils.triangulateShape(contour, holes);
-  const pts = [...ring, ...s.footprint.holes.flat()];
+  const pts = [...ring, ...holeRings.flat()];
   const fl = pts.map((p) => mb.vertex(toThree(p[0], p[1], z + 0.02), [0, 1, 0], FLOOR));
   for (const [i, j, l] of tris) mb.triangle(fl[i], fl[j], fl[l]);
   const ce = pts.map((p) => mb.vertex(toThree(p[0], p[1], z + h), [0, -1, 0], CEILING));
@@ -439,6 +448,247 @@ function concourse(s: UndergroundStructure, mb: MeshBuilder, glow: MeshBuilder):
       }
     }
 }
+
+const SAFETY = new THREE.Color('#e3c33a');
+const TRACK_BED = new THREE.Color('#4a4740');
+const STEEL = new THREE.Color('#6e7177');
+/** A metro tunnel's half width and clear height over the rails (m). */
+const TRACK_HALF = 2.3;
+const TRACK_CLEAR = 4.6;
+/** Standard gauge, half (m). */
+const GAUGE = 0.7175;
+
+/**
+ * A platform under the ground: its slab at its level (faces down to the
+ * rails), a yellow safety line round its edge, a ceiling over it and the
+ * tracks beside it, and its stairs up to the concourse.
+ */
+function platform(s: UndergroundStructure, mb: MeshBuilder, glow: MeshBuilder): void {
+  const z = s.floorZ;
+  const ring =
+    s.footprint.outer[0][0] === s.footprint.outer.at(-1)![0] &&
+    s.footprint.outer[0][1] === s.footprint.outer.at(-1)![1]
+      ? s.footprint.outer.slice(0, -1)
+      : s.footprint.outer;
+  if (ring.length < 3) return;
+  let area = 0;
+  for (let k = 0; k < ring.length; k++) {
+    const a = ring[k];
+    const b = ring[(k + 1) % ring.length];
+    area += a[0] * b[1] - b[0] * a[1];
+  }
+  const ccw = area > 0;
+  const tris = THREE.ShapeUtils.triangulateShape(
+    ring.map((p) => new THREE.Vector2(p[0], p[1])),
+    [],
+  );
+  const top = ring.map((p) => mb.vertex(toThree(p[0], p[1], z + 0.02), [0, 1, 0], GRANITE));
+  for (const [i, j, l] of tris) mb.triangle(top[i], top[j], top[l]);
+  for (let k = 0; k < ring.length; k++) {
+    const a = ring[k];
+    const b = ring[(k + 1) % ring.length];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (len < 0.05) continue;
+    // The slab's edge face (outward), down to the rails.
+    const edge: [number, number, number][] = [
+      [a[0], a[1], z - 1.1],
+      [b[0], b[1], z - 1.1],
+      [b[0], b[1], z + 0.02],
+      [a[0], a[1], z + 0.02],
+    ];
+    face(mb, ccw ? edge : (edge.reverse() as [number, number, number][]), CONCRETE);
+    // The yellow line, 0.5 m in from the edge.
+    const inX = ((ccw ? -1 : 1) * (b[1] - a[1])) / len;
+    const inY = ((ccw ? 1 : -1) * (b[0] - a[0])) / len;
+    const q = (p: number[], d: number): [number, number, number] => [
+      p[0] + inX * d,
+      p[1] + inY * d,
+      z + 0.03,
+    ];
+    face(
+      mb,
+      ccw
+        ? [q(a, 0.5), q(b, 0.5), q(b, 0.65), q(a, 0.65)]
+        : [q(a, 0.65), q(b, 0.65), q(b, 0.5), q(a, 0.5)],
+      SAFETY,
+    );
+  }
+  // Ceiling over the platform and its tracks.
+  for (const poly of offsetPolygons([s.footprint], TRACK_HALF * 2, 'miter')) {
+    const outer = poly.outer;
+    const t2 = THREE.ShapeUtils.triangulateShape(
+      outer.map((p) => new THREE.Vector2(p[0], p[1])),
+      [],
+    );
+    const ce = outer.map((p) =>
+      mb.vertex(toThree(p[0], p[1], z + CONCOURSE_HEIGHT), [0, -1, 0], CEILING),
+    );
+    for (const [i, j, l] of t2) mb.triangle(ce[i], ce[l], ce[j]);
+  }
+  // Light strips along the platform.
+  const c = s.footprint.outer
+    .reduce((acc, p) => [acc[0] + p[0], acc[1] + p[1]], [0, 0])
+    .map((v) => v / s.footprint.outer.length);
+  let ax: [number, number] = [1, 0];
+  let best = 0;
+  for (let k = 1; k < s.footprint.outer.length; k++) {
+    const d = [
+      s.footprint.outer[k][0] - s.footprint.outer[k - 1][0],
+      s.footprint.outer[k][1] - s.footprint.outer[k - 1][1],
+    ];
+    const l = Math.hypot(d[0], d[1]);
+    if (l > best) [best, ax] = [l, [d[0] / l, d[1] / l]];
+  }
+  for (let t = -best / 2 + 3; t < best / 2 - 3; t += 6) {
+    const p: [number, number] = [c[0] + ax[0] * t, c[1] + ax[1] * t];
+    if (!pointInRing(p, ring)) continue;
+    const L = (u: number, v: number): [number, number, number] => [
+      p[0] + ax[0] * u - ax[1] * v,
+      p[1] + ax[1] * u + ax[0] * v,
+      z + CONCOURSE_HEIGHT - 0.02,
+    ];
+    face(glow, [L(-1.5, -0.15), L(-1.5, 0.15), L(1.5, 0.15), L(1.5, -0.15)], LIGHT);
+  }
+  if (s.stairs) platformStairs(s.stairs, mb);
+}
+
+/** Stairs from a concourse floor down to a platform, with side walls up to the concourse. */
+function platformStairs(
+  st: { from: number[]; to: number[]; width: number },
+  mb: MeshBuilder,
+): void {
+  const dx = st.to[0] - st.from[0];
+  const dy = st.to[1] - st.from[1];
+  const run = Math.hypot(dx, dy);
+  if (run < 0.5) return;
+  const f = [dx / run, dy / run];
+  const l = [-f[1], f[0]];
+  const w = st.width / 2;
+  const drop = st.from[2] - st.to[2];
+  const n = Math.max(1, Math.ceil(drop / 0.16));
+  const rise = drop / n;
+  const tread = run / n;
+  const at = (s: number, v: number, z: number): [number, number, number] => [
+    st.from[0] + f[0] * s + l[0] * v,
+    st.from[1] + f[1] * s + l[1] * v,
+    z,
+  ];
+  for (let i = 0; i < n; i++) {
+    const s0 = i * tread;
+    const zTop = st.from[2] - i * rise;
+    const zLow = zTop - rise;
+    face(mb, [at(s0, w, zTop), at(s0, -w, zTop), at(s0, -w, zLow), at(s0, w, zLow)], GRANITE);
+    face(
+      mb,
+      [at(s0, -w, zLow), at(s0 + tread, -w, zLow), at(s0 + tread, w, zLow), at(s0, w, zLow)],
+      GRANITE,
+    );
+    face(
+      mb,
+      [
+        at(s0, -w, zLow + 0.005),
+        at(s0 + 0.05, -w, zLow + 0.005),
+        at(s0 + 0.05, w, zLow + 0.005),
+        at(s0, w, zLow + 0.005),
+      ],
+      NOSING,
+    );
+  }
+  // Side walls, from the treads up to the concourse floor, both faces.
+  for (const side of [1, -1]) {
+    const v = side * w;
+    const pts: [number, number, number][] = [
+      at(0, v, st.from[2]),
+      at(run, v, st.to[2]),
+      at(run, v, st.from[2]),
+      at(0, v, st.from[2] + 0.001),
+    ];
+    face(mb, pts, TILE_WALL);
+    face(mb, [pts[1], pts[0], pts[3], pts[2]], TILE_WALL);
+  }
+}
+
+/**
+ * A metro line in its tunnel: track bed, two rails, walls and roof — left
+ * open beside a platform (the wall would stand between them).
+ */
+function trackTunnel(
+  t: UndergroundTrack,
+  platforms: UndergroundStructure[],
+  mb: MeshBuilder,
+): void {
+  const beside = (p: [number, number]) => platforms.some((s) => pointInRing(p, s.footprint.outer));
+  for (let k = 1; k < t.path.length; k++) {
+    const a = t.path[k - 1];
+    const b = t.path[k];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (len < 0.05) continue;
+    const lx = -(b[1] - a[1]) / len;
+    const ly = (b[0] - a[0]) / len;
+    const P = (q: number[], v: number, dz: number): [number, number, number] => [
+      q[0] + lx * v,
+      q[1] + ly * v,
+      q[2] + dz,
+    ];
+    face(
+      mb,
+      [
+        P(a, -TRACK_HALF, -0.3),
+        P(b, -TRACK_HALF, -0.3),
+        P(b, TRACK_HALF, -0.3),
+        P(a, TRACK_HALF, -0.3),
+      ],
+      TRACK_BED,
+    );
+    for (const g of [GAUGE, -GAUGE]) {
+      face(
+        mb,
+        [P(a, g - 0.04, 0.15), P(b, g - 0.04, 0.15), P(b, g + 0.04, 0.15), P(a, g + 0.04, 0.15)],
+        STEEL,
+      );
+    }
+    const mid: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    for (const side of [1, -1]) {
+      // Beside a platform: no wall, no roof on that side (the platform's ceiling covers it).
+      if (beside([mid[0] + lx * side * 2.2, mid[1] + ly * side * 2.2])) continue;
+      const wall: [number, number, number][] = [
+        P(a, side * TRACK_HALF, -0.3),
+        P(b, side * TRACK_HALF, -0.3),
+        P(b, side * TRACK_HALF, TRACK_CLEAR),
+        P(a, side * TRACK_HALF, TRACK_CLEAR),
+      ];
+      face(mb, side > 0 ? wall : (wall.reverse() as [number, number, number][]), CONCRETE);
+      const roof: [number, number, number][] = [
+        P(a, 0, TRACK_CLEAR),
+        P(b, 0, TRACK_CLEAR),
+        P(b, side * TRACK_HALF, TRACK_CLEAR),
+        P(a, side * TRACK_HALF, TRACK_CLEAR),
+      ];
+      face(mb, side > 0 ? (roof.reverse() as [number, number, number][]) : roof, CEILING);
+    }
+  }
+}
+
+/** A metro line glowing in the underground view. */
+function trackGlow(t: UndergroundTrack, mb: MeshBuilder): void {
+  for (let k = 1; k < t.path.length; k++) {
+    const a = t.path[k - 1];
+    const b = t.path[k];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (len < 0.05) continue;
+    const lx = (-(b[1] - a[1]) / len) * 0.8;
+    const ly = ((b[0] - a[0]) / len) * 0.8;
+    const P = (q: number[], v: number, dz: number): [number, number, number] => [
+      q[0] + lx * v,
+      q[1] + ly * v,
+      q[2] + dz,
+    ];
+    mb.quad([P(a, -1, 1), P(b, -1, 1), P(b, 1, 1), P(a, 1, 1)], [0, 0, 1], TRACK_GLOW, UV);
+    mb.quad([P(a, 1, 1), P(b, 1, 1), P(b, -1, 1), P(a, -1, 1)], [0, 0, -1], TRACK_GLOW, UV);
+  }
+}
+
+const TRACK_GLOW = new THREE.Color('#2f7fd0');
 
 /** A square column (0.6 m) from floor to ceiling. */
 function column(mb: MeshBuilder, x: number, y: number, z0: number, z1: number): void {

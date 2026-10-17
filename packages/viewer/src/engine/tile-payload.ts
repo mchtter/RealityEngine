@@ -179,6 +179,14 @@ export function summarize(model: CityModel): TileSummary {
       ...(model.underground?.entrances ?? [])
         .filter((e) => e.passage)
         .map((e) => ({ path: e.passage!, half: CORRIDOR_HALF, clear: CORRIDOR_HEIGHT })),
+      // Stairs from concourses down to their platforms.
+      ...(model.underground?.structures ?? [])
+        .filter((s) => s.stairs)
+        .map((s) => ({
+          path: [s.stairs!.from, s.stairs!.to],
+          half: s.stairs!.width / 2,
+          clear: CORRIDOR_HEIGHT,
+        })),
     ],
     floors: (model.underground?.structures ?? []).map((s) => ({
       ring: s.footprint.outer,
