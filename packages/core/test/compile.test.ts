@@ -111,7 +111,7 @@ const carriageway = (m: CityModel) =>
   );
 
 describe('compileCity', () => {
-  it('does not draw a building under the ground on the surface', () => {
+  it('keeps a building under the ground off the surface, with its entrances', () => {
     const src = gridSource();
     const square = (x: number, y: number, r: number) => [
       ll(x - r, y - r),
@@ -131,9 +131,22 @@ describe('compileCity', () => {
         tags: { building: 'train_station', layer: '-1' },
       },
     ];
+    src.features.push({
+      ref: 'osm:n-exit',
+      source: 'osm',
+      priority: 0,
+      kind: 'point' as const,
+      geometry: { type: 'Point' as const, coordinates: ll(60, 35) },
+      tags: { railway: 'subway_entrance', name: 'Çıkış' },
+    });
     const m = compileCity(src);
     expect(m.buildings.some((b) => b.ref === 'osm:w-station')).toBe(false);
     expect(m.stats.buildingsUnderground).toBe(1);
+    // It is kept as an underground structure, and the entrance leads into it.
+    expect(m.underground?.structures.map((s) => [s.ref, s.layer])).toEqual([['osm:w-station', -1]]);
+    expect(m.underground?.entrances).toMatchObject([
+      { ref: 'osm:n-exit', name: 'Çıkış', station: 'osm:w-station' },
+    ]);
   });
 
   it('places points of interest on the ground with their kind and name', () => {

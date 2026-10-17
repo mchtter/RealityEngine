@@ -661,6 +661,7 @@ export const CITY_CLASSES: readonly CityClassDef[] = withPoiBindings([
   }),
   c('transit.station_entrance', 'İstasyon girişi', 'building', 'point', {
     parents: ['transit.metro_station', 'transit.rail_station'],
+    theme: t('asset', { kind: 'subway_entrance' }),
   }),
   c('transit.metro_train', 'Metro treni (canlı)', 'city', 'point', {
     ...LIVE_VEHICLE,

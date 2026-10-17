@@ -117,6 +117,8 @@ import type {
   Fence,
   Poi,
   Polygon,
+  StationEntrance,
+  UndergroundStructure,
   Prop,
   RailLine,
   Road,
@@ -132,7 +134,10 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
-export const COMPILER_VERSION = '109';
+/** An entrance leads into the underground structure whose middle lies within this distance (m). */
+const ENTRANCE_REACH = 200;
+
+export const COMPILER_VERSION = '110';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -354,8 +359,8 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   );
   // Buildings under the ground are not surface buildings (Kızılay's metro
   // station under Güvenpark was drawn as a house the streets cut up).
-  const undergroundCount = features.buildings.filter((b) => undergroundBuilding(b.tags)).length;
-  if (undergroundCount)
+  const undergroundSources = features.buildings.filter((b) => undergroundBuilding(b.tags));
+  if (undergroundSources.length)
     features.buildings = features.buildings.filter((b) => !undergroundBuilding(b.tags));
   // Rail lines and the airfield (road-theme lines that are not roads).
   const guide = layGuideways(
@@ -1111,6 +1116,46 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     }));
   const outLights = guide.lights.filter((l) => inCore(l.at));
 
+  // Under the ground: structures (kept whole, by the tile holding their middle)
+  // and the metro entrances down to them, on the final ground.
+  const structures: UndergroundStructure[] = undergroundSources.flatMap((b) =>
+    b.polygons.map((footprint, k) => {
+      const c = ringCentroid(footprint.outer);
+      return {
+        id: `ug:${b.ref}${k ? `~${k}` : ''}`,
+        ref: b.ref,
+        ...(b.tags[ENTITY_TAG] ? { entity: b.tags[ENTITY_TAG] } : {}),
+        ...(b.tags.name ? { name: b.tags.name } : {}),
+        kind: b.tags.building ?? 'yes',
+        layer: Number.parseInt(b.tags.layer ?? '-1', 10),
+        footprint,
+        groundZ: groundModel.surfaceAt(c[0], c[1]).z,
+      };
+    }),
+  );
+  const entrances: StationEntrance[] = features.points
+    .filter((pt) => pt.tags.railway === 'subway_entrance' && inCore(pt.p))
+    .map((pt) => {
+      let station: string | undefined;
+      let best = ENTRANCE_REACH;
+      for (const s of structures) {
+        const c = ringCentroid(s.footprint.outer);
+        const d = Math.hypot(c[0] - pt.p[0], c[1] - pt.p[1]);
+        if (d < best) [best, station] = [d, s.ref];
+      }
+      return {
+        id: `se:${pt.ref}`,
+        ref: pt.ref,
+        ...(pt.tags[ENTITY_TAG] ? { entity: pt.tags[ENTITY_TAG] } : {}),
+        ...(pt.tags.name ? { name: pt.tags.name } : {}),
+        position: [pt.p[0], pt.p[1], groundModel.surfaceAt(pt.p[0], pt.p[1]).z],
+        ...(station ? { station } : {}),
+      };
+    });
+  const coreStructures = structures.filter((s) => inCore(ringCentroid(s.footprint.outer)));
+  const outUnderground =
+    coreStructures.length || entrances.length ? { structures: coreStructures, entrances } : null;
+
   const observedOut = buildings.filter((b) => b.source !== 'synthetic');
   const count = (pred: (p: Prop) => boolean) => props.filter(pred).length;
   return {
@@ -1132,6 +1177,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     ...(outUtilities.length ? { utilities: outUtilities } : {}),
     ...(outNodes.length ? { utilityNodes: outNodes } : {}),
     ...(outPois.length ? { pois: outPois } : {}),
+    ...(outUnderground ? { underground: outUnderground } : {}),
     ...(outFill.length ? { streetFill: outFill } : {}),
     crossings: outCrossings,
     junctions: outJunctions,
@@ -1158,7 +1204,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       junctions: outJunctions.length,
       blocks: outBlocks.length,
       buildingsObserved: observedOut.length,
-      buildingsUnderground: undergroundCount,
+      buildingsUnderground: outUnderground?.structures.length ?? 0,
       buildingsSynthetic: buildings.length - observedOut.length,
       buildingsSuperseded: superseded.filter((c) => inCore(c)).length,
       ...Object.fromEntries(

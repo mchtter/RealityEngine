@@ -897,6 +897,35 @@ export interface Poi {
   position: Vec3;
 }
 
+/**
+ * A structure under the ground (a metro station's concourse, an underground
+ * car park): not a surface building; its outline and how deep it lies.
+ */
+export interface UndergroundStructure {
+  id: string;
+  entity?: string;
+  ref: string;
+  name?: string;
+  /** Source building type (train_station, parking …). */
+  kind: string;
+  /** Source layer (−1 the first level down). */
+  layer: number;
+  footprint: Polygon;
+  /** Ground surface over its middle (m). */
+  groundZ: number;
+}
+
+/** A way down into a station: a metro entrance on the surface. */
+export interface StationEntrance {
+  id: string;
+  entity?: string;
+  ref: string;
+  name?: string;
+  position: Vec3;
+  /** The underground structure it leads into (its `ref`), when one lies within reach. */
+  station?: string;
+}
+
 /** Access point of a buried network: a manhole / chamber or a valve. */
 export interface UtilityNode {
   id: string;
@@ -953,6 +982,8 @@ export interface CityModel {
   utilityNodes?: UtilityNode[];
   /** Points of interest (businesses, services) for the map's icons and names. */
   pois?: Poi[];
+  /** Under the ground: station concourses and the like, and the entrances down to them. */
+  underground?: { structures: UndergroundStructure[]; entrances: StationEntrance[] };
   /**
    * Street land outside the road corridors: gaps narrower than 3 m between two
    * sidewalks, drawn as sidewalk and levelled to the street surface (see

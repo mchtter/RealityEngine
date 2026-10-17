@@ -995,6 +995,7 @@ const ASSET_KINDS: Record<string, string> = {
   floodlight: 'Projektör direği (apron, stadyum, kavşak)',
   flagpole: 'Bayrak direği',
   fuel_station: 'Akaryakıt istasyonu',
+  subway_entrance: 'Metro / raylı sistem istasyon girişi',
 };
 
 export const ASSET_CONTRACT_V1: CityThemeContract = {

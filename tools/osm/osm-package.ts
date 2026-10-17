@@ -482,7 +482,8 @@ export function osmTheme(t: Record<string, string>, g: Geometry): OsmTheme | nul
                 t.power === 'pole' ||
                 t.power === 'tower' ||
                 t.man_made === 'mast' ||
-                t.man_made === 'flagpole')
+                t.man_made === 'flagpole' ||
+                t.railway === 'subway_entrance')
             ? 'asset'
             : g.type === 'Point' && poiKind(t)
               ? 'poi'
@@ -759,7 +760,9 @@ export function osmRow(
                       : 'mast'
                     : t.man_made === 'flagpole'
                       ? 'flagpole'
-                      : 'power_pole';
+                      : t.railway === 'subway_entrance'
+                        ? 'subway_entrance'
+                        : 'power_pole';
     return {
       id,
       geometry: g,

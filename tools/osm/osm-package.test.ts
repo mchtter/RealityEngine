@@ -90,6 +90,7 @@ describe('osmTheme', () => {
     assert.equal(osmTheme({ natural: 'tree' }, pt(0, 0)), 'tree');
     assert.equal(osmTheme({ highway: 'street_lamp' }, pt(0, 0)), 'asset');
     assert.equal(osmTheme({ power: 'pole' }, pt(0, 0)), 'asset');
+    assert.equal(osmTheme({ railway: 'subway_entrance' }, pt(0, 0)), 'asset');
     assert.equal(osmTheme({ amenity: 'cafe' }, pt(0, 0)), 'poi');
     assert.equal(osmTheme({ shop: 'hairdresser' }, pt(0, 0)), 'poi');
     // Street furniture stays the asset theme's; amenities without a map icon are left out.
@@ -120,6 +121,8 @@ describe('osmTheme', () => {
     assert.ok(!('drop' in crossing) && crossing.attrs.type === 'uncontrolled');
     const mast = osmRow('asset', 'm', pt(0, 0), { man_made: 'mast', 'tower:type': 'lighting' });
     assert.ok(!('drop' in mast) && mast.attrs.kind === 'floodlight');
+    const entrance = osmRow('asset', 'e', pt(0, 0), { railway: 'subway_entrance', name: 'Çıkış' });
+    assert.ok(!('drop' in entrance) && entrance.attrs.kind === 'subway_entrance');
     const poi = osmRow('poi', 'p', pt(0, 0), { shop: 'pastry', name: 'Fırın', brand: 'X' });
     assert.ok(!('drop' in poi));
     assert.deepEqual(poi.attrs, { kind: 'bakery', name: 'Fırın', brand: 'X' });
