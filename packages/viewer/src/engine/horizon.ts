@@ -105,6 +105,8 @@ export class HorizonLayer {
     this.mask.needsUpdate = true;
 
     const mat = new THREE.MeshStandardNodeMaterial({ roughness: 0.95, metalness: 0 });
+    // Both faces: seen from under the ground it is the earth overhead too.
+    mat.side = THREE.DoubleSide;
     const y = positionWorld.y;
     const slopes = mix(vec3(openLand), vec3(0.2, 0.22, 0.14), smoothstep(80, 500, y));
     // Matched to the tiles' water seen from afar (blue, glossy: it mirrors the sky).

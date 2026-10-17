@@ -41,17 +41,15 @@ export function buildUnderground(model: CityModel, mats: DtMaterials): THREE.Gro
   if (ug.entrances.length) {
     const solid = new MeshBuilder();
     const rails = new MeshBuilder();
-    const glass = new MeshBuilder();
     const door = new MeshBuilder();
     const glow = new MeshBuilder();
     for (const e of ug.entrances) {
-      entrance(e, { solid, rails, glass, door });
+      entrance(e, { solid, rails, door });
       if (e.passage) corridor(e.passage, solid, glow);
     }
     const parts: [MeshBuilder, THREE.Material, string][] = [
       [solid, mats.tunnelFixture, 'station-entrance'],
       [rails, mats.railMetal, 'station-entrance-rails'],
-      [glass, mats.railGlass, 'station-entrance-glass'],
       [door, mats.tunnelDark, 'station-entrance-door'],
       [glow, mats.tunnelGlow, 'station-passage-lights'],
     ];
@@ -71,7 +69,7 @@ export function buildUnderground(model: CityModel, mats: DtMaterials): THREE.Gro
     const lights = new MeshBuilder();
     const platforms = ug.structures.filter((s) => s.kind === 'platform');
     for (const s of ug.structures)
-      if (s.kind === 'platform') platform(s, inside, lights);
+      if (s.kind === 'platform') platform(s, inside, lights, ug.tracks ?? []);
       else concourse(s, inside, lights);
     for (const t of ug.tracks ?? []) trackTunnel(t, platforms, inside);
     for (const [mb, material, name] of [
@@ -103,6 +101,8 @@ const CONCRETE = new THREE.Color('#b8b4ab');
 const GRANITE = new THREE.Color('#8e8a83');
 const NOSING = new THREE.Color('#d9b23a');
 const ESCALATOR = new THREE.Color('#3b3e42');
+const STAINLESS = new THREE.Color('#c3c6cb');
+const HANDRAIL = new THREE.Color('#1d1e20');
 const UV: [number, number][] = [
   [0, 0],
   [1, 0],
@@ -118,7 +118,7 @@ const UV: [number, number][] = [
  */
 function entrance(
   e: StationEntrance,
-  b: { solid: MeshBuilder; rails: MeshBuilder; glass: MeshBuilder; door: MeshBuilder },
+  b: { solid: MeshBuilder; rails: MeshBuilder; door: MeshBuilder },
 ): void {
   const [x, y, z0] = e.position;
   const f: [number, number] = [Math.cos(e.heading), Math.sin(e.heading)];
@@ -256,16 +256,24 @@ function entrance(
     n30,
     ESCALATOR,
   );
-  // Escalator balustrades: glass, a metre over the treads.
+  // Escalator balustrades: brushed steel panels a metre over the treads with a
+  // black handrail (glass read as black panels against the dark pit).
   for (const v of [esc0 + 0.05, esc1 - 0.05]) {
     const pts: [number, number, number][] = [
       at(sTop - 0.5, v, z0 + 0.05),
       at(sLow + 0.5, v, floor(sLow) + 0.05),
-      at(sLow + 0.5, v, floor(sLow) + 1.05),
-      at(sTop - 0.5, v, z0 + 1.05),
+      at(sLow + 0.5, v, floor(sLow) + 0.95),
+      at(sTop - 0.5, v, z0 + 0.95),
     ];
-    quad(b.glass, pts, [l[0], l[1], 0]);
-    quad(b.glass, [pts[1], pts[0], pts[3], pts[2]], [-l[0], -l[1], 0]);
+    quad(b.solid, pts, [l[0], l[1], 0], STAINLESS);
+    quad(b.solid, [pts[1], pts[0], pts[3], pts[2]], [-l[0], -l[1], 0], STAINLESS);
+    const rail: [number, number, number][] = [
+      at(sTop - 0.5, v - 0.05, z0 + 0.98),
+      at(sLow + 0.5, v - 0.05, floor(sLow) + 0.98),
+      at(sLow + 0.5, v + 0.05, floor(sLow) + 0.98),
+      at(sTop - 0.5, v + 0.05, z0 + 0.98),
+    ];
+    quad(b.solid, rail, [0, 0, 1], HANDRAIL);
   }
   // Railings round the opening on the street: both long sides and the far end.
   const fence = (a: [number, number], c: [number, number]) => {
@@ -463,7 +471,12 @@ const GAUGE = 0.7175;
  * rails), a yellow safety line round its edge, a ceiling over it and the
  * tracks beside it, and its stairs up to the concourse.
  */
-function platform(s: UndergroundStructure, mb: MeshBuilder, glow: MeshBuilder): void {
+function platform(
+  s: UndergroundStructure,
+  mb: MeshBuilder,
+  glow: MeshBuilder,
+  tracks: UndergroundTrack[],
+): void {
   const z = s.floorZ;
   const ring =
     s.footprint.outer[0][0] === s.footprint.outer.at(-1)![0] &&
@@ -513,14 +526,19 @@ function platform(s: UndergroundStructure, mb: MeshBuilder, glow: MeshBuilder): 
       SAFETY,
     );
   }
-  // Ceiling over the platform and its tracks.
+  // Ceiling over the platform and its tracks, and the hall's walls round them
+  // (open where a line runs in and out: the tunnel goes on).
   for (const poly of offsetPolygons([s.footprint], TRACK_HALF * 2, 'miter')) {
     const outer = poly.outer;
+    hallWalls(outer, z - 1.4, z + CONCOURSE_HEIGHT, tracks, mb);
+    // Open over the stairs coming down from the concourse.
+    const stairHole = s.stairs ? stairsRect(s.stairs) : null;
+    const holes = stairHole && stairHole.every((p) => pointInRing(p, outer)) ? [stairHole] : [];
     const t2 = THREE.ShapeUtils.triangulateShape(
       outer.map((p) => new THREE.Vector2(p[0], p[1])),
-      [],
+      holes.map((h) => h.map((p) => new THREE.Vector2(p[0], p[1]))),
     );
-    const ce = outer.map((p) =>
+    const ce = [...outer, ...holes.flat()].map((p) =>
       mb.vertex(toThree(p[0], p[1], z + CONCOURSE_HEIGHT), [0, -1, 0], CEILING),
     );
     for (const [i, j, l] of t2) mb.triangle(ce[i], ce[l], ce[j]);
@@ -550,6 +568,83 @@ function platform(s: UndergroundStructure, mb: MeshBuilder, glow: MeshBuilder): 
     face(glow, [L(-1.5, -0.15), L(-1.5, 0.15), L(1.5, 0.15), L(1.5, -0.15)], LIGHT);
   }
   if (s.stairs) platformStairs(s.stairs, mb);
+}
+
+/** A stair run's plan rectangle (corner ring). */
+function stairsRect(st: { from: number[]; to: number[]; width: number }): [number, number][] {
+  const dx = st.to[0] - st.from[0];
+  const dy = st.to[1] - st.from[1];
+  const l = Math.hypot(dx, dy) || 1;
+  const w = [(-dy / l) * (st.width / 2), (dx / l) * (st.width / 2)];
+  return [
+    [st.from[0] - w[0], st.from[1] - w[1]],
+    [st.to[0] - w[0], st.to[1] - w[1]],
+    [st.to[0] + w[0], st.to[1] + w[1]],
+    [st.from[0] + w[0], st.from[1] + w[1]],
+  ];
+}
+
+/** A platform hall's walls (facing in), open where a track crosses its outline. */
+function hallWalls(
+  ring: [number, number][],
+  z0: number,
+  z1: number,
+  tracks: UndergroundTrack[],
+  mb: MeshBuilder,
+): void {
+  const n =
+    ring.length - (ring[0][0] === ring.at(-1)![0] && ring[0][1] === ring.at(-1)![1] ? 1 : 0);
+  let area = 0;
+  for (let k = 0; k < n; k++) {
+    const a = ring[k];
+    const b = ring[(k + 1) % n];
+    area += a[0] * b[1] - b[0] * a[1];
+  }
+  for (let k = 0; k < n; k++) {
+    const a = ring[k];
+    const b = ring[(k + 1) % n];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (len < 0.05) continue;
+    const cuts: [number, number][] = [];
+    for (const t of tracks)
+      for (let j = 1; j < t.path.length; j++) {
+        // Only a line at this hall's level (one passing far under it keeps the wall).
+        if (Math.abs(t.path[j][2] - (z0 + 0.3)) > 2.5) continue;
+        const hit = segmentCross(a, b, t.path[j - 1], t.path[j]);
+        if (hit !== null)
+          cuts.push([hit - (TRACK_HALF + 0.4) / len, hit + (TRACK_HALF + 0.4) / len]);
+      }
+    cuts.sort((p, q) => p[0] - q[0]);
+    let from = 0;
+    const spans: [number, number][] = [];
+    for (const [c0, c1] of cuts) {
+      if (c0 > from) spans.push([from, Math.min(1, c0)]);
+      from = Math.max(from, c1);
+    }
+    if (from < 1) spans.push([from, 1]);
+    for (const [t0, t1] of spans) {
+      const p0 = [a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0];
+      const p1 = [a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1];
+      const pts: [number, number, number][] = [
+        [p0[0], p0[1], z0],
+        [p1[0], p1[1], z0],
+        [p1[0], p1[1], z1],
+        [p0[0], p0[1], z1],
+      ];
+      face(mb, area > 0 ? (pts.reverse() as [number, number, number][]) : pts, TILE_WALL);
+    }
+  }
+}
+
+/** Where segment a–b meets segment c–d in plan, as a fraction along a–b; null when they do not. */
+function segmentCross(a: number[], b: number[], c: number[], d: number[]): number | null {
+  const r = [b[0] - a[0], b[1] - a[1]];
+  const q = [d[0] - c[0], d[1] - c[1]];
+  const den = r[0] * q[1] - r[1] * q[0];
+  if (Math.abs(den) < 1e-9) return null;
+  const t = ((c[0] - a[0]) * q[1] - (c[1] - a[1]) * q[0]) / den;
+  const u = ((c[0] - a[0]) * r[1] - (c[1] - a[1]) * r[0]) / den;
+  return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? t : null;
 }
 
 /** Stairs from a concourse floor down to a platform, with side walls up to the concourse. */
@@ -617,7 +712,9 @@ function trackTunnel(
   platforms: UndergroundStructure[],
   mb: MeshBuilder,
 ): void {
-  const beside = (p: [number, number]) => platforms.some((s) => pointInRing(p, s.footprint.outer));
+  // A platform at this line's level (rails 1.1 m under its floor), not one passing over it.
+  const level = platforms.filter((s) => Math.abs(s.floorZ - 1.1 - t.path[0][2]) < 2.5);
+  const beside = (p: [number, number]) => level.some((s) => pointInRing(p, s.footprint.outer));
   for (let k = 1; k < t.path.length; k++) {
     const a = t.path[k - 1];
     const b = t.path[k];

@@ -94,6 +94,8 @@ export class GroundClipmap {
       .mul(gain)
       .mul(tint);
     this.drape = new THREE.MeshStandardNodeMaterial({ roughness: 0.92, metalness: 0 });
+    // The terrain's: both faces (its underside is the earth over tunnels and stations).
+    this.drape.side = THREE.DoubleSide;
     this.drape.colorNode = colour;
     const surf = attribute<'float'>('surf', 'float');
     const kerb = step(KERB - 0.5, surf).mul(step(surf, KERB + 0.5));
@@ -101,6 +103,7 @@ export class GroundClipmap {
     s.colorNode = mix(colour, vec3(ground.colorNode as never), kerb);
     if (ground.roughnessNode) s.roughnessNode = ground.roughnessNode;
     if (ground.normalNode) s.normalNode = ground.normalNode;
+    s.side = THREE.DoubleSide;
     s.polygonOffset = ground.polygonOffset;
     s.polygonOffsetFactor = ground.polygonOffsetFactor;
     s.polygonOffsetUnits = ground.polygonOffsetUnits;

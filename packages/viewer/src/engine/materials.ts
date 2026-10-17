@@ -1239,6 +1239,9 @@ export function createMaterials(): DtMaterials {
   // (0 asphalt, 1 paving, 2 sidewalk, 3 path, 4 island, 5 yard, 6 kerb,
   // 7 concrete, 8 car park, 9 playground, 10 pitch, 11 track, 12 cemetery, 13 earth, 14 quarry, 15 gravel, 16 airfield).
   const ground = new THREE.MeshStandardNodeMaterial({ roughness: 0.9, metalness: 0 });
+  // Both faces, as the terrain: street surfaces stand in for the terrain where
+  // they lie (D-004), so from a station under a square their underside is the earth.
+  ground.side = THREE.DoubleSide;
   {
     const surf = attribute<'float'>('surf', 'float');
     const isKind = (k: number) => step(k - 0.5, surf).mul(step(surf, k + 0.5));
@@ -1322,6 +1325,10 @@ export function createMaterials(): DtMaterials {
 
   // Terrain: grass / dry grass / bare soil by noise, rock on steep slopes, sand at the shore.
   const terrain = new THREE.MeshStandardNodeMaterial({ roughness: 0.97, metalness: 0 });
+  // Both faces: from under the ground (a tunnel, a station) its underside is
+  // the earth overhead — drawn front-only, every gap down there showed the
+  // city and the sky through the ground.
+  terrain.side = THREE.DoubleSide;
   {
     // Ground colour baked per vertex, parcel by parcel as on satellite imagery
     // (landcover.ts); the shader adds only its fine grain — tufts, stones,

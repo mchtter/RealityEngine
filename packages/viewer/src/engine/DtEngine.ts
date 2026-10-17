@@ -250,6 +250,8 @@ const SKY_SIZE = 60000;
 const DEG = Math.PI / 180;
 /** Background and haze of the underground view. */
 const UNDERGROUND_BG = new THREE.Color(0x061420);
+/** The void round a camera under the ground (a station, a tunnel): earth, no sky. */
+const EARTH_BG = new THREE.Color(0x1a1510);
 
 /** Common frame of all loaded tiles: UTM zone + origin (metres). */
 export interface WorldFrame {
@@ -2347,10 +2349,24 @@ export class DtEngine {
 
   /** Underground view: no sky, a dark soil-blue void and haze, so the networks glow through the ground. */
   private applyUndergroundLook(): void {
-    const on = this.underground.size > 0;
+    const on = this.underground.size > 0 || this.cameraBelow;
+    const bg = this.cameraBelow ? EARTH_BG : UNDERGROUND_BG;
     this.sky.visible = !on;
-    this.scene.background = on ? UNDERGROUND_BG : this.skyFallback;
-    if (on) (this.scene.fog as THREE.Fog).color.copy(UNDERGROUND_BG);
+    this.scene.background = on ? bg : this.skyFallback;
+    if (on) (this.scene.fog as THREE.Fog).color.copy(bg);
+  }
+
+  /** The camera is under the ground (in a station or a tunnel): no sky, earth round it. */
+  private cameraBelow = false;
+
+  private tickCameraBelow(): void {
+    if (!this.tiles.size) return;
+    const p = this.camera.position;
+    const below = p.y < this.heightAt(p.x, -p.z) - 2;
+    if (below === this.cameraBelow) return;
+    this.cameraBelow = below;
+    // The time of day sets sky and fog again, then this look over them.
+    this.setTimeOfDay(this.hours);
   }
 
   /** Runs and km of every buried network in the loaded tiles. */
@@ -2923,6 +2939,7 @@ export class DtEngine {
     }
 
     this.tickPin();
+    this.tickCameraBelow();
     const tDrape = performance.now();
     if (this.debugFlags.drape) this.tickDrape();
     const tLabels = performance.now();
