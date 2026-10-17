@@ -922,6 +922,8 @@ export interface StationEntrance {
   ref: string;
   name?: string;
   position: Vec3;
+  /** Direction its stairs run down (radians, from +x): along the nearest street, else 0. */
+  heading: number;
   /** The underground structure it leads into (its `ref`), when one lies within reach. */
   station?: string;
 }

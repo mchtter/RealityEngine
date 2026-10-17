@@ -134,6 +134,34 @@ import { SUPPORTS, fenceIndex, inFence } from './validate';
  * Bump whenever compiled output changes for the same input: cached city tiles
  * carry this in their source version and are rebuilt on the next request.
  */
+/**
+ * Direction of the nearest ground street within ENTRANCE_STREET m of a
+ * point (radians from +x; a metro entrance's stairs run along the pavement),
+ * else 0.
+ */
+function streetHeading(roads: Road[], p: Vec2): number {
+  let best = ENTRANCE_STREET;
+  let heading = 0;
+  for (const r of roads) {
+    if (r.grade !== 'ground') continue;
+    for (let k = 1; k < r.centerline.length; k++) {
+      const a = r.centerline[k - 1];
+      const b = r.centerline[k];
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const l2 = dx * dx + dy * dy;
+      if (l2 < 1e-6) continue;
+      const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2));
+      const d = Math.hypot(a[0] + t * dx - p[0], a[1] + t * dy - p[1]);
+      if (d < best) [best, heading] = [d, Math.atan2(dy, dx)];
+    }
+  }
+  return heading;
+}
+
+/** A metro entrance's stairs follow a street within this distance (m). */
+const ENTRANCE_STREET = 40;
+
 /** An entrance leads into the underground structure whose middle lies within this distance (m). */
 const ENTRANCE_REACH = 200;
 
@@ -1149,6 +1177,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
         ...(pt.tags[ENTITY_TAG] ? { entity: pt.tags[ENTITY_TAG] } : {}),
         ...(pt.tags.name ? { name: pt.tags.name } : {}),
         position: [pt.p[0], pt.p[1], groundModel.surfaceAt(pt.p[0], pt.p[1]).z],
+        heading: streetHeading(roads, pt.p),
         ...(station ? { station } : {}),
       };
     });

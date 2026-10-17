@@ -17,6 +17,7 @@ import {
   serializeMeshes,
   summarize,
 } from './tile-payload';
+import { buildUnderground } from './underground';
 import { buildUtilities } from './utilities';
 
 /**
@@ -71,6 +72,9 @@ export function buildTilePayload(
     if (overhead) root.add(overhead);
     const rails = buildRails(model, mats);
     if (rails) root.add(rails);
+    // Metro entrances on the street; stations below (shown in the underground view).
+    const underground = buildUnderground(model, mats);
+    if (underground) root.add(underground);
     // Manhole / valve covers lie on the street and always show; the networks below
     // (tubes, shafts, glowing cabinets) only with `utilities`.
     const utilities = buildUtilities(model, mats, { networks: !!options.utilities, covers: true });

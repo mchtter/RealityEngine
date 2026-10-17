@@ -160,7 +160,15 @@ export function summarize(model: CityModel): TileSummary {
     utilities: utilityStats(model),
     empty: isEmptyTile(model),
     streets: streetLines(model.roads),
-    pois: (model.pois ?? []).map((p) => ({ kind: p.kind, name: p.name, position: p.position })),
+    pois: [
+      ...(model.pois ?? []).map((p) => ({ kind: p.kind, name: p.name, position: p.position })),
+      // Metro entrances are points of interest on the map too.
+      ...(model.underground?.entrances ?? []).map((e) => ({
+        kind: 'subway_entrance',
+        name: e.name,
+        position: e.position,
+      })),
+    ],
     decks: [
       ...(model.bridges ?? []).map((b) => ({ path: b.path, half: b.width / 2 })),
       ...(model.tunnels ?? []).map((t) => ({ path: t.path, half: t.width / 2, clear: t.height })),

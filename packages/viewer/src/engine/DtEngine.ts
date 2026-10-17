@@ -2325,6 +2325,7 @@ export class DtEngine {
   setUnderground(kinds: UtilityKind[]): void {
     this.underground = new Set(kinds);
     fadeGround(this.mats, this.underground.size > 0);
+    this.clipmap?.setFaded(this.underground.size > 0);
     for (const tile of this.tiles.values()) tile.setUnderground(this.underground);
     // Sky and fog back to the time of day, then the underground look over them.
     this.setTimeOfDay(this.hours);
@@ -2542,8 +2543,9 @@ export class DtEngine {
    */
   private tickDrape(): void {
     if (!this.clipmap) {
-      this.clipmap = new GroundClipmap(this.renderer, this.mats.ground);
+      this.clipmap = new GroundClipmap(this.renderer, this.mats.ground, this.mats.groundFade);
       this.applyGroundPalette(this.clipmap);
+      if (this.underground.size) this.clipmap.setFaded(true);
     }
     const meshes: THREE.Mesh[] = [];
     for (const tile of this.tiles.values())

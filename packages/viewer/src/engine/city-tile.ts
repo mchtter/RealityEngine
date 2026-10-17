@@ -84,6 +84,8 @@ export class CityTile {
   private readonly utilityMeshes = new Set<THREE.Mesh>();
   /** Underground view on: networks shown, buildings as holograms, detail and furniture off. */
   private under = false;
+  /** Stations under the ground, shown (as volumes at their depth) in the underground view. */
+  private readonly stations: THREE.Mesh[] = [];
   /**
    * Map look (F3): walls as one quad per edge at every distance with the
    * plain wall / roof materials; no cornices, 3D windows or building clutter.
@@ -178,6 +180,9 @@ export class CityTile {
         this.obsShells.push({ mesh, material: mesh.material as THREE.Material });
       } else if (p.role === 'tile:synShell') {
         this.synShells.push({ mesh, material: mesh.material as THREE.Material });
+      } else if (p.role === 'underground:structure') {
+        mesh.visible = false;
+        this.stations.push(mesh);
       } else if (p.role === 'props:showcase') {
         this.propsShowcase.push(mesh);
       } else if (p.role === 'props:data') {
@@ -304,6 +309,7 @@ export class CityTile {
     this.under = kinds.size > 0;
     for (const [kind, meshes] of this.utilities)
       for (const m of meshes) m.visible = kinds.has(kind);
+    for (const m of this.stations) m.visible = this.under;
     this.applyShells();
   }
 

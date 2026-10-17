@@ -27,6 +27,7 @@ import {
   Stethoscope,
   Store,
   Theater,
+  TrainFront,
   Utensils,
 } from 'lucide-react';
 import { createElement } from 'react';
@@ -63,6 +64,7 @@ const POI_ICON: Record<string, LucideIcon> = {
   public_office: Building2,
   bus_station: Bus,
   parking: SquareParking,
+  subway_entrance: TrainFront,
 };
 
 /** SVG markup of each kind's icon (white strokes), rendered once off-screen for the engine. */

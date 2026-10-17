@@ -112,6 +112,7 @@ export const DEFAULT_MAP_STYLE: MapStyle = {
       fire_station: { colour: PUBLIC, rank: 4 },
       public_office: { colour: PUBLIC, rank: 4 },
       bus_station: { colour: TRANSPORT, rank: 5 },
+      subway_entrance: { colour: '#d23b3b', rank: 4 },
       parking: { colour: TRANSPORT, rank: 2 },
     },
     ranges: {

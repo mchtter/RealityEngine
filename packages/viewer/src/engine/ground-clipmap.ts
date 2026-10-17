@@ -72,6 +72,8 @@ export class GroundClipmap {
   constructor(
     private readonly renderer: THREE.WebGPURenderer,
     ground: THREE.MeshStandardNodeMaterial,
+    /** The ground's opacity (the underground view fades it, materials.ts groundFade). */
+    fade: THREE.UniformNode<'float', number>,
   ) {
     for (let k = 0; k < CLIP_LEVELS; k++) {
       const t = new THREE.RenderTarget(CLIP_RES, CLIP_RES, {
@@ -103,6 +105,17 @@ export class GroundClipmap {
     s.polygonOffsetFactor = ground.polygonOffsetFactor;
     s.polygonOffsetUnits = ground.polygonOffsetUnits;
     this.drapeSurface = s;
+    this.drape.opacityNode = fade;
+    s.opacityNode = fade;
+  }
+
+  /** Underground view: the draped ground a see-through skin (no depth writes), or solid again. */
+  setFaded(on: boolean): void {
+    for (const m of [this.drape, this.drapeSurface]) {
+      m.transparent = on;
+      m.depthWrite = !on;
+      m.needsUpdate = true;
+    }
   }
 
   /** Size (m) of a level's square. */
