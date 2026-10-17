@@ -246,6 +246,42 @@ describe('compileCity', () => {
     expect(validateCity(m).counts['underground.level'] ?? 0).toBe(1);
   });
 
+  it('digs a platform a level under its concourse on a slope too', () => {
+    const square = (x: number, y: number, rx: number, ry: number) => [
+      ll(x - rx, y - ry),
+      ll(x + rx, y - ry),
+      ll(x + rx, y + ry),
+      ll(x - rx, y + ry),
+      ll(x - rx, y - ry),
+    ];
+    // Ground rising 10 cm a metre: the platform's middle lies 3 m higher than the concourse's.
+    const [west, south] = ll(-400, -400);
+    const [east, north] = ll(400, 400);
+    const heights = Array.from({ length: 81 * 81 }, (_, k) => 50 + Math.floor(k / 81));
+    const terrain = { source: 'test', west, east, north, south, cols: 81, rows: 81, heights };
+    const building = (ref: string, ring: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'building' as const,
+      geometry: { type: 'Polygon' as const, coordinates: [ring] },
+      tags,
+    });
+    const m = compileCity({
+      ...gridSource(),
+      osm: [],
+      terrain,
+      features: [
+        building('osm:w-hall', square(0, 0, 40, 20), { building: 'train_station', layer: '-1' }),
+        building('osm:w-platform', square(0, 30, 50, 4), { building: 'platform', layer: '-2' }),
+      ],
+    });
+    const ug = m.underground!;
+    const hall = ug.structures.find((s) => s.ref === 'osm:w-hall')!;
+    const platform = ug.structures.find((s) => s.ref === 'osm:w-platform')!;
+    expect(hall.floorZ - platform.floorZ).toBeCloseTo(6, 5);
+  });
+
   it('stands fare gates on the concourse and runs lifts between the floors they serve', () => {
     const src = gridSource();
     const square = (x: number, y: number, rx: number, ry: number) => [

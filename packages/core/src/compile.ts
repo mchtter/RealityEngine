@@ -316,6 +316,19 @@ const ENTRANCE_STREET = 40;
 /** An entrance leads into the underground structure whose middle lies within this distance (m). */
 const ENTRANCE_REACH = 200;
 
+/** The concourse a platform is reached from: the nearest one a layer or more above it. */
+function concourseOver(
+  p: UndergroundStructure,
+  structures: UndergroundStructure[],
+): UndergroundStructure | undefined {
+  const c = ringCentroid(p.footprint.outer);
+  return structures
+    .filter((s) => s.kind !== 'platform' && s.layer > p.layer)
+    .map((s) => ({ s, d: Math.hypot(...sub(ringCentroid(s.footprint.outer), c)) }))
+    .filter((o) => o.d < PLATFORM_REACH || pointInRing(c, o.s.footprint.outer))
+    .sort((a, b) => a.d - b.d)[0]?.s;
+}
+
 /** A lift mapped outside a station but this close to its outline (m) comes up from it. */
 const ELEVATOR_REACH = 25;
 
@@ -407,7 +420,7 @@ export function stationFittings(
   return out;
 }
 
-export const COMPILER_VERSION = '118';
+export const COMPILER_VERSION = '119';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -1410,6 +1423,17 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       };
     }),
   );
+  // A station is dug from one ground level: a platform's depth counts from
+  // its concourse's ground, not from the street over its own middle (on a
+  // slope the two differ by metres, and a platform came up into the floor
+  // over it — Kızılay, 2026-10-18).
+  for (const p of structures) {
+    if (p.kind !== 'platform') continue;
+    const hall = concourseOver(p, structures);
+    if (!hall) continue;
+    p.groundZ = hall.groundZ;
+    p.floorZ = hall.groundZ - STATION_CONCOURSE * Math.max(1, -p.layer);
+  }
   // Every entrance of the region (a passage may reach a station in this tile
   // from an entrance in the next one); the tile keeps its own.
   const allEntrances: StationEntrance[] = features.points
@@ -1452,11 +1476,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   for (const p of structures) {
     if (p.kind !== 'platform') continue;
     const c = ringCentroid(p.footprint.outer);
-    const above = structures
-      .filter((s) => s.kind !== 'platform' && s.layer > p.layer)
-      .map((s) => ({ s, d: Math.hypot(...sub(ringCentroid(s.footprint.outer), c)) }))
-      .filter((o) => o.d < PLATFORM_REACH || pointInRing(c, o.s.footprint.outer))
-      .sort((a, b) => a.d - b.d)[0]?.s;
+    const above = concourseOver(p, structures);
     if (!above) continue;
     const drop = above.floorZ - p.floorZ;
     if (drop <= 0.5) continue;
