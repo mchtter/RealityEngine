@@ -165,7 +165,7 @@ const ENTRANCE_STREET = 40;
 /** An entrance leads into the underground structure whose middle lies within this distance (m). */
 const ENTRANCE_REACH = 200;
 
-export const COMPILER_VERSION = '110';
+export const COMPILER_VERSION = '111';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [

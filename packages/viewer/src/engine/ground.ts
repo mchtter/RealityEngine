@@ -1821,6 +1821,14 @@ export function buildGround(
       false,
     ),
   );
+  // Tubes open only into the tubes they meet (a shared end: a branch, a
+  // merge). One crossing over or under at another level keeps its walls —
+  // clipped by its plan, a −2 tube under a −1 one lost both tubes' walls there.
+  const endsOf = (tn: (typeof tunnels)[number]) => [tn.path[0], tn.path[tn.path.length - 1]];
+  const meets = (a: (typeof tunnels)[number], b: (typeof tunnels)[number]) =>
+    endsOf(a).some((p) =>
+      endsOf(b).some((q) => Math.hypot(p[0] - q[0], p[1] - q[1]) < 1 && Math.abs(p[2] - q[2]) < 1),
+    );
   tunnels.forEach((tn, idx) => {
     own(`tunnel|${tn.roadId}|${tn.name ?? ''}`);
     const path = tn.path as V[];
@@ -1828,7 +1836,7 @@ export function buildGround(
     const half = tn.width / 2;
     const carriage = tn.carriageway / 2;
     const h = tn.height;
-    const others = tubePrints.filter((_, k) => k !== idx).flat();
+    const others = tubePrints.filter((_, k) => k !== idx && meets(tn, tunnels[k])).flat();
     // Runs are cut on a 1 m sampling of the path, then thinned back to the
     // path's own vertices (the samples between lie on its straight lines).
     const cm = (q: V) => `${Math.round(q[0] * 100)},${Math.round(q[1] * 100)}`;
@@ -1838,7 +1846,7 @@ export function buildGround(
     const outside = (o: number) => runsOutside(dense, o, inOther).map(thin);
     // Inside another tube (a little in from its walls, so meeting walls close up).
     const inOther = owned(offsetPolygons(others, -0.3));
-    const wider = tubePrints.slice(0, idx).flat();
+    const wider = tubePrints.filter((_, k) => k < idx && meets(tn, tunnels[k])).flat();
     alongClipped(deckTops, path, -carriage, carriage, 0.02, wider);
     laneLines(path, carriage, tn.lanes, tn.oneway, tn.edgeLines);
     for (const side of [1, -1] as const) {

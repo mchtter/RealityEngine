@@ -1,4 +1,4 @@
-import { TWIN_MEDIAN } from './cuttings';
+import { TUNNEL_HEIGHT, TWIN_MEDIAN } from './cuttings';
 import { FENCE_FOOT, fenceProfile } from './fence-profile';
 import { closestOnSegment, dist, pointInRing } from './geo';
 import { GroundModel, STREET_SURFACES, SURFACE_LIFT, type Support } from './ground-model';
@@ -92,6 +92,8 @@ export const RULES = {
   'bridge.ground-through': 'Zemin köprü tabliyesinin içinden çıkıyor (tabliye üstünden yüksek)',
   'street.edge-step':
     'Sokak kenarında bordürden yüksek basamak (> 0,5 m): yandaki zemin çukurda ya da sokağın üstünde',
+  'tunnel.clash':
+    'İki tünel tüpü bağlanmadan kesişiyor ve aralarında tüp yüksekliği kadar kot farkı yok: kot katmanını (layer -1 / -2) ya da birleşip birleşmediklerini doğrulayın',
 } as const;
 
 export type RuleId = keyof typeof RULES;
@@ -210,6 +212,7 @@ export function validateCity(model: CityModel): ValidationReport {
       add('data.road-attr', [mid[0], mid[1]], `${r.cls} ${r.ref}: ${what.join(', ')}`);
     }
   overlapRules(model, add);
+  tunnelRules(model, add);
   for (const sf of model.surfaces)
     for (const p of sf.polygons)
       if (meanThickness(p) < HAIRLINE) add('surface.hairline', centroidOf(p), sf.kind);
@@ -1177,4 +1180,55 @@ function distToPolygon(p: Vec2, poly: Polygon): number {
       best = Math.min(best, closestOnSegment(p, ring[k], ring[(k + 1) % ring.length]).d);
   }
   return best;
+}
+
+/**
+ * Tubes crossing without meeting (no shared end) need a tube's height and a
+ * slab between their roads; less means the source has their levels wrong or
+ * they really join — a record to verify.
+ */
+function tunnelRules(model: CityModel, add: (rule: RuleId, at: Vec2, note?: string) => void): void {
+  const tubes = model.tunnels;
+  const near = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 1;
+  const ends = (t: (typeof tubes)[number]) => [t.path[0], t.path[t.path.length - 1]];
+  for (let i = 0; i < tubes.length; i++)
+    for (let j = i + 1; j < tubes.length; j++) {
+      const a = tubes[i];
+      const b = tubes[j];
+      if (ends(a).some((p) => ends(b).some((q) => near(p, q)))) continue;
+      // The first crossing of a pair (one on a shared vertex is found by each
+      // segment touching it).
+      pair: for (let k = 1; k < a.path.length; k++)
+        for (let l = 1; l < b.path.length; l++) {
+          const hit = crossing(a.path[k - 1], a.path[k], b.path[l - 1], b.path[l]);
+          if (!hit) continue;
+          const dz = Math.abs(hit.za - hit.zb);
+          if (dz < TUNNEL_HEIGHT + 0.6)
+            add('tunnel.clash', hit.at, `${a.roadId} / ${b.roadId}: kot farkı ${dz.toFixed(1)} m`);
+          break pair;
+        }
+    }
+}
+
+/** Where two 3D segments cross in plan, with each one's height there. */
+function crossing(
+  a0: number[],
+  a1: number[],
+  b0: number[],
+  b1: number[],
+): { at: Vec2; za: number; zb: number } | null {
+  const dxa = a1[0] - a0[0];
+  const dya = a1[1] - a0[1];
+  const dxb = b1[0] - b0[0];
+  const dyb = b1[1] - b0[1];
+  const den = dxa * dyb - dya * dxb;
+  if (Math.abs(den) < 1e-9) return null;
+  const t = ((b0[0] - a0[0]) * dyb - (b0[1] - a0[1]) * dxb) / den;
+  const u = ((b0[0] - a0[0]) * dya - (b0[1] - a0[1]) * dxa) / den;
+  if (t < 0 || t > 1 || u < 0 || u > 1) return null;
+  return {
+    at: [a0[0] + t * dxa, a0[1] + t * dya],
+    za: a0[2] + t * (a1[2] - a0[2]),
+    zb: b0[2] + u * (b1[2] - b0[2]),
+  };
 }

@@ -1237,6 +1237,187 @@ describe('compileCity', () => {
     expect(terrainHeightAt(m.terrain, 0, 0)).toBeGreaterThanOrEqual(LAND_FLOOR - 0.01);
   });
 
+  it('builds a tunnel network: one level at joints, mouths only at its ends, a deeper branch dipping away', () => {
+    const road = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'road' as const,
+      geometry: { type: 'LineString' as const, coordinates: pts.map(([x, y]) => ll(x, y)) },
+      tags,
+    });
+    const [west, south] = ll(-400, -400);
+    const [east, north] = ll(400, 400);
+    const src: CitySource = {
+      ...gridSource(),
+      osm: [],
+      terrain: {
+        source: 'test',
+        west,
+        east,
+        north,
+        south,
+        cols: 9,
+        rows: 9,
+        heights: new Array(81).fill(50),
+      },
+      features: [
+        road(
+          'osm:in',
+          [
+            [-300, 0],
+            [-120, 0],
+          ],
+          { highway: 'primary' },
+        ),
+        // A (−1) from the west mouth to the joint J at (0, 0); B (−1) on to the east mouth.
+        road(
+          'osm:a',
+          [
+            [-120, 0],
+            [0, 0],
+          ],
+          { highway: 'primary', tunnel: 'yes', layer: '-1' },
+        ),
+        road(
+          'osm:b',
+          [
+            [0, 0],
+            [120, 0],
+          ],
+          { highway: 'primary', tunnel: 'yes', layer: '-1' },
+        ),
+        road(
+          'osm:out',
+          [
+            [120, 0],
+            [300, 0],
+          ],
+          { highway: 'primary' },
+        ),
+        // C (−2) branches off at J, going south under the street, up to its own mouth.
+        road(
+          'osm:c',
+          [
+            [0, 0],
+            [0, -200],
+          ],
+          { highway: 'primary_link', tunnel: 'yes', layer: '-2' },
+        ),
+        road(
+          'osm:c-out',
+          [
+            [0, -200],
+            [0, -350],
+          ],
+          { highway: 'primary_link' },
+        ),
+      ],
+    };
+    const m = compileCity(src, { infill: false, decorate: false });
+    const tube = (id: string) => m.tunnels.find((t) => t.roadId.includes(id))!;
+    const zAt = (t: { path: number[][] }, x: number, y: number) =>
+      t.path.find((q) => Math.hypot(q[0] - x, q[1] - y) < 0.5)![2];
+    // One level at the joint for all three tubes.
+    const j = zAt(tube('osm:a'), 0, 0);
+    expect(Math.abs(zAt(tube('osm:b'), 0, 0) - j)).toBeLessThan(0.01);
+    expect(Math.abs(zAt(tube('osm:c'), 0, 0) - j)).toBeLessThan(0.01);
+    // Mouths at the network's three ends only — none at the joint.
+    expect(m.portals.some((p) => Math.hypot(p.at[0], p.at[1]) < 1)).toBe(false);
+    expect(m.portals).toHaveLength(3);
+    // The −2 branch dips away from the joint, no steeper than the tube grade.
+    const c = tube('osm:c').path;
+    const deepest = Math.min(...c.map((q) => q[2]));
+    expect(deepest).toBeLessThan(j - 4);
+    for (let k = 1; k < c.length; k++) {
+      const run = Math.hypot(c[k][0] - c[k - 1][0], c[k][1] - c[k - 1][1]);
+      expect(Math.abs(c[k][2] - c[k - 1][2]) / run).toBeLessThan(0.0701);
+    }
+  });
+
+  it('flags tubes crossing without a tube height between them, not a −1 over a −2', () => {
+    const road = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'road' as const,
+      geometry: { type: 'LineString' as const, coordinates: pts.map(([x, y]) => ll(x, y)) },
+      tags,
+    });
+    const [west, south] = ll(-400, -400);
+    const [east, north] = ll(400, 400);
+    const crossingTubes = (lower: string) => ({
+      ...gridSource(),
+      osm: [],
+      terrain: {
+        source: 'test',
+        west,
+        east,
+        north,
+        south,
+        cols: 9,
+        rows: 9,
+        heights: new Array(81).fill(50),
+      },
+      features: [
+        road(
+          'osm:w',
+          [
+            [-350, 0],
+            [-150, 0],
+          ],
+          { highway: 'primary' },
+        ),
+        road(
+          'osm:x',
+          [
+            [-150, 0],
+            [150, 0],
+          ],
+          { highway: 'primary', tunnel: 'yes', layer: '-1' },
+        ),
+        road(
+          'osm:e',
+          [
+            [150, 0],
+            [350, 0],
+          ],
+          { highway: 'primary' },
+        ),
+        road(
+          'osm:s',
+          [
+            [0, -350],
+            [0, -150],
+          ],
+          { highway: 'primary' },
+        ),
+        road(
+          'osm:y',
+          [
+            [0, -150],
+            [0, 150],
+          ],
+          { highway: 'primary', tunnel: 'yes', layer: lower },
+        ),
+        road(
+          'osm:n',
+          [
+            [0, 150],
+            [0, 350],
+          ],
+          { highway: 'primary' },
+        ),
+      ],
+    });
+    const clash = (lower: string) =>
+      validateCity(compileCity(crossingTubes(lower), { infill: false, decorate: false })).counts[
+        'tunnel.clash'
+      ] ?? 0;
+    expect(clash('-1')).toBe(1);
+    expect(clash('-2')).toBe(0);
+  });
+
   it('cuts an underpass trench with walls and portals, and only portals into a hill', () => {
     const road = (ref: string, pts: [number, number][], tags: Record<string, string>) => ({
       ref,

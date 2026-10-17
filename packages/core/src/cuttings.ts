@@ -41,6 +41,10 @@ export const TUNNEL_HEIGHT = 5.4;
 export const TWIN_MEDIAN = 4;
 /** Maintenance walkway each side inside a tube. */
 const WALKWAY = 1.1;
+/** Steepest grade of a road inside a tube (a deeper branch dips away from a joint). */
+const TUBE_GRADE = 0.07;
+/** Profile points along a tube at most this far apart (m). */
+const TUBE_STEP = 5;
 
 const endKey = (p: Vec2) => `${Math.round(p[0] * 2)},${Math.round(p[1] * 2)}`;
 
@@ -104,6 +108,19 @@ function approachFrom(
   return points.length >= 2 && walked > 10 ? { points, width, road: first } : null;
 }
 
+/** A polyline with points added so no segment is longer than `step`. */
+function densify(points: Vec2[], step: number): Vec2[] {
+  const out: Vec2[] = [points[0]];
+  for (let k = 1; k < points.length; k++) {
+    const a = points[k - 1];
+    const b = points[k];
+    const n = Math.ceil(dist(a, b) / step);
+    for (let i = 1; i <= n; i++)
+      out.push([a[0] + ((b[0] - a[0]) * i) / n, a[1] + ((b[1] - a[1]) * i) / n]);
+  }
+  return out;
+}
+
 function dotDir(a: Vec2, b: Vec2): number {
   return a[0] * b[0] + a[1] * b[1];
 }
@@ -144,30 +161,82 @@ export function buildCuttings(
   const tunnels: Tunnel[] = [];
   const trenches: Polygon[] = [];
   const lids: Polygon[] = [];
-  for (const tunnel of roads.filter((r) => r.grade === 'tunnel' && isVehicular(r.cls))) {
-    const c = tunnel.centerline;
-    if (c.length < 2) continue;
+  const tubes = roads.filter(
+    (r) => r.grade === 'tunnel' && isVehicular(r.cls) && r.centerline.length >= 2,
+  );
+  const depthOf = (r: Road) => DEPTH_PER_LAYER * Math.min(2, Math.max(1, -r.layer));
+  const isHill = (r: Road) => {
+    const c = r.centerline;
+    const endZ = Math.max(origAt(c[0]), origAt(c[c.length - 1]));
+    let overZ = -Infinity;
+    for (let k = 1; k < c.length - 1; k++) overZ = Math.max(overZ, origAt(c[k]));
+    return overZ - endZ > HILL_RISE;
+  };
+  const hills = new Set(tubes.filter(isHill));
+  // The source splits a tunnel network (an underpass junction) at every
+  // branch: ends of tubes meeting are joints inside one network — one floor
+  // level shared by all of them, no mouth, no ramp. A joint takes the
+  // shallowest level of its tubes (a deeper one dips away from it); a mouth
+  // is an end that meets no other tube. (Before, every piece got mouths of
+  // its own: a layer −1 tube joining a −2 one met it 6.5 m higher, open.)
+  const tubeEnds = new Map<string, Road[]>();
+  for (const r of tubes)
+    for (const p of [r.centerline[0], r.centerline[r.centerline.length - 1]]) {
+      const k = endKey(p);
+      tubeEnds.set(k, [...(tubeEnds.get(k) ?? []), r]);
+    }
+  const isJoint = (p: Vec2) => (tubeEnds.get(endKey(p))?.length ?? 0) > 1;
+  const jointZ = (p: Vec2) => {
+    const at = tubeEnds.get(endKey(p)) ?? [];
+    return Math.max(floorMin, origAt(p) - Math.min(...at.map(depthOf)));
+  };
+  for (const tunnel of tubes) {
+    const hill = hills.has(tunnel);
+    const raw = tunnel.centerline;
+    // Underpasses follow the street above at their depth: profile points every TUBE_STEP.
+    const c = hill ? raw : densify(raw, TUBE_STEP);
     const ends = [
       { p: c[0], into: normalize(sub(c[1], c[0])) },
       { p: c[c.length - 1], into: normalize(sub(c[c.length - 2], c[c.length - 1])) },
     ];
-    const endZ = Math.max(...ends.map((e) => origAt(e.p)));
-    let overZ = -Infinity;
-    for (let k = 1; k < c.length - 1; k++) overZ = Math.max(overZ, origAt(c[k]));
-    const hill = overZ - endZ > HILL_RISE;
-    const depth = DEPTH_PER_LAYER * Math.min(2, Math.max(1, -tunnel.layer));
+    const joined = ends.map((e) => !hill && isJoint(e.p));
+    const depth = depthOf(tunnel);
     const tubeHalf = tunnel.width / 2 + WALKWAY;
-    // Road level in the tube at each mouth: street level into a hill, below the street for an underpass.
-    const mouthZ = ends.map((e) => Math.max(floorMin, origAt(e.p) - (hill ? 0 : depth)));
+    // Road level in the tube at each end: a joint's shared level; at a mouth
+    // street level into a hill, below the street for an underpass.
+    const mouthZ = ends.map((e, k) =>
+      joined[k] ? jointZ(e.p) : Math.max(floorMin, origAt(e.p) - (hill ? 0 : depth)),
+    );
     const at = arcLengths(c);
     const total = at[at.length - 1];
-    const floorAt = (s: number) =>
-      mouthZ[0] + (mouthZ[1] - mouthZ[0]) * (total > 0 ? s / total : 0);
+    // A hill tunnel runs straight from mouth to mouth; an underpass keeps its
+    // depth under the street, reached from its ends at most TUBE_GRADE.
+    const zs = c.map((p, k) =>
+      k === 0
+        ? mouthZ[0]
+        : k === c.length - 1
+          ? mouthZ[1]
+          : hill
+            ? mouthZ[0] + (mouthZ[1] - mouthZ[0]) * (total > 0 ? at[k] / total : 0)
+            : Math.max(
+                floorMin,
+                origAt(p) - depth,
+                mouthZ[0] - TUBE_GRADE * at[k],
+                mouthZ[1] - TUBE_GRADE * (total - at[k]),
+              ),
+    );
+    /** Road level at arc length s. */
+    const floorAt = (s: number) => {
+      let k = 1;
+      while (k < at.length - 1 && at[k] < s) k++;
+      const t = (s - at[k - 1]) / (at[k] - at[k - 1] || 1);
+      return zs[k - 1] + (zs[k] - zs[k - 1]) * Math.min(1, Math.max(0, t));
+    };
     tunnels.push({
       id: `${tunnel.id}-t`,
       roadId: tunnel.id,
       ...(tunnel.name ? { name: tunnel.name } : {}),
-      path: c.map((p, k) => [p[0], p[1], floorAt(at[k])]),
+      path: c.map((p, k) => [p[0], p[1], zs[k]]),
       width: tubeHalf * 2,
       height: TUNNEL_HEIGHT,
       carriageway: tunnel.width,
@@ -177,6 +246,8 @@ export function buildCuttings(
     });
 
     ends.forEach((end, k) => {
+      // A joint opens into the next tube of the network: no ramp, no mouth.
+      if (joined[k]) return;
       const away: Vec2 = [-end.into[0], -end.into[1]];
       let half = tubeHalf;
       if (!hill) {
