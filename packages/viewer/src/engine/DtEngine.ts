@@ -2362,6 +2362,15 @@ export class DtEngine {
   private tickCameraBelow(): void {
     if (!this.tiles.size) return;
     const p = this.camera.position;
+    // Down a stair pit, a tunnel or a station the horizon's coarse land (at
+    // street level) lay over one's head like a lid — it is dropped under
+    // loaded tiles by its 1 km mask, yet showed over Güvenpark's pits
+    // (2026-10-18; why the mask let it through there is not found yet).
+    // Below it, none of it is in view anyway.
+    if (this.horizon) {
+      const land = this.horizonHeightAt(p.x, -p.z);
+      this.horizon.mesh.visible = land === null || p.y > land - 0.5;
+    }
     const below = p.y < this.heightAt(p.x, -p.z) - 2;
     if (below === this.cameraBelow) return;
     this.cameraBelow = below;

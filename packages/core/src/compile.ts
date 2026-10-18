@@ -173,11 +173,19 @@ function streetHeading(roads: Road[], p: Vec2): number {
  * station (the street's drawing direction is arbitrary: half the pits ran
  * away from their station, the passage doubling back under them).
  */
-function entranceHeading(roads: Road[], p: Vec2, stations: { polygons: Polygon[] }[]): number {
+function entranceHeading(
+  roads: Road[],
+  p: Vec2,
+  stations: { polygons: Polygon[]; tags: Record<string, string> }[],
+): number {
   const heading = streetHeading(roads, p);
   let best = ENTRANCE_REACH;
   let edge: Vec2 | null = null;
-  for (const s of stations)
+  // Towards a concourse, the platforms only where none is near.
+  const near = (s: { polygons: Polygon[] }) =>
+    s.polygons.some((poly) => ringDistance(p, poly.outer) < ENTRANCE_REACH);
+  const halls = stations.filter((s) => s.tags.building !== 'platform' && near(s));
+  for (const s of halls.length ? halls : stations)
     for (const poly of s.polygons) {
       const c = ringCentroid(poly.outer);
       if (Math.hypot(c[0] - p[0], c[1] - p[1]) > ENTRANCE_REACH) continue;
@@ -329,6 +337,49 @@ function concourseOver(
     .sort((a, b) => a.d - b.d)[0]?.s;
 }
 
+/** Platform stairs keep this far (m, from their side) from a mapped fare gate / lift. */
+const GATE_CLEAR = 2.8;
+const LIFT_CLEAR = 1.8;
+/** Platform stairs are tried this far apart along the platform (m). */
+const STAIRS_STEP = 2;
+
+/**
+ * Middle of a platform's stairs: the platform's middle if nothing mapped is in
+ * the way, else the nearest place along its long side, the stairs on the
+ * platform and their top in the concourse, clear of every keep-out circle.
+ */
+function stairsPlace(
+  p: UndergroundStructure,
+  above: UndergroundStructure,
+  axis: Vec2,
+  half: number,
+  keepOut: { at: Vec2; r: number }[],
+): Vec2 {
+  const c = ringCentroid(p.footprint.outer);
+  const ring = p.footprint.outer;
+  let reach = 0;
+  for (const q of ring)
+    reach = Math.max(reach, Math.abs((q[0] - c[0]) * axis[0] + (q[1] - c[1]) * axis[1]));
+  const near = keepOut.filter((k) => dist(k.at, c) < reach + half + 10);
+  if (!near.length) return c;
+  const fits = (m: Vec2) => {
+    const a: Vec2 = [m[0] - axis[0] * half, m[1] - axis[1] * half];
+    const b: Vec2 = [m[0] + axis[0] * half, m[1] + axis[1] * half];
+    return (
+      pointInRing(a, ring) &&
+      pointInRing(b, ring) &&
+      pointInRing(a, above.footprint.outer) &&
+      near.every((k) => closestOnSegment(k.at, a, b).d - PLATFORM_STAIRS / 2 > k.r)
+    );
+  };
+  for (let d = 0; d <= reach; d += STAIRS_STEP)
+    for (const side of d ? [1, -1] : [1]) {
+      const m: Vec2 = [c[0] + axis[0] * d * side, c[1] + axis[1] * d * side];
+      if (fits(m)) return m;
+    }
+  return c;
+}
+
 /** A lift mapped outside a station but this close to its outline (m) comes up from it. */
 const ELEVATOR_REACH = 25;
 
@@ -420,7 +471,7 @@ export function stationFittings(
   return out;
 }
 
-export const COMPILER_VERSION = '120';
+export const COMPILER_VERSION = '126';
 
 /** Area kinds where no synthetic building may be placed. */
 const NO_BUILD: AreaKind[] = [
@@ -1216,10 +1267,28 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   // Trench rim: street surfaces stop at the outer face of the retaining walls
   // (trench footprint + 0.4 m, square at the open end where the ramp road
   // carries on), so a sidewalk never runs into a wall.
-  const wallBands = cuttings.flatMap((c) =>
+  const wallBands = [
+    ...cuttings.flatMap((c) =>
+      bufferPolyline(
+        c.path.map((q) => [q[0], q[1]] as Vec2),
+        c.width / 2 + 0.4,
+        false,
+      ),
+    ),
+  ];
+  // A metro entrance's stair pit opens every surface over it (a sidewalk,
+  // a footway or a square's paving drawn on over it closed the pit like a
+  // lid: from the stairs one saw the ground's underside, 2026-10-18).
+  const pitBands = entrancePits.flatMap((pit) =>
     bufferPolyline(
-      c.path.map((q) => [q[0], q[1]] as Vec2),
-      c.width / 2 + 0.4,
+      [
+        pit.at,
+        [
+          pit.at[0] + Math.cos(pit.heading) * STATION_PIT_LENGTH,
+          pit.at[1] + Math.sin(pit.heading) * STATION_PIT_LENGTH,
+        ],
+      ],
+      STATION_PIT.width / 2 + 0.05,
       false,
     ),
   );
@@ -1236,6 +1305,11 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     { kind: 'yard' as const, polygons: yards },
     ...hard,
   ];
+  if (pitBands.length)
+    outSurfaces = outSurfaces.map((sf) => ({
+      ...sf,
+      polygons: dropHairlines(difference(sf.polygons, pitBands)),
+    }));
   // One surface per spot: nothing else under a rail bed (surface.rail).
   outSurfaces = harmony.surfaces(outSurfaces);
   // Where a deck runs low over the ground (its landing in a junction) the deck
@@ -1353,6 +1427,16 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     };
   }
 
+  // A stair pit opens the areas drawn on the ground too (a park's lawn over
+  // the pit closed it at Güvenpark, 2026-10-18).
+  if (pitBands.length)
+    outAreas = outAreas.flatMap((a) =>
+      difference([a.polygon], pitBands).map((polygon, i) => ({
+        ...a,
+        id: i ? `${a.id}~p${i}` : a.id,
+        polygon,
+      })),
+    );
   // Everything standing on the ground takes its height from the one ground
   // model the viewer draws with (sidewalk at kerb height, trench floor, lid …).
   // (The terrain was lowered under the streets above, as drawn.)
@@ -1439,13 +1523,21 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   const allEntrances: StationEntrance[] = features.points
     .filter((pt) => pt.tags.railway === 'subway_entrance')
     .map((pt) => {
-      let station: UndergroundStructure | undefined;
-      let best = ENTRANCE_REACH;
-      for (const s of structures) {
-        const c = ringCentroid(s.footprint.outer);
-        const d = Math.hypot(c[0] - pt.p[0], c[1] - pt.p[1]);
-        if (d < best) [best, station] = [d, s];
-      }
+      // Into the nearest concourse (by its outline: a big one's middle is
+      // far); straight onto a platform only where no concourse is near.
+      const nearest = (kinds: UndergroundStructure[]) => {
+        let found: UndergroundStructure | undefined;
+        let best = ENTRANCE_REACH;
+        for (const s of kinds) {
+          const d = pointInRing(pt.p, s.footprint.outer)
+            ? 0
+            : ringDistance(pt.p, s.footprint.outer);
+          if (d < best) [best, found] = [d, s];
+        }
+        return found;
+      };
+      const station =
+        nearest(structures.filter((s) => s.kind !== 'platform')) ?? nearest(structures);
       const heading = entranceHeading(roads, pt.p, undergroundSources);
       const top = groundModel.surfaceAt(pt.p[0], pt.p[1]).z;
       return {
@@ -1472,16 +1564,25 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     if (doors.length) s.doors = doors;
   }
   // Platforms reach their concourse by stairs along their long side, from
-  // its floor down to theirs; the concourse floor is open over them.
+  // its floor down to theirs; the concourse floor is open over them. The
+  // stairs' place is the engine's guess (OSM rarely maps it): mapped fare
+  // gates and lifts keep theirs, the stairs move along the platform.
+  const keepOut = features.points.flatMap((pt) =>
+    pt.tags.barrier === 'turnstile'
+      ? [{ at: pt.p, r: GATE_CLEAR }]
+      : pt.tags.highway === 'elevator'
+        ? [{ at: pt.p, r: LIFT_CLEAR }]
+        : [],
+  );
   for (const p of structures) {
     if (p.kind !== 'platform') continue;
-    const c = ringCentroid(p.footprint.outer);
     const above = concourseOver(p, structures);
     if (!above) continue;
     const drop = above.floorZ - p.floorZ;
     if (drop <= 0.5) continue;
     const axis = longAxis(p.footprint.outer);
     const half = drop / Math.tan(Math.PI / 6) / 2;
+    const c = stairsPlace(p, above, axis, half, keepOut);
     const a: Vec2 = [c[0] - axis[0] * half, c[1] - axis[1] * half];
     const b: Vec2 = [c[0] + axis[0] * half, c[1] + axis[1] * half];
     p.stairs = {

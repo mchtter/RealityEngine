@@ -177,6 +177,67 @@ describe('compileCity', () => {
     );
   });
 
+  it('opens every surface over a stair pit dug in the sidewalk', () => {
+    const src = gridSource();
+    const square = (x: number, y: number, r: number) => [
+      ll(x - r, y - r),
+      ll(x + r, y - r),
+      ll(x + r, y + r),
+      ll(x - r, y + r),
+      ll(x - r, y - r),
+    ];
+    src.features = [
+      ...(src.features ?? []),
+      {
+        ref: 'osm:w-station',
+        source: 'osm',
+        priority: 0,
+        kind: 'building' as const,
+        geometry: { type: 'Polygon' as const, coordinates: [square(60, 35, 12)] },
+        tags: { building: 'train_station', layer: '-1' },
+      },
+      // A park's lawn round the entrance.
+      {
+        ref: 'osm:w-park',
+        source: 'osm',
+        priority: 0,
+        kind: 'area' as const,
+        geometry: {
+          type: 'Polygon' as const,
+          coordinates: [[ll(20, 30), ll(80, 30), ll(80, 58), ll(20, 58), ll(20, 30)]],
+        },
+        tags: { leisure: 'park' },
+      },
+      // On the street's edge: the pit runs along it, in its sidewalk.
+      {
+        ref: 'osm:n-exit',
+        source: 'osm',
+        priority: 0,
+        kind: 'point' as const,
+        geometry: { type: 'Point' as const, coordinates: ll(40, 56) },
+        tags: { railway: 'subway_entrance' },
+      },
+    ];
+    const m = compileCity(src);
+    const e = m.underground!.entrances[0];
+    // No surface of any kind (sidewalk, footway, a square's paving) over the pit.
+    const street = m.surfaces;
+    for (const d of [2, STATION_PIT_LENGTH / 2, STATION_PIT_LENGTH - 1]) {
+      const q: [number, number] = [
+        e.position[0] + Math.cos(e.heading) * d,
+        e.position[1] + Math.sin(e.heading) * d,
+      ];
+      const lid = street.filter((sf) =>
+        sf.polygons.some((p) => pointInRing(q, p.outer) && !p.holes.some((h) => pointInRing(q, h))),
+      );
+      expect(lid.map((sf) => sf.kind)).toEqual([]);
+      const lawn = m.areas.filter(
+        (a) => pointInRing(q, a.polygon.outer) && !a.polygon.holes.some((h) => pointInRing(q, h)),
+      );
+      expect(lawn.map((a) => a.kind)).toEqual([]);
+    }
+  });
+
   it('takes a platform under its concourse by stairs, and keeps the metro line in its tunnel', () => {
     const src = gridSource();
     const square = (x: number, y: number, rx: number, ry: number) => [
@@ -280,6 +341,126 @@ describe('compileCity', () => {
     const hall = ug.structures.find((s) => s.ref === 'osm:w-hall')!;
     const platform = ug.structures.find((s) => s.ref === 'osm:w-platform')!;
     expect(hall.floorZ - platform.floorZ).toBeCloseTo(6, 5);
+  });
+
+  it('leads an entrance into the concourse, not onto the platform whose middle is nearer', () => {
+    const square = (x: number, y: number, rx: number, ry: number) => [
+      ll(x - rx, y - ry),
+      ll(x + rx, y - ry),
+      ll(x + rx, y + ry),
+      ll(x - rx, y + ry),
+      ll(x - rx, y - ry),
+    ];
+    const building = (ref: string, ring: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'building' as const,
+      geometry: { type: 'Polygon' as const, coordinates: [ring] },
+      tags,
+    });
+    const src = gridSource();
+    src.features = [
+      ...(src.features ?? []),
+      building('osm:w-hall', square(0, 30, 60, 20), { building: 'train_station', layer: '-1' }),
+      building('osm:w-platform', square(0, 15, 50, 4), { building: 'platform', layer: '-2' }),
+      {
+        ref: 'osm:n-entrance',
+        source: 'osm',
+        priority: 0,
+        kind: 'point' as const,
+        geometry: { type: 'Point' as const, coordinates: ll(56, 12) },
+        tags: { railway: 'subway_entrance' },
+      },
+    ];
+    const m = compileCity(src);
+    const ug = m.underground!;
+    const hall = ug.structures.find((s) => s.ref === 'osm:w-hall')!;
+    const e = ug.entrances.find((x) => x.ref === 'osm:n-entrance')!;
+    expect(e.station).toBe('osm:w-hall');
+    expect(e.passage!.at(-1)![2]).toBeCloseTo(hall.floorZ, 5);
+  });
+
+  it("keeps a mall's name for its signs, not an apartment block's", () => {
+    const square = (x: number, y: number, rx: number, ry: number) => [
+      ll(x - rx, y - ry),
+      ll(x + rx, y - ry),
+      ll(x + rx, y + ry),
+      ll(x - rx, y + ry),
+      ll(x - rx, y - ry),
+    ];
+    const building = (ref: string, ring: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'building' as const,
+      geometry: { type: 'Polygon' as const, coordinates: [ring] },
+      tags,
+    });
+    const src = gridSource();
+    src.features = [
+      ...(src.features ?? []),
+      building('osm:w-mall', square(100, 0, 40, 25), {
+        building: 'retail',
+        shop: 'mall',
+        'building:levels': '6',
+        name: 'Kent AVM',
+      }),
+      building('osm:w-flats', square(-100, 0, 10, 8), {
+        building: 'apartments',
+        'building:levels': '5',
+        name: 'Gül Apartmanı',
+      }),
+    ];
+    const m = compileCity(src);
+    const mall = m.buildings.find((b) => b.ref === 'osm:w-mall')!;
+    const flats = m.buildings.find((b) => b.ref === 'osm:w-flats')!;
+    expect(mall.form).toBe('box');
+    expect(mall.name).toBe('Kent AVM');
+    expect(flats.name).toBeUndefined();
+  });
+
+  it('moves the platform stairs clear of a fare gate mapped over them', () => {
+    const square = (x: number, y: number, rx: number, ry: number) => [
+      ll(x - rx, y - ry),
+      ll(x + rx, y - ry),
+      ll(x + rx, y + ry),
+      ll(x - rx, y + ry),
+      ll(x - rx, y - ry),
+    ];
+    const building = (ref: string, ring: [number, number][], tags: Record<string, string>) => ({
+      ref,
+      source: 'osm',
+      priority: 0,
+      kind: 'building' as const,
+      geometry: { type: 'Polygon' as const, coordinates: [ring] },
+      tags,
+    });
+    const src = gridSource();
+    src.features = [
+      ...(src.features ?? []),
+      building('osm:w-hall', square(0, 30, 40, 20), { building: 'train_station', layer: '-1' }),
+      building('osm:w-platform', square(0, 30, 50, 4), { building: 'platform', layer: '-2' }),
+      // Right over the platform's middle, where the stairs would go.
+      {
+        ref: 'osm:n-gate',
+        source: 'osm',
+        priority: 0,
+        kind: 'point' as const,
+        geometry: { type: 'Point' as const, coordinates: ll(0, 30) },
+        tags: { barrier: 'turnstile' },
+      },
+    ];
+    const m = compileCity(src);
+    const platform = m.underground!.structures.find((s) => s.ref === 'osm:w-platform')!;
+    const gate = m.underground!.fittings!.find((f) => f.ref === 'osm:n-gate')!;
+    const { from, to } = platform.stairs!;
+    // The gate line (≈ 2 m to each side) is clear of the stairs (1.5 m to each side of their axis).
+    const along = (q: number[]) => q[0] - gate.position[0];
+    const nearest = Math.min(Math.abs(along(from)), Math.abs(along(to)));
+    const crosses = along(from) * along(to) < 0;
+    expect(crosses).toBe(false);
+    expect(nearest).toBeGreaterThan(4);
   });
 
   it('stands fare gates on the concourse and runs lifts between the floors they serve', () => {

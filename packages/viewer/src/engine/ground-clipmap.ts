@@ -13,6 +13,7 @@ import {
   vec3,
 } from 'three/tsl';
 import * as THREE from 'three/webgpu';
+import { earthBelow } from './materials';
 
 /**
  * The ground as one picture (D-011): rings of textures centred on the camera
@@ -107,6 +108,8 @@ export class GroundClipmap {
     s.polygonOffset = ground.polygonOffset;
     s.polygonOffsetFactor = ground.polygonOffsetFactor;
     s.polygonOffsetUnits = ground.polygonOffsetUnits;
+    earthBelow(this.drape);
+    earthBelow(s);
     this.drapeSurface = s;
     this.drape.opacityNode = fade;
     s.opacityNode = fade;

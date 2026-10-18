@@ -25,6 +25,7 @@ import {
   vec3,
 } from 'three/tsl';
 import * as THREE from 'three/webgpu';
+import { earthBelow } from './materials';
 
 /** 1 km cells the tile mask covers per side (tiles loaded around the horizon's centre). */
 const MASK = 160;
@@ -198,6 +199,7 @@ export class HorizonLayer {
       .mul(oneMinus(far.mul(0.5)))
       // Restricted land stays readable at night.
       .add(vec3(0.45, 0.08, 0.03).mul(rLine.mul(0.3).add(0.05)).mul(restricted));
+    earthBelow(mat);
     this.mesh = new THREE.Mesh(g, mat);
     this.mesh.name = 'horizon';
     this.mesh.receiveShadow = false;

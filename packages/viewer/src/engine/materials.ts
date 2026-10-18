@@ -14,6 +14,7 @@ import {
   floor,
   Fn,
   fract,
+  frontFacing,
   fwidth,
   hash,
   If,
@@ -1753,6 +1754,8 @@ export function createMaterials(): DtMaterials {
     utilityCover,
   ];
 
+  // Seen from under it (a station, a tunnel), the ground is the soil overhead.
+  for (const m of [ground, terrain]) earthBelow(m);
   return {
     night,
     streetDetail,
@@ -1854,4 +1857,19 @@ export function setUnderground(mats: DtMaterials, on: boolean): void {
     m.depthWrite = on ? false : saved.depthWrite;
     m.needsUpdate = true;
   }
+}
+
+/** The soil's colour, where the ground is seen from below. */
+const EARTH_BELOW = vec3(0.2, 0.15, 0.1);
+
+/**
+ * Ground seen from below — from a station, a tunnel, a stair pit — is the
+ * earth over one's head: its back faces dark soil, not its own surface (the
+ * map's underside showed through every gap down there, 2026-10-18).
+ */
+export function earthBelow(mat: THREE.MeshStandardNodeMaterial): void {
+  const face = mat.colorNode ? vec3(mat.colorNode as never) : vec3(materialColor as never);
+  mat.colorNode = select(frontFacing, face, EARTH_BELOW);
+  if (mat.emissiveNode)
+    mat.emissiveNode = select(frontFacing, vec3(mat.emissiveNode as never), vec3(0));
 }

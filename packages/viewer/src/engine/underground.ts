@@ -3,6 +3,8 @@ import {
   STATION_PIT,
   offsetPolygons,
   pointInRing,
+  type Polygon,
+  subtractPolygons,
   STATION_PIT_LENGTH,
   type StationEntrance,
   type StationFitting,
@@ -382,6 +384,25 @@ function corridor(path: number[][], mb: MeshBuilder, glow: MeshBuilder): void {
  * outline, walls facing in (open where passages come through), columns on a
  * grid and light panels on the ceiling.
  */
+/** A flat polygon at height z facing up (1) or down (-1). */
+function slab(mb: MeshBuilder, poly: Polygon, z: number, up: 1 | -1, c: THREE.Color): void {
+  const open = (r: [number, number][]) =>
+    r.length > 1 && r[0][0] === r.at(-1)![0] && r[0][1] === r.at(-1)![1] ? r.slice(0, -1) : r;
+  const outer = open(poly.outer as [number, number][]);
+  if (outer.length < 3) return;
+  const holes = poly.holes.map((h) => open(h as [number, number][])).filter((h) => h.length >= 3);
+  const tris = THREE.ShapeUtils.triangulateShape(
+    outer.map((p) => new THREE.Vector2(p[0], p[1])),
+    holes.map((h) => h.map((p) => new THREE.Vector2(p[0], p[1]))),
+  );
+  const ids = [...outer, ...holes.flat()].map((p) =>
+    mb.vertex(toThree(p[0], p[1], z), [0, up, 0], c),
+  );
+  for (const [i, j, l] of tris)
+    if (up > 0) mb.triangle(ids[i], ids[j], ids[l]);
+    else mb.triangle(ids[i], ids[l], ids[j]);
+}
+
 function concourse(s: UndergroundStructure, mb: MeshBuilder, glow: MeshBuilder): void {
   const z = s.floorZ;
   const h = CONCOURSE_HEIGHT;
@@ -434,17 +455,16 @@ function concourse(s: UndergroundStructure, mb: MeshBuilder, glow: MeshBuilder):
       face(mb, ccw ? (pts.reverse() as [number, number, number][]) : pts, TILE_WALL);
     }
   }
-  // Floor (facing up, open over platform stairs) and ceiling (facing down) over the outline.
-  const contour = ring.map((p) => new THREE.Vector2(p[0], p[1]));
-  const openings = (s.openings ?? []).filter((o) => o.every((p) => pointInRing(p, ring)));
-  const holeRings = [...s.footprint.holes, ...openings];
-  const holes = holeRings.map((hh) => hh.map((p) => new THREE.Vector2(p[0], p[1])));
-  const tris = THREE.ShapeUtils.triangulateShape(contour, holes);
-  const pts = [...ring, ...holeRings.flat()];
-  const fl = pts.map((p) => mb.vertex(toThree(p[0], p[1], z + 0.02), [0, 1, 0], FLOOR));
-  for (const [i, j, l] of tris) mb.triangle(fl[i], fl[j], fl[l]);
-  const ce = pts.map((p) => mb.vertex(toThree(p[0], p[1], z + h), [0, -1, 0], CEILING));
-  for (const [i, j, l] of tris) mb.triangle(ce[i], ce[l], ce[j]);
+  // Floor (facing up, open over the platform stairs) and ceiling (facing down,
+  // whole: the stairs go down from this floor, nothing opens above it). The
+  // openings are merged and cut out first: overlapping holes broke the
+  // triangulation, and the ceiling took the floor's holes — both showed the
+  // ground's underside through the station (2026-10-18).
+  const whole: Polygon = { outer: ring, holes: s.footprint.holes };
+  const openings = (s.openings ?? []).map((o): Polygon => ({ outer: o, holes: [] }));
+  const floors = openings.length ? subtractPolygons([whole], openings) : [whole];
+  for (const poly of floors) slab(mb, poly, z + 0.02, 1, FLOOR);
+  slab(mb, whole, z + h, -1, CEILING);
   // Columns and ceiling lights on a grid, kept two metres off the walls.
   const xs = ring.map((p) => p[0]);
   const ys = ring.map((p) => p[1]);
