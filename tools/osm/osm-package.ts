@@ -532,11 +532,12 @@ export function buildingUse(t: Record<string, string>): string | undefined {
     (t.man_made === 'tower' ? (TOWER_USE[t['tower:type'] ?? ''] ?? 'tower') : undefined) ??
     (t.power === 'substation' ? 'substation' : undefined) ??
     (t.aeroway === 'terminal' ? 'terminal' : t.aeroway === 'hangar' ? 'warehouse' : undefined) ??
-    // A generic building tagged with what it is for: a school, a hospital,
-    // a mall (`building=yes` + `shop=mall` is how most malls are mapped).
+    // A mall whatever its building tag (`building=retail` / `yes` + `shop=mall`):
+    // carried as such, the engine draws it as one at any height.
+    (t.shop === 'mall' ? 'mall' : undefined) ??
+    // A generic building tagged with what it is for: a school, a hospital, a supermarket.
     (GENERIC_BUILDING.has(t.building)
-      ? (BUILDING_USE[t.amenity ?? ''] ??
-        (t.shop === 'mall' || t.shop === 'supermarket' ? 'retail' : undefined))
+      ? (BUILDING_USE[t.amenity ?? ''] ?? (t.shop === 'supermarket' ? 'retail' : undefined))
       : undefined) ??
     BUILDING_USE[t.building] ??
     BUILDING_USE[t.man_made] ??

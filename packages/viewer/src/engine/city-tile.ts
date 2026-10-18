@@ -3,6 +3,7 @@ import * as THREE from 'three/webgpu';
 import { toThree } from './geom';
 import { DRAPED } from './ground-clipmap';
 import { setLook } from './look-twin';
+import { buildMallSigns, disposeMallSigns } from './mall-signs';
 import { BUILDING_SLOT, type DtMaterials } from './materials';
 import { type PoiMark, disposePoiMarks, poiMarks } from './poi-labels';
 import type { PropMode } from './props';
@@ -104,6 +105,7 @@ export class CityTile {
   readonly labels: StreetLabel[];
   /** Station name boards over the platforms (canvas textures of this tile). */
   private readonly signs: THREE.Mesh[];
+  private readonly mallSigns: THREE.Mesh[];
   /** Points of interest of the tile (placed by the engine's PoiLabeller in the map look). */
   readonly pois: PoiMark[];
 
@@ -123,6 +125,7 @@ export class CityTile {
     this.slots = payload.slots;
     this.labels = streetLabels(payload.summary.streets);
     this.signs = buildStationSigns(payload.summary.signs, this.group);
+    this.mallSigns = buildMallSigns(payload.summary.mallSigns, this.group);
     this.pois = poiMarks(payload.summary.pois);
     this.summary = payload.summary;
     this.ground = new CutGround(payload.summary.terrain, payload.summary.terrainCut);
@@ -591,6 +594,7 @@ export class CityTile {
   dispose(): void {
     disposeStreetLabels(this.labels);
     disposeStationSigns(this.signs);
+    disposeMallSigns(this.mallSigns);
     disposePoiMarks(this.pois);
     this.group.traverse((o) => {
       if (o instanceof THREE.Mesh && !o.geometry.userData.shared) o.geometry.dispose();

@@ -9,6 +9,7 @@ import type {
   UtilityKind,
 } from '@opentwin/city-core';
 import * as THREE from 'three/webgpu';
+import { type MallSign, mallSigns } from './mall-signs';
 import {
   type DtMaterials,
   INSTANCE_COLOR_ATTRIBUTE,
@@ -106,6 +107,8 @@ export interface TileSummary {
   floors?: { ring: [number, number][]; z: number; clear: number }[];
   /** Station name boards over underground platforms. */
   signs?: StationSign[];
+  /** Malls' names on their fronts. */
+  mallSigns?: MallSign[];
   /** Named ground streets (centreline on the street surface), for their names on the map. */
   streets?: StreetLine[];
   /** Points of interest (tile coords, on the ground), for the map's icons. */
@@ -196,6 +199,7 @@ export function summarize(model: CityModel): TileSummary {
         })),
     ],
     signs: stationSigns(model),
+    mallSigns: mallSigns(model),
     floors: (model.underground?.structures ?? []).map((s) => ({
       ring: s.footprint.outer,
       z: s.floorZ,

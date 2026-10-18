@@ -450,6 +450,7 @@ const BUILDING_USES: Record<string, string> = {
   house: 'Müstakil konut',
   commercial: 'Ticari',
   retail: 'Dükkân / perakende (zemin katı mağaza)',
+  mall: 'Alışveriş merkezi (AVM: kutu yapı, cam giriş, tabela)',
   office: 'Ofis',
   public: 'Kamu binası',
   school: 'Okul',

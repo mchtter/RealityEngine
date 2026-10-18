@@ -279,6 +279,7 @@ export function makeBuilding(
     shopfront,
     use: buildingUse(tags, archetype, shopTag),
     ...(form !== 'block' ? { form } : {}),
+    ...(form === 'box' && (tags.name || tags.brand) ? { name: tags.name || tags.brand } : {}),
     ...(Number.parseInt(tags.layer ?? '', 10) >= 1 ? { raised: true } : {}),
     ...(['train_station', 'transportation'].includes(tags.building ?? '') ? { station: true } : {}),
     // A transmitter's mast, base to tip: the tagged height or a usual one.

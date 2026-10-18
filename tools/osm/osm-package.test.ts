@@ -103,7 +103,9 @@ describe('osmTheme', () => {
 
   it('builds rows with contract values', () => {
     assert.equal(buildingUse({ building: 'yes', amenity: 'school' }), 'school');
-    assert.equal(buildingUse({ building: 'yes', shop: 'mall' }), 'retail');
+    assert.equal(buildingUse({ building: 'yes', shop: 'mall' }), 'mall');
+    assert.equal(buildingUse({ building: 'retail', shop: 'mall' }), 'mall');
+    assert.equal(buildingUse({ building: 'yes', shop: 'supermarket' }), 'retail');
     assert.equal(
       buildingUse({ building: 'yes', man_made: 'tower', 'tower:type': 'minaret' }),
       'minaret',

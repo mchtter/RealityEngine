@@ -572,6 +572,8 @@ export interface Building {
   use: BuildingUse;
   /** Shape family (absent: `block`). */
   form?: BuildingForm;
+  /** Its name, where the renderer writes it (a mall's signs): `box` forms only. */
+  name?: string;
   /**
    * OSM `layer` ≥ 1 of the source: a hall that may stand over tracks or a
    * road (it does not give way to them).

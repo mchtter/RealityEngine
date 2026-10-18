@@ -13,6 +13,7 @@ import {
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as THREE from 'three/webgpu';
 import { MeshBuilder, toThree } from './geom';
+import { MALL, frontAt, mallFrame } from './mall-signs';
 import { BUILDING_SLOT, type DtMaterials } from './materials';
 
 type V2 = [number, number];
@@ -512,90 +513,106 @@ function landmarks(
 
 /**
  * A mall reads as one from afar: on its front a glazed entrance hall (full
- * height, standing out a metre, a light frame) and a coloured sign band
- * along the top of the front wall.
+ * height, standing out a metre, a light frame) under a deep canopy, curtain
+ * glazing to both sides of it, a sign band in its brand colour along the top
+ * of the front and a pylon by the corner (the name on them: mall-signs.ts).
  */
-function mallFront(
-  b: Building,
-  ring: V2[],
-  wallTop: number,
-  walls: MeshBuilder,
-  owner: number,
-): void {
-  const f = b.facades.find((x) => x.front);
+const UV1: [number, number][] = [
+  [0, 0],
+  [1, 0],
+  [1, 1],
+  [0, 1],
+];
+
+function mallFront(b: Building, wallTop: number, walls: MeshBuilder, owner: number): void {
+  const f = mallFrame(b);
   if (!f) return;
-  const a = ring[f.edge];
-  const c = ring[(f.edge + 1) % ring.length];
-  const len = Math.hypot(c[0] - a[0], c[1] - a[1]);
-  if (len < 20) return;
-  const t: V2 = [(c[0] - a[0]) / len, (c[1] - a[1]) / len];
-  // Outward normal: the side of the edge away from the footprint's centre.
-  const ob = orientedBox(ring);
-  let o: V2 = [t[1], -t[0]];
-  const mid: V2 = [(a[0] + c[0]) / 2, (a[1] + c[1]) / 2];
-  if ((ob.center[0] - mid[0]) * o[0] + (ob.center[1] - mid[1]) * o[1] > 0) o = [-o[0], -o[1]];
-  const rng = new Rng(b.seed + 23);
-  const sign = col(rng.pick(['#c0392b', '#1f5fa8', '#2f8f4e', '#d68910', '#6c3483', '#17202a']));
+  const sign = col(f.colour);
   const glass = col('#5d7a8c');
+  const curtain = col('#4c6a7d');
   const frame = col('#e9ecee');
   walls.setAttribute('bay', [0, 0, 0]);
-  const at = (u: number, d: number, z: number): [number, number, number] => [
-    a[0] + t[0] * u + o[0] * d,
-    a[1] + t[1] * u + o[1] * d,
-    z,
-  ];
-  const n: [number, number, number] = [o[0], o[1], 0];
+  const at = (u: number, d: number, z: number) => frontAt(f, u, d, z);
+  const n: [number, number, number] = [f.o[0], f.o[1], 0];
+  const tt: [number, number, number] = [f.t[0], f.t[1], 0];
   // Quads wound to face their normal (the front edge may run either way round).
-  const face = (
-    pts: [number, number, number][],
-    nn: [number, number, number],
-    c: THREE.Color,
-    uvs: [number, number][],
-  ) => {
+  const face = (pts: [number, number, number][], nn: [number, number, number], c: THREE.Color) => {
     const e1 = [pts[1][0] - pts[0][0], pts[1][1] - pts[0][1], pts[1][2] - pts[0][2]];
     const e2 = [pts[3][0] - pts[0][0], pts[3][1] - pts[0][1], pts[3][2] - pts[0][2]];
     const cx = e1[1] * e2[2] - e1[2] * e2[1];
     const cy = e1[2] * e2[0] - e1[0] * e2[2];
     const cz = e1[0] * e2[1] - e1[1] * e2[0];
     const ok = cx * nn[0] + cy * nn[1] + cz * nn[2] >= 0;
-    walls.quad(ok ? pts : [pts[1], pts[0], pts[3], pts[2]], nn, c, uvs, 0, owner);
+    walls.quad(ok ? pts : [pts[1], pts[0], pts[3], pts[2]], nn, c, UV1, 0, owner);
   };
-  const uv: [number, number][] = [
-    [0, 0],
-    [1, 0],
-    [1, 1],
-    [0, 1],
-  ];
-  // Sign band, 1.6 m, just under the parapet, a few centimetres proud.
-  const z1 = wallTop - 0.2;
-  face(
-    [at(0, 0.06, z1 - 1.6), at(len, 0.06, z1 - 1.6), at(len, 0.06, z1), at(0, 0.06, z1)],
-    n,
-    sign,
-    uv,
-  );
-  // Entrance hall: a glass box in the middle of the front, 1 m proud.
-  const w = Math.min(18, len * 0.22);
-  const u0 = len / 2 - w / 2;
-  const u1 = len / 2 + w / 2;
-  const z0 = b.floorZ;
+  const neg = (v: [number, number, number]): [number, number, number] => [-v[0], -v[1], -v[2]];
+  /** A box on the front: u0..u1 along it, d0..d1 out of the wall, z0..z1. */
+  const box = (
+    u0: number,
+    u1: number,
+    d0: number,
+    d1: number,
+    z0: number,
+    z1: number,
+    c: THREE.Color,
+  ) => {
+    face([at(u0, d1, z0), at(u1, d1, z0), at(u1, d1, z1), at(u0, d1, z1)], n, c);
+    face([at(u1, d0, z0), at(u1, d1, z0), at(u1, d1, z1), at(u1, d0, z1)], tt, c);
+    face([at(u0, d1, z0), at(u0, d0, z0), at(u0, d0, z1), at(u0, d1, z1)], neg(tt), c);
+    face([at(u0, d0, z1), at(u1, d0, z1), at(u1, d1, z1), at(u0, d1, z1)], [0, 0, 1], c);
+    face([at(u0, d1, z0), at(u1, d1, z0), at(u1, d0, z0), at(u0, d0, z0)], [0, 0, -1], c);
+  };
+  // Sign band, just under the parapet, a few centimetres proud.
+  const z1 = wallTop - MALL.bandTop;
+  const zb = z1 - MALL.band;
+  face([at(0, 0.06, zb), at(f.len, 0.06, zb), at(f.len, 0.06, z1), at(0, 0.06, z1)], n, sign);
+  // Curtain glazing either side of the entrance, from over the shops to under the band.
+  const zg0 = b.floorZ + b.groundFloorHeight + 0.4;
+  const zg1 = zb - 0.5;
+  if (zg1 - zg0 > 2)
+    for (const [g0, g1] of [
+      [f.len * 0.08, Math.min(f.len * 0.3, f.u0 - 2)],
+      [Math.max(f.len * 0.7, f.u1 + 2), f.len * 0.92],
+    ]) {
+      if (g1 - g0 < 3) continue;
+      face(
+        [at(g0, 0.05, zg0), at(g1, 0.05, zg0), at(g1, 0.05, zg1), at(g0, 0.05, zg1)],
+        n,
+        curtain,
+      );
+      // Mullions every 1.5 m, transoms every storey.
+      for (let u = g0; u <= g1 + 0.01; u += (g1 - g0) / Math.max(1, Math.round((g1 - g0) / 1.5)))
+        face(
+          [
+            at(u - 0.05, 0.08, zg0),
+            at(u + 0.05, 0.08, zg0),
+            at(u + 0.05, 0.08, zg1),
+            at(u - 0.05, 0.08, zg1),
+          ],
+          n,
+          frame,
+        );
+      for (let z = zg0; z <= zg1 + 0.01; z += Math.max(2.8, b.floorHeight))
+        face(
+          [
+            at(g0, 0.08, z - 0.05),
+            at(g1, 0.08, z - 0.05),
+            at(g1, 0.08, z + 0.05),
+            at(g0, 0.08, z + 0.05),
+          ],
+          n,
+          frame,
+        );
+    }
+  // Entrance hall: a glass box in the middle of the front, a metre proud.
+  const z0 = f.z0;
   const zt = wallTop + 1.2;
-  const d = 1;
-  face([at(u0, d, z0), at(u1, d, z0), at(u1, d, zt), at(u0, d, zt)], n, glass, uv);
-  const side = (u: number, s: number) =>
-    face(
-      s > 0
-        ? [at(u, 0, z0), at(u, d, z0), at(u, d, zt), at(u, 0, zt)]
-        : [at(u, d, z0), at(u, 0, z0), at(u, 0, zt), at(u, d, zt)],
-      [t[0] * s, t[1] * s, 0],
-      frame,
-      uv,
-    );
-  side(u1, 1);
-  side(u0, -1);
-  face([at(u0, 0, zt), at(u1, 0, zt), at(u1, d, zt), at(u0, d, zt)], [0, 0, 1], frame, uv);
-  // Mullions every 2.4 m across the glass.
-  for (let u = u0 + 2.4; u < u1 - 0.5; u += 2.4)
+  const d = MALL.hall;
+  face([at(f.u0, d, z0), at(f.u1, d, z0), at(f.u1, d, zt), at(f.u0, d, zt)], n, glass);
+  face([at(f.u1, 0, z0), at(f.u1, d, z0), at(f.u1, d, zt), at(f.u1, 0, zt)], tt, frame);
+  face([at(f.u0, d, z0), at(f.u0, 0, z0), at(f.u0, 0, zt), at(f.u0, d, zt)], neg(tt), frame);
+  face([at(f.u0, 0, zt), at(f.u1, 0, zt), at(f.u1, d, zt), at(f.u0, d, zt)], [0, 0, 1], frame);
+  for (let u = f.u0 + 2.4; u < f.u1 - 0.5; u += 2.4)
     face(
       [
         at(u - 0.08, d + 0.02, z0),
@@ -605,8 +622,23 @@ function mallFront(
       ],
       n,
       frame,
-      uv,
     );
+  // The canopy over the doors, wider than the hall.
+  const cz = z0 + MALL.canopyZ;
+  box(f.u0 - 2, f.u1 + 2, 0, MALL.canopyDepth, cz, cz + MALL.canopyThick, frame);
+  // The pylon by the front's corner, in the brand colour on a dark foot.
+  const P = MALL.pylon;
+  const pu = Math.min(8, f.len * 0.1);
+  box(
+    pu - P.depth / 2,
+    pu + P.depth / 2,
+    P.out,
+    P.out + P.width,
+    b.baseZ,
+    z0 + 0.6,
+    col('#3a3d40'),
+  );
+  box(pu - P.depth / 2, pu + P.depth / 2, P.out, P.out + P.width, z0 + 0.6, z0 + P.height, sign);
 }
 
 /**
@@ -1711,7 +1743,7 @@ export function buildBuildingLayer(
     if (b.form === 'canopy') canopy(b, ring, wallColor, roofColor, walls, flats, owner);
     if (b.form === 'mosque' || b.form === 'church')
       landmarks(b, ring, wallTop, wallColor, roofColor, walls, flats, tiles, owner);
-    if (b.form === 'box') mallFront(b, ring, wallTop, walls, owner);
+    if (b.form === 'box') mallFront(b, wallTop, walls, owner);
     if (b.underside !== undefined) {
       soffit(b, b.underside, baseColor, flats, owner);
       for (const [cx, cy] of b.columns ?? [])

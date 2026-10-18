@@ -435,7 +435,9 @@ export const CITY_CLASSES: readonly CityClassDef[] = withPoiBindings([
     theme: t('building', { use: 'shed' }),
   }),
   c('building.kiosk', 'Büfe', 'building', 'volume', { theme: t('building', { use: 'kiosk' }) }),
-  c('building.mall', 'Alışveriş merkezi', 'building', 'volume'),
+  c('building.mall', 'Alışveriş merkezi', 'building', 'volume', {
+    theme: t('building', { use: 'mall' }),
+  }),
   c('building.hotel', 'Otel', 'building', 'volume'),
   c('building.parking_garage', 'Katlı / kapalı otopark', 'building', 'volume', {
     capabilities: ['telemetry'],
