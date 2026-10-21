@@ -19,7 +19,7 @@
         "bin": "no",
         "bus": "yes",
         "highway": "bus_stop",
-        "name": "Metropolis Belediye Otobüsü",
+        "name": "Metropolis City Transit",
         "phone": "+90372 252 0023",
         "public_transport": "platform",
         "shelter": "yes",
@@ -269,7 +269,7 @@
       "tags": {
         "bus": "yes",
         "highway": "bus_stop",
-        "name": "District Belediyesi Özel Halk Otobüsleri",
+        "name": "District Regional Transit",
         "public_transport": "platform"
       },
       "lon": 31.7862939,
@@ -7483,7 +7483,7 @@
         "amenity": "townhall",
         "building": "yes",
         "layer": "1",
-        "name": "Metropolis Belediye Başkanlığı"
+        "name": "Metropolis City Hall"
       },
       "nodes": [
         11241119173, 11241119174, 11241119175, 11241119176, 11241119177, 11241119178, 11241119173
