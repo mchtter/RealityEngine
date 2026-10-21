@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
-import type { CityModel } from '@opentwin/city-core';
-import { initKentosGeo } from '@opentwin/kentos-geo';
+import type { CityModel } from '@kavra/core';
+import { initKavraGeo } from '@kavra/geo';
 import type { TileLevel } from './engine/city-tile';
 import { buildTilePayload, buildUtilityPayload } from './engine/tile-build';
 
@@ -31,8 +31,8 @@ async function modelOf(url: string, headers?: Record<string, string>): Promise<C
  * The Rust geometry kernels (WebAssembly), loaded once per worker before the
  * first job; if loading fails the TypeScript paths stay in use.
  */
-const kernels = initKentosGeo().catch((err: unknown) =>
-  console.warn('[dt] kentos-geo WebAssembly not loaded, TypeScript fallback:', err),
+const kernels = initKavraGeo().catch((err: unknown) =>
+  console.warn('[dt] kavra-geo WebAssembly not loaded, TypeScript fallback:', err),
 );
 
 /**

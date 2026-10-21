@@ -1,8 +1,7 @@
-import type { LiveFeedChange, LiveObjectView } from '@opentwin/plugin-sdk';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as THREE from 'three/webgpu';
 import { paint } from './geom';
-import { type LiveKind, liveKindOf, markerColorOf } from './live-kinds';
+import { type LiveFeedChange, type LiveKind, type LiveObjectView, liveKindOf, markerColorOf } from './live-kinds';
 import {
   type ScreenPoint,
   easeAngle,

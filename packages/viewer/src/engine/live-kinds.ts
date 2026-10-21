@@ -26,3 +26,26 @@ export function markerColorOf(classId: string): string {
   if (classId.startsWith('environment.')) return '#22c55e';
   return '#14b8a6';
 }
+
+export interface LiveObjectView {
+  id: string;
+  classId: string;
+  lon: number;
+  lat: number;
+  alt?: number;
+  heading?: number;
+  speed?: number;
+  label?: string;
+  at: string;
+  attrs?: Record<string, string | number | boolean | null>;
+  mediaUrl?: string;
+  mediaKind?: string;
+}
+
+export interface LiveFeedChange {
+  pluginId: string;
+  feedId: string;
+  upsert: LiveObjectView[];
+  remove: string[];
+  replace?: boolean;
+}

@@ -1,7 +1,8 @@
 {
-  "name": "@opentwin/city-core",
+  "name": "@kavra/core",
   "version": "0.1.0",
-  "description": "OpenTwin city compiler: road graph, city blocks, building/prop generation rules (renderer independent)",
+  "description": "Kavra procedural city compiler: road graph, city blocks, building/prop generation rules (renderer independent)",
+  "license": "MIT",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
@@ -16,18 +17,17 @@
     "build": "tsup src/index.ts --format cjs,esm --dts",
     "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
     "lint": "tsc --noEmit",
-    "test": "vitest run",
-    "fixture:zonguldak": "node tools/fetch-fixture.mjs"
+    "test": "vitest run"
   },
   "dependencies": {
     "clipper-lib": "^6.4.2",
     "earcut": "^2.2.4"
   },
   "devDependencies": {
+    "@types/clipper-lib": "^6.4.0",
     "geotiff": "^3.0.5",
     "tsup": "^8.3.5",
     "typescript": "^5.7.3",
-    "vitest": "^4.1.10",
-    "@types/clipper-lib": "^6.4.0"
+    "vitest": "^4.1.10"
   }
 }

@@ -1,10 +1,10 @@
 /** Loads the WebAssembly module (a URL, a Response or the bytes; default: next to this file). */
-export function initKentosGeo(input?: string | URL | Response | BufferSource): Promise<void>;
+export function initKavraGeo(input?: string | URL | Response | BufferSource): Promise<void>;
 /** Synchronous load from the module's bytes (Node, tests). */
-export function initKentosGeoSync(bytes: BufferSource): void;
-export function kentosGeoReady(): boolean;
+export function initKavraGeoSync(bytes: BufferSource): void;
+export function kavraGeoReady(): boolean;
 
-export interface KentosGrid {
+export interface KavraGrid {
   cols: number;
   rows: number;
   minX: number;
@@ -15,7 +15,7 @@ export interface KentosGrid {
 
 /** Drapes a polygon on the terrain mesh; `data` = `[n, m, f, x, y, z …, i0, i1, i2 …, ci, cj …]`. */
 export function drapeOnTerrain(
-  grid: KentosGrid,
+  grid: KavraGrid,
   poly: { outer: [number, number][]; holes?: [number, number][][] },
   lift: number,
   step?: number,
@@ -42,7 +42,7 @@ export interface GroundMesh {
 
 /** One ground chunk with every surface layer made disjoint; see index.js. */
 export function groundChunk(
-  grid: KentosGrid,
+  grid: KavraGrid,
   cells: [number, number, number, number],
   layers: GroundLayerInput[],
 ): {

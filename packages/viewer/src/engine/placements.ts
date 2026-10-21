@@ -1,4 +1,4 @@
-import { type CityPlacement, type FacilityInterior, cityClass } from '@opentwin/shared';
+import { type CityPlacement, type FacilityInterior, cityClass } from '@kavra/core';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as THREE from 'three/webgpu';
 import { prefabMesh } from './prefabs';

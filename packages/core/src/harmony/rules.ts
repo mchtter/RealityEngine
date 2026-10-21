@@ -1,12 +1,12 @@
 /**
- * KentOS uyum motoru — kural kataloğu.
+ * Kavra uyum motoru — kural kataloğu.
  *
  * One table of rules between classes (classes.ts). A rule names the pair, the
  * relation it governs, the constraint, the stage it runs at and what the
  * object that gives way does. Rules with `apply` are enforced by the engine
  * (engine.ts) and leave a correction (Fix) behind; rules without it are the
  * catalogue's open items: they are checked by the validator (`checks`) or
- * planned (tasks/kentos-uyum-motoru.md), and listed here so the whole system
+ * planned (tasks/kavra-uyum-motoru.md), and listed here so the whole system
  * is in one place.
  *
  * Stages run in this order inside the compiler (§4.3 of the plan):

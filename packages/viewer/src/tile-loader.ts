@@ -1,6 +1,6 @@
 import type { TileLevel } from './engine/city-tile';
 import type { MeshPayload, TilePayload } from './engine/tile-payload';
-import { sessionHeadersFor } from '@/lib/api/session-auth';
+export type HeaderProvider = (url: string) => Record<string, string>;
 
 export interface TileJob {
   key: string;
@@ -66,6 +66,7 @@ export class TileLoader {
     size: number,
     private readonly onLoaded: (tile: LoadedTile) => void,
     private readonly onError: (key: string, message: string) => void,
+    private readonly headerProvider?: HeaderProvider,
   ) {
     this.workers = Array.from({ length: size }, () => {
       const slot: Slot = { worker: null as unknown as Worker, busy: false, job: null };
@@ -172,7 +173,7 @@ export class TileLoader {
       slot.worker.postMessage({
         id,
         url: job.url,
-        headers: sessionHeadersFor(job.url),
+        headers: this.headerProvider ? this.headerProvider(job.url) : undefined,
         part: job.part,
         level: job.level,
       });

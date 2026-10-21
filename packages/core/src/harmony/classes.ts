@@ -1,5 +1,5 @@
 /**
- * KentOS uyum motoru — sınıf kaydı.
+ * Kavra uyum motoru — sınıf kaydı.
  *
  * Every kind of thing the city model holds is a class here: its place in the
  * order of precedence (`rank`: a lower rank never gives way to a higher one),

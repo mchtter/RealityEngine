@@ -7,8 +7,22 @@
 // report and the data delivery specification handed to institutions.
 // Design: docs/architecture/city-data-onboarding.md
 // =============================================================================
+import type { CityLocation } from './locate';
 
-import type { CityLocation, CityObjectStateKind, CitySearchHit } from '@opentwin/plugin-sdk';
+export type CityObjectStateKind = 'damaged' | 'hazard' | 'closed' | 'under_repair' | 'inspected';
+
+export interface CitySearchHit {
+  ref: string;
+  source: 'city' | 'osm';
+  class: string;
+  kind?: string;
+  name: string;
+  address?: string;
+  lon: number;
+  lat: number;
+  bbox: [number, number, number, number];
+  score: number;
+}
 
 /** Themes of the canonical city model (one per delivered layer; see CITY_DELIVERY_SPEC). */
 export type CityTheme =
@@ -1496,7 +1510,7 @@ export interface CityCorrectionInput {
 
 /**
  * City search hits, located objects and object states are plugin contracts too:
- * declared once in `@opentwin/plugin-sdk` (types/city.ts), used here.
+ * declared once in `@kavra/plugin-sdk` (types/city.ts), used here.
  */
 
 /** GET /city/search?q=&lon=&lat=&limit= */

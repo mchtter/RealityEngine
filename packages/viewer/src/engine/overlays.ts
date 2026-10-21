@@ -1,4 +1,4 @@
-import { type CityModel, type Fix, ringArea, triangulate } from '@opentwin/city-core';
+import { type CityModel, type Fix, ringArea, triangulate } from '@kavra/core';
 import * as THREE from 'three/webgpu';
 import { MeshBuilder, toThree } from './geom';
 import type { DtMaterials } from './materials';

@@ -1,4 +1,4 @@
-import type { CityModel } from '@opentwin/city-core';
+import type { CityModel } from '@kavra/core';
 import * as THREE from 'three/webgpu';
 import { MeshBuilder } from './geom';
 import type { DtMaterials } from './materials';

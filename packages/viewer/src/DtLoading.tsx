@@ -4,7 +4,7 @@ import { ChevronDown } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useEffect, useState } from 'react';
 import type { DtView } from './DtHud';
-import { KentOSLoader, KentOSMark } from '@/components/brand/KentOSLoader';
+import { KavraLoader, KavraMark } from '@/components/brand/KavraLoader';
 
 /** Remembered per viewer: whether the loading pill shows its detail rows. */
 const DETAILS_KEY = 'dt.loadDetails';
@@ -70,7 +70,7 @@ export function DtLoading({ tiles, error, started = false }: DtLoadingProps) {
         : t('tiles', { loaded: shown, planned: Math.max(planned, 1) });
     return (
       <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-        <KentOSLoader
+        <KavraLoader
           variant="card"
           tagline={t('tagline')}
           label={planned === 0 && server > 0 ? `${stage} — ${t('serverHint')}` : stage}
@@ -98,8 +98,8 @@ export function DtLoading({ tiles, error, started = false }: DtLoadingProps) {
           className="flex items-center justify-between gap-2 text-left text-[11px] text-foreground/75"
         >
           <span className="flex items-center gap-1.5">
-            <KentOSMark className="h-4 w-4 shrink-0" />
-            <span className="font-medium">{t('kentos')}</span>
+            <KavraMark className="h-4 w-4 shrink-0" />
+            <span className="font-medium">{t('kavra')}</span>
             <span className="text-foreground/50">
               {loading > 0 ? t('count', { loaded: shown, planned }) : t('pillServerOnly')}
             </span>

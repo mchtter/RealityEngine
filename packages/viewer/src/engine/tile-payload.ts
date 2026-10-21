@@ -7,7 +7,7 @@ import type {
   TerrainGrid,
   TileFrameInput,
   UtilityKind,
-} from '@opentwin/city-core';
+} from '@kavra/core';
 import * as THREE from 'three/webgpu';
 import { type MallSign, mallSigns } from './mall-signs';
 import {

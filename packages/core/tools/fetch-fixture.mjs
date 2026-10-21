@@ -81,7 +81,7 @@ async function fetchOsm(bbox) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': 'opentwin-dt-fixture/0.1',
+      'User-Agent': 'kavra-dt-fixture/0.1',
     },
     body: new URLSearchParams({ data: overpassQuery(bbox) }),
   });

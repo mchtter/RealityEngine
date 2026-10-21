@@ -1,0 +1,32 @@
+{
+  "name": "@kavra/viewer",
+  "version": "0.1.0",
+  "description": "Kavra 3D procedural city engine: Three.js WebGPU/WebGL2 runtime viewer",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kavra/core": "workspace:*",
+    "@kavra/geo": "workspace:*",
+    "three": "^0.183.2"
+  },
+  "devDependencies": {
+    "@types/three": "^0.183.1",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.3"
+  }
+}

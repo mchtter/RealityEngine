@@ -1,4 +1,4 @@
-import { utmForward } from '@opentwin/city-core';
+import { utmForward } from '@kavra/core';
 import {
   abs,
   attribute,

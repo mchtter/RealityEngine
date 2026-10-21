@@ -9,7 +9,7 @@ import {
   orientedBox,
   subtractPolygons,
   triangulate,
-} from '@opentwin/city-core';
+} from '@kavra/core';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as THREE from 'three/webgpu';
 import { MeshBuilder, toThree } from './geom';

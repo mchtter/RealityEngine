@@ -1,4 +1,4 @@
-import { type GeoTerrainGrid, utmForward, utmInverse } from '@opentwin/city-core';
+import { type GeoTerrainGrid, utmForward, utmInverse } from '@kavra/core';
 import {
   Discard,
   abs,

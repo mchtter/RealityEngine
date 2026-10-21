@@ -1,4 +1,4 @@
-import { CutGround, type UtilityKind, pointInRing } from '@opentwin/city-core';
+import { CutGround, type UtilityKind, pointInRing } from '@kavra/core';
 import * as THREE from 'three/webgpu';
 import { toThree } from './geom';
 import { DRAPED } from './ground-clipmap';

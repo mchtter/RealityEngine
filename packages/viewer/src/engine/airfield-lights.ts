@@ -1,4 +1,4 @@
-import type { AirfieldLight, AirfieldLightKind } from '@opentwin/city-core';
+import type { AirfieldLight, AirfieldLightKind } from '@kavra/core';
 import {
   atan,
   attribute,

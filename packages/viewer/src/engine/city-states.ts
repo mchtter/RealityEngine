@@ -1,5 +1,5 @@
-import { triangulate } from '@opentwin/city-core';
-import type { CityObjectState } from '@opentwin/shared';
+import { triangulate } from '@kavra/core';
+import type { CityObjectState } from '@kavra/core';
 import {
   attribute,
   float,

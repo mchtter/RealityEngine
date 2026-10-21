@@ -1,4 +1,4 @@
-import type { RoadClass } from '@opentwin/city-core';
+import type { RoadClass } from '@kavra/core';
 
 /**
  * The street lines a tile carries for its names (street-labels.ts): pure, so

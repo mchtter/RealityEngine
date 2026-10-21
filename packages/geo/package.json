@@ -1,8 +1,8 @@
 {
-  "name": "@opentwin/kentos-geo",
+  "name": "@kavra/geo",
   "version": "0.1.0",
-  "description": "KentOS geometry kernels (Rust, crates/kentos-geo) as WebAssembly for the browser",
-  "license": "AGPL-3.0-only",
+  "description": "Kavra geometry kernels (Rust, crates/geo) as WebAssembly for the browser",
+  "license": "MIT",
   "type": "module",
   "main": "./index.js",
   "types": "./index.d.ts",
@@ -11,7 +11,7 @@
       "types": "./index.d.ts",
       "default": "./index.js"
     },
-    "./kentos_geo_bg.wasm": "./pkg/kentos_geo_bg.wasm"
+    "./kavra_geo_bg.wasm": "./pkg/kavra_geo_bg.wasm"
   },
   "files": [
     "index.js",

@@ -1,6 +1,6 @@
 'use client';
 
-import type { CitySpecialArea } from '@opentwin/shared';
+import type { CitySpecialArea } from '@kavra/core';
 import { X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { type MutableRefObject, useEffect, useRef } from 'react';

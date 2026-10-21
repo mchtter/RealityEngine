@@ -21,8 +21,8 @@ import {
   terrainHeightAt,
   triangulate,
   unionPolygons,
-} from '@opentwin/city-core';
-import { groundChunk, kentosGeoReady } from '@opentwin/kentos-geo';
+} from '@kavra/core';
+import { groundChunk, kavraGeoReady } from '@kavra/geo';
 import * as THREE from 'three/webgpu';
 import { buildAirfieldLights } from './airfield-lights';
 import { MeshBuilder, drapeCells, drapeOnTerrain, drapeRingWall, toThree } from './geom';
@@ -612,7 +612,7 @@ export function buildGround(
       }
       // One ground layer (D-004): see `oneLayer` below; it draws the carved
       // cells' bare ground itself.
-      const oneLayer = !opts.far && kentosGeoReady();
+      const oneLayer = !opts.far && kavraGeoReady();
       if (cellsHere.length && !opts.far) {
         const patch = new MeshBuilder();
         const area = unionPolygons(cellsHere);
@@ -662,7 +662,7 @@ export function buildGround(
           : [[polys, t]];
       /** Street corridor surfaces drape on the street surface (off the lids). */
       const STREET = new Set<SurfaceKind>(['asphalt', 'sidewalk', 'island', 'paving']);
-      // One ground layer (D-004, crates/kentos-geo ground.rs): the surfaces made
+      // One ground layer (D-004, crates/kavra-geo ground.rs): the surfaces made
       // disjoint by priority (the higher lift on top, as drawn before), the bare
       // ground only in the cells they touch, the terrain mesh in the rest. The
       // old layering drew ~38 % of a dense tile twice (centimetre lifts that

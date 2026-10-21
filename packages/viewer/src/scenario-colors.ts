@@ -1,8 +1,29 @@
-import { normalizeJoinKey } from '@opentwin/shared';
+import { isParcelKeyColumn, normalizeJoinKey } from '@kavra/core';
 import * as THREE from 'three/webgpu';
 import type { ScenarioPaintOf } from './engine/DtEngine';
-import { buildingJoinValue } from '@/lib/scenario/building-join';
-import type { ResolvedOverlay } from '@/store/scenario.store';
+
+export interface ResolvedOverlay {
+  scenarioId: string;
+  layerId: string;
+  layerKey?: string;
+  visible: boolean;
+  expression: unknown;
+}
+
+export interface JoinableBuilding {
+  attrs?: Record<string, string>;
+  ref?: string;
+  parcelRef?: string | null;
+}
+
+export function buildingJoinValue(b: JoinableBuilding, layerKey: string): string | undefined {
+  if (isParcelKeyColumn(layerKey)) return b.parcelRef ?? undefined;
+  const wanted = layerKey.toLowerCase();
+  if (b.attrs) {
+    for (const [k, v] of Object.entries(b.attrs)) if (k.toLowerCase() === wanted) return v;
+  }
+  return b.ref?.includes(':') ? b.ref.split(':').slice(1).join(':') : undefined;
+}
 
 /**
  * Join key → colour of a resolved scenario overlay, read back from its

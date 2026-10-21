@@ -1,4 +1,4 @@
-import type { CityModel } from '@opentwin/city-core';
+import type { CityModel } from '@kavra/core';
 import { describe, expect, it } from 'vitest';
 import { stationSigns } from './station-signs';
 

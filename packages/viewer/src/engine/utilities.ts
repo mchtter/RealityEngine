@@ -4,7 +4,7 @@ import {
   type UtilityKind,
   type UtilityNode,
   terrainHeightAt,
-} from '@opentwin/city-core';
+} from '@kavra/core';
 import * as THREE from 'three/webgpu';
 import { MeshBuilder, toThree } from './geom';
 import type { DtMaterials } from './materials';

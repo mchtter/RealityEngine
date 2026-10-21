@@ -1,25 +1,25 @@
-// KentOS geometry kernels (crates/kentos-geo) in the browser and Node.
-// docs/DECISIONS.md D-008. Call initKentosGeo() once (async) before use;
-// until then `kentosGeoReady()` is false and callers keep their TS path.
-import init, { Terrain, initSync } from './pkg/kentos_geo.js';
+// Kavra geometry kernels (crates/kavra-geo) in the browser and Node.
+// docs/DECISIONS.md D-008. Call initKavraGeo() once (async) before use;
+// until then `kavraGeoReady()` is false and callers keep their TS path.
+import init, { Terrain, initSync } from './pkg/kavra_geo.js';
 
 let ready = false;
 
 /** Loads the WebAssembly module (a URL, a Response or the bytes; default: next to this file). */
-export async function initKentosGeo(input) {
+export async function initKavraGeo(input) {
   if (ready) return;
   await init(input === undefined ? undefined : { module_or_path: input });
   ready = true;
 }
 
 /** Synchronous load from the module's bytes (Node, tests). */
-export function initKentosGeoSync(bytes) {
+export function initKavraGeoSync(bytes) {
   if (ready) return;
   initSync({ module: bytes });
   ready = true;
 }
 
-export const kentosGeoReady = () => ready;
+export const kavraGeoReady = () => ready;
 
 // A tile's terrain is copied into WASM memory once and freed with the grid.
 const terrains = new WeakMap();
@@ -69,7 +69,7 @@ export function drapeOnTerrain(grid, poly, lift, step = 1) {
 }
 
 /**
- * One ground chunk with every surface layer made disjoint (crates/kentos-geo
+ * One ground chunk with every surface layer made disjoint (crates/kavra-geo
  * ground.rs). `cells`: the chunk's grid cells [i0, j0, i1, j1). `layers`:
  * highest priority first, `{ polygons, lift, deferred }` — a deferred layer's
  * heights come back NaN (the caller fills them, e.g. from the street

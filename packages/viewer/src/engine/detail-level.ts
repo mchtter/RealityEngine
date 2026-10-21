@@ -6,7 +6,7 @@
  * level sets how many tiles load and how many of them in full; within a
  * tile, detail falls off with the 3D distance to the camera (city-tile.ts).
  * Bounds follow the screen-space-error rule of 3D tile streaming (Cesium:
- * 16 px) worked out for a 1 km tile grid — tasks/kentos-lod-plan.md §2.
+ * 16 px) worked out for a 1 km tile grid — tasks/kavra-lod-plan.md §2.
  */
 
 export type DetailLevel = 0 | 1 | 2 | 3 | 4 | 5;

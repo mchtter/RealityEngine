@@ -4,7 +4,7 @@ import {
   type Prop,
   type PropKind,
   Rng,
-} from '@opentwin/city-core';
+} from '@kavra/core';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as THREE from 'three/webgpu';
 import { paint, toThree } from './geom';

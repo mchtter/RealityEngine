@@ -1,4 +1,4 @@
-import type { LiveObjectView } from '@opentwin/plugin-sdk';
+import type { LiveObjectView } from './live-kinds';
 import * as THREE from 'three/webgpu';
 import { describe, expect, it } from 'vitest';
 import { type LivePlacement, LiveObjectLayer } from './live-objects';

@@ -16,7 +16,7 @@
 // `theme` binds a class to today's canonical city model (city-model.ts):
 // a record of that theme whose attributes match belongs to the class.
 // Classes without `theme` have no intake yet (planned; plugins / feeds).
-// Design: docs/architecture/kentos-live-city-engine.md
+// Design: docs/architecture/kavra-live-city-engine.md
 // =============================================================================
 
 import type { CityTheme } from './city-model';
