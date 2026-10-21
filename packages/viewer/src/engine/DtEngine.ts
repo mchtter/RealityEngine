@@ -6,9 +6,9 @@ import {
   utmForward,
   utmInverse,
   utmZoneOf,
-} from '@kavra/core';
+} from 'reality-engine-core';
 import type { LiveFeedChange, LiveObjectView } from './live-kinds';
-import type { CityObjectState, CityPlacement } from '@kavra/core';
+import type { CityObjectState, CityPlacement } from 'reality-engine-core';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { CSMShadowNode } from 'three/addons/csm/CSMShadowNode.js';
@@ -3116,4 +3116,4 @@ export class DtEngine {
   };
 }
 
-export { DtEngine as KavraEngine, DtEngine as CityEngine };
+export { DtEngine as RealityEngine, DtEngine as CityEngine };

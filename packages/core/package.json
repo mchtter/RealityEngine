@@ -1,7 +1,7 @@
 {
-  "name": "@kavra/core",
+  "name": "reality-engine-core",
   "version": "0.1.0",
-  "description": "Kavra procedural city compiler: road graph, city blocks, building/prop generation rules (renderer independent)",
+  "description": "Reality Engine procedural city compiler: road graph, city blocks, building/prop generation rules (renderer independent)",
   "license": "MIT",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",

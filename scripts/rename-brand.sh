@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Kavra 3D City Engine — Marka / İsim Değiştirme Betiği
+# Reality Engine - Procedural 3D City Engine — Marka / İsim Değiştirme Betiği
 # 
-# Bu betik, geçici "Kavra" ismini nihai isimle (örneğin "City 7D", "Seven Days")
+# Bu betik, geçici "Reality Engine" ismini nihai isimle (örneğin "City 7D", "Seven Days")
 # tek bir komutla tüm projede değiştirir.
 #
 # Kullanım:
@@ -31,16 +31,16 @@ find . -type f \
   -not -path '*/dist/*' \
   -not -path '*/pkg/*' \
   -not -path '*/target/*' | while read -r file; do
-    sed -i '' "s/@kavra/@$NEW_SLUG/g" "$file" 2>/dev/null || true
+    sed -i '' "s/reality-engine/@$NEW_SLUG/g" "$file" 2>/dev/null || true
     sed -i '' "s/kavra-/$NEW_SLUG-/g" "$file" 2>/dev/null || true
     sed -i '' "s/kavra_/$NEW_SNAKE_/g" "$file" 2>/dev/null || true
-    sed -i '' "s/KavraEngine/${NEW_PASCAL}Engine/g" "$file" 2>/dev/null || true
-    sed -i '' "s/KavraViewer/${NEW_PASCAL}Viewer/g" "$file" 2>/dev/null || true
-    sed -i '' "s/KavraGrid/${NEW_PASCAL}Grid/g" "$file" 2>/dev/null || true
-    sed -i '' "s/initKavraGeo/init${NEW_PASCAL}Geo/g" "$file" 2>/dev/null || true
-    sed -i '' "s/kavraGeoReady/${NEW_SLUG}GeoReady/g" "$file" 2>/dev/null || true
-    sed -i '' "s/KAVRA/$NEW_NAME/g" "$file" 2>/dev/null || true
-    sed -i '' "s/Kavra/$NEW_NAME/g" "$file" 2>/dev/null || true
+    sed -i '' "s/RealityEngine/${NEW_PASCAL}Engine/g" "$file" 2>/dev/null || true
+    sed -i '' "s/RealityViewer/${NEW_PASCAL}Viewer/g" "$file" 2>/dev/null || true
+    sed -i '' "s/RealityGrid/${NEW_PASCAL}Grid/g" "$file" 2>/dev/null || true
+    sed -i '' "s/initRealityGeo/init${NEW_PASCAL}Geo/g" "$file" 2>/dev/null || true
+    sed -i '' "s/realityGeoReady/${NEW_SLUG}GeoReady/g" "$file" 2>/dev/null || true
+    sed -i '' "s/REALITY ENGINE/$NEW_NAME/g" "$file" 2>/dev/null || true
+    sed -i '' "s/Reality Engine/$NEW_NAME/g" "$file" 2>/dev/null || true
 done
 
 echo "✔ Marka adı başarıyla '$NEW_NAME' olarak güncellendi!"

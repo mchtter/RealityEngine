@@ -1,4 +1,4 @@
-import type { RoadClass } from '@kavra/core';
+import type { RoadClass } from 'reality-engine-core';
 
 /**
  * The street lines a tile carries for its names (street-labels.ts): pure, so

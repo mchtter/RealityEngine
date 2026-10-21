@@ -1,6 +1,6 @@
 'use client';
 
-import type { CitySpecialArea } from '@kavra/core';
+import type { CitySpecialArea } from 'reality-engine-core';
 import { X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { type MutableRefObject, useEffect, useRef } from 'react';

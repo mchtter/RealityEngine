@@ -4,8 +4,8 @@ import {
   clipPolygons,
   terrainHeightAt,
   triangulate,
-} from '@kavra/core';
-import { drapeOnTerrain as drapeKernel, kavraGeoReady } from '@kavra/geo';
+} from 'reality-engine-core';
+import { drapeOnTerrain as drapeKernel, realityGeoReady } from 'reality-engine-geo';
 import * as THREE from 'three/webgpu';
 
 /**
@@ -250,10 +250,10 @@ export function drapeOnTerrain(
   step = 1,
   onFullCell?: (i: number, j: number) => void,
 ): void {
-  // The Rust kernel (crates/kavra-geo as WebAssembly) once the worker has
+  // The Rust kernel (crates/reality-geo as WebAssembly) once the worker has
   // loaded it: the same algorithm ~5× faster on metro tiles, and exact where
   // the boolean path here lost or doubled area round holes (2026-10-15, D-008).
-  if (kavraGeoReady()) {
+  if (realityGeoReady()) {
     const { vertices, triangles, cells, data } = drapeKernel(terrain, poly, lift, step);
     const up: [number, number, number] = [0, 1, 0];
     const base = mb.vertexCount;

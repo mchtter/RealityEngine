@@ -1,7 +1,7 @@
 {
-  "name": "@kavra/viewer",
+  "name": "reality-engine-viewer",
   "version": "0.1.0",
-  "description": "Kavra 3D procedural city engine: Three.js WebGPU/WebGL2 runtime viewer",
+  "description": "Reality Engine 3D procedural city engine: Three.js WebGPU/WebGL2 runtime viewer",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -20,8 +20,8 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@kavra/core": "workspace:*",
-    "@kavra/geo": "workspace:*",
+    "reality-engine-core": "workspace:*",
+    "reality-engine-geo": "workspace:*",
     "three": "^0.183.2"
   },
   "devDependencies": {

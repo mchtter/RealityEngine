@@ -20,7 +20,7 @@ import {
 } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
-import { type CityTheme, CITY_CONTRACTS } from '@kavra/core';
+import { type CityTheme, CITY_CONTRACTS } from 'reality-engine-core';
 
 export type Ring = [number, number][];
 export type Geometry =

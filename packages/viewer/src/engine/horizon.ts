@@ -1,4 +1,4 @@
-import { type GeoTerrainGrid, utmForward, utmInverse } from '@kavra/core';
+import { type GeoTerrainGrid, utmForward, utmInverse } from 'reality-engine-core';
 import {
   Discard,
   abs,

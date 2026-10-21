@@ -1,4 +1,4 @@
-//! Kavra geometry kernels (docs/DECISIONS.md D-008): heavy, self-contained
+//! Reality Engine geometry kernels (docs/DECISIONS.md D-008): heavy, self-contained
 //! geometry shared by the twin-builder (Node addon) and the browser
 //! (WebAssembly). Plain arrays in and out.
 

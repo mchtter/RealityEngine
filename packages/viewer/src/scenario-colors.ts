@@ -1,4 +1,4 @@
-import { isParcelKeyColumn, normalizeJoinKey } from '@kavra/core';
+import { isParcelKeyColumn, normalizeJoinKey } from 'reality-engine-core';
 import * as THREE from 'three/webgpu';
 import type { ScenarioPaintOf } from './engine/DtEngine';
 

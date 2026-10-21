@@ -1,5 +1,5 @@
 /**
- * Kavra uyum motoru — kuralların uygulanması.
+ * Reality Engine uyum motoru — kuralların uygulanması.
  *
  * The compiler hands each stage its objects; the engine enforces that
  * stage's rules (rules.ts) on them and keeps a correction (Fix) for every

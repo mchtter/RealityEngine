@@ -1,4 +1,4 @@
-import { POI_KINDS } from '@kavra/core';
+import { POI_KINDS } from 'reality-engine-core';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_MAP_STYLE, NIGHT_MAP_STYLE, mapStyleFor, rangeOf } from './map-style';
 

@@ -1,5 +1,5 @@
-import { triangulate } from '@kavra/core';
-import type { CityObjectState } from '@kavra/core';
+import { triangulate } from 'reality-engine-core';
+import type { CityObjectState } from 'reality-engine-core';
 import {
   attribute,
   float,

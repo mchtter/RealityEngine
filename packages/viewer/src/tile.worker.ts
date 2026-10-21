@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
-import type { CityModel } from '@kavra/core';
-import { initKavraGeo } from '@kavra/geo';
+import type { CityModel } from 'reality-engine-core';
+import { initRealityGeo } from 'reality-engine-geo';
 import type { TileLevel } from './engine/city-tile';
 import { buildTilePayload, buildUtilityPayload } from './engine/tile-build';
 
@@ -31,8 +31,8 @@ async function modelOf(url: string, headers?: Record<string, string>): Promise<C
  * The Rust geometry kernels (WebAssembly), loaded once per worker before the
  * first job; if loading fails the TypeScript paths stay in use.
  */
-const kernels = initKavraGeo().catch((err: unknown) =>
-  console.warn('[dt] kavra-geo WebAssembly not loaded, TypeScript fallback:', err),
+const kernels = initRealityGeo().catch((err: unknown) =>
+  console.warn('[dt] reality-geo WebAssembly not loaded, TypeScript fallback:', err),
 );
 
 /**

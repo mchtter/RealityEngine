@@ -1,5 +1,5 @@
 {
-  "name": "kavra-city-engine",
+  "name": "reality-engine",
   "version": "0.1.0",
   "private": true,
   "description": "Procedural 3D WebGPU City Engine from OpenStreetMap data",
@@ -7,9 +7,9 @@
   "license": "MIT",
   "scripts": {
     "build": "pnpm -r run build",
-    "dev": "pnpm --filter @kavra/playground dev",
+    "dev": "pnpm --filter reality-engine-playground dev",
     "lint": "pnpm -r run lint",
-    "test": "pnpm --filter @kavra/core test"
+    "test": "pnpm --filter reality-engine-core test"
   },
   "devDependencies": {
     "typescript": "^5.7.3"

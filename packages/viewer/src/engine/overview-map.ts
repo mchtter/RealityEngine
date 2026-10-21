@@ -1,4 +1,4 @@
-import { utmForward } from '@kavra/core';
+import { utmForward } from 'reality-engine-core';
 import {
   abs,
   attribute,

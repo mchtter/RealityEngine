@@ -1,4 +1,4 @@
-import { type CityModel, CutGround, GroundModel, TRACK_SPACING } from '@kavra/core';
+import { type CityModel, CutGround, GroundModel, TRACK_SPACING } from 'reality-engine-core';
 import * as THREE from 'three/webgpu';
 import { MeshBuilder, toThree } from './geom';
 import type { DtMaterials } from './materials';

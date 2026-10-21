@@ -1,9 +1,9 @@
 [package]
-name = "kavra-geo"
+name = "reality-geo"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-only"
-description = "Kavra geometry kernels (Node addon and WebAssembly)"
+description = "Reality Engine geometry kernels (Node addon and WebAssembly)"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

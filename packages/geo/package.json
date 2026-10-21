@@ -1,7 +1,7 @@
 {
-  "name": "@kavra/geo",
+  "name": "reality-engine-geo",
   "version": "0.1.0",
-  "description": "Kavra geometry kernels (Rust, crates/geo) as WebAssembly for the browser",
+  "description": "Reality Engine geometry kernels (Rust, crates/geo) as WebAssembly for the browser",
   "license": "MIT",
   "type": "module",
   "main": "./index.js",
@@ -11,7 +11,7 @@
       "types": "./index.d.ts",
       "default": "./index.js"
     },
-    "./kavra_geo_bg.wasm": "./pkg/kavra_geo_bg.wasm"
+    "./reality_geo_bg.wasm": "./pkg/reality_geo_bg.wasm"
   },
   "files": [
     "index.js",

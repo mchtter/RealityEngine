@@ -1,4 +1,4 @@
-import type { AirfieldLight, AirfieldLightKind } from '@kavra/core';
+import type { AirfieldLight, AirfieldLightKind } from 'reality-engine-core';
 import {
   atan,
   attribute,

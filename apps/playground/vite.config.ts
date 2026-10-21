@@ -6,6 +6,6 @@ export default defineConfig({
     open: true,
   },
   optimizeDeps: {
-    exclude: ['@kavra/geo'],
+    exclude: ['reality-engine-geo'],
   },
 });

@@ -1,4 +1,4 @@
-import { type CityPrefabId, busTerminalBays, prefabParams } from '@kavra/core';
+import { type CityPrefabId, busTerminalBays, prefabParams } from 'reality-engine-core';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as THREE from 'three/webgpu';
 import { paint } from './geom';

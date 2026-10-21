@@ -1,5 +1,5 @@
 /**
- * Kavra uyum motoru — kural kataloğu.
+ * Reality Engine uyum motoru — kural kataloğu.
  *
  * One table of rules between classes (classes.ts). A rule names the pair, the
  * relation it governs, the constraint, the stage it runs at and what the

@@ -1,4 +1,4 @@
-import { type Building, type CityModel, Rng, orientedBox } from '@kavra/core';
+import { type Building, type CityModel, Rng, orientedBox } from 'reality-engine-core';
 import * as THREE from 'three/webgpu';
 import { toThree } from './geom';
 

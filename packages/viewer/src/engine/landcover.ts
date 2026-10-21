@@ -1,4 +1,4 @@
-import { type AreaKind, type CityModel, orientedBox, pointInRing } from '@kavra/core';
+import { type AreaKind, type CityModel, orientedBox, pointInRing } from 'reality-engine-core';
 import * as THREE from 'three/webgpu';
 import { summerAridity } from './climate';
 

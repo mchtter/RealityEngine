@@ -3,8 +3,8 @@ dist
 target
 pkg/*.wasm
 pkg/*.js
-!packages/geo/pkg/kavra_geo.js
-!packages/geo/pkg/kavra_geo_bg.wasm
+!packages/geo/pkg/reality_geo.js
+!packages/geo/pkg/reality_geo_bg.wasm
 .DS_Store
 *.log
 .turbo

@@ -14,13 +14,13 @@ importers:
 
   apps/playground:
     dependencies:
-      '@kavra/core':
+      'reality-engine-core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@kavra/geo':
+      'reality-engine-geo':
         specifier: workspace:*
         version: link:../../packages/geo
-      '@kavra/viewer':
+      'reality-engine-viewer':
         specifier: workspace:*
         version: link:../../packages/viewer
       three:
@@ -63,10 +63,10 @@ importers:
 
   packages/viewer:
     dependencies:
-      '@kavra/core':
+      'reality-engine-core':
         specifier: workspace:*
         version: link:../core
-      '@kavra/geo':
+      'reality-engine-geo':
         specifier: workspace:*
         version: link:../geo
       three:

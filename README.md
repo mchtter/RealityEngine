@@ -1,4 +1,4 @@
-# Kavra 3D City Engine 🏙️✨
+# Reality Engine - Procedural 3D City Engine 🏙️✨
 
 A high-performance, web-based procedural 3D city generation and rendering engine powered by **Three.js (WebGPU with WebGL2 fallback)** and **OpenStreetMap (OSM)** data.
 
@@ -23,11 +23,11 @@ A high-performance, web-based procedural 3D city generation and rendering engine
 ## 📦 Package Architecture
 
 ```text
-kavra-city-engine/
+reality-engine/
 ├── packages/
-│   ├── core/           # @kavra/core: Pure TypeScript procedural city compiler (compileCity)
-│   ├── geo/            # @kavra/geo: Rust + WebAssembly geometry kernel (earcut, i_overlay, drape)
-│   └── viewer/         # @kavra/viewer: Three.js WebGPU runtime engine (KavraEngine, CameraRig, TileLoader)
+│   ├── core/           # reality-engine-core: Pure TypeScript procedural city compiler (compileCity)
+│   ├── geo/            # reality-engine-geo: Rust + WebAssembly geometry kernel (earcut, i_overlay, drape)
+│   └── viewer/         # reality-engine-viewer: Three.js WebGPU runtime engine (RealityEngine, CameraRig, TileLoader)
 ├── apps/
 │   └── playground/     # Interactive, standalone demo app (Vite + WebGPU)
 ├── scripts/
@@ -55,10 +55,10 @@ Open `http://localhost:3000` to interact with real-time 3D procedural cities gen
 
 ## 💻 Programmatic Usage
 
-### 1. Compile OSM Data into a 3D City Model (`@kavra/core`)
+### 1. Compile OSM Data into a 3D City Model (`reality-engine-core`)
 
 ```typescript
-import { compileCity, type OsmElement } from '@kavra/core';
+import { compileCity, type OsmElement } from 'reality-engine-core';
 
 // Pass raw OSM elements (from Overpass API or local files)
 const cityModel = compileCity({
@@ -67,14 +67,14 @@ const cityModel = compileCity({
 });
 ```
 
-### 2. Render in Browser via WebGPU (`@kavra/viewer`)
+### 2. Render in Browser via WebGPU (`reality-engine-viewer`)
 
 ```typescript
-import { KavraEngine } from '@kavra/viewer';
+import { RealityEngine } from 'reality-engine-viewer';
 
 const container = document.getElementById('map');
 
-const engine = new KavraEngine({
+const engine = new RealityEngine({
   container,
   center: [28.9784, 41.0082],
   zoom: 16,
@@ -88,7 +88,7 @@ const engine = new KavraEngine({
 
 ## 🏷️ Renaming the Brand / Product Name
 
-To change the working name `Kavra` to your final choice (e.g. `City 7D`, `Seven Days`, `City7D`):
+To change the working name `Reality Engine` to your final choice (e.g. `City 7D`, `Seven Days`, `City7D`):
 
 ```bash
 ./scripts/rename-brand.sh "City 7D" "city7d" "city7d"

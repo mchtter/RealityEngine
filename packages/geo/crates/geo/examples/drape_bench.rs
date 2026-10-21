@@ -2,11 +2,11 @@
 //! TypeScript viewer, and compares each call's triangle / vertex counts with
 //! the TypeScript output recorded in the fixture.
 //!
-//!   cargo run --release -p kavra-geo --example drape_bench -- <fixture.json> [runs]
+//!   cargo run --release -p reality-geo --example drape_bench -- <fixture.json> [runs]
 
 use std::time::Instant;
 
-use kavra_geo::drape::{Grid, Mesh, Piece, drape_on_terrain};
+use reality_geo::drape::{Grid, Mesh, Piece, drape_on_terrain};
 use serde_json::Value;
 
 fn ring(v: &Value) -> Vec<[f64; 2]> {

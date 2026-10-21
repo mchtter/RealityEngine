@@ -11,7 +11,7 @@ import {
   type UndergroundStructure,
   type UndergroundTrack,
   pitDepthAt,
-} from '@kavra/core';
+} from 'reality-engine-core';
 import * as THREE from 'three/webgpu';
 import { MeshBuilder, toThree } from './geom';
 import type { DtMaterials } from './materials';

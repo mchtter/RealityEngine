@@ -1,4 +1,4 @@
-import { type CityModel, CutGround, FENCE_FOOT, fenceProfile } from '@kavra/core';
+import { type CityModel, CutGround, FENCE_FOOT, fenceProfile } from 'reality-engine-core';
 import * as THREE from 'three/webgpu';
 import { MeshBuilder } from './geom';
 import type { DtMaterials } from './materials';

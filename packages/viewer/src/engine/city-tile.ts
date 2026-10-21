@@ -1,4 +1,4 @@
-import { CutGround, type UtilityKind, pointInRing } from '@kavra/core';
+import { CutGround, type UtilityKind, pointInRing } from 'reality-engine-core';
 import * as THREE from 'three/webgpu';
 import { toThree } from './geom';
 import { DRAPED } from './ground-clipmap';

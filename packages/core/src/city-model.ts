@@ -1530,7 +1530,7 @@ export interface CityCorrectionInput {
 
 /**
  * City search hits, located objects and object states are plugin contracts too:
- * declared once in `@kavra/plugin-sdk` (types/city.ts), used here.
+ * declared once in `reality-engine/plugin-sdk` (types/city.ts), used here.
  */
 
 /** GET /city/search?q=&lon=&lat=&limit= */

@@ -1,4 +1,4 @@
-import { type Building, type CityModel, terrainHeightAt } from '@kavra/core';
+import { type Building, type CityModel, terrainHeightAt } from 'reality-engine-core';
 import * as THREE from 'three/webgpu';
 import { type BuildingLayer, buildBuildingLayer } from './buildings';
 import { buildFences } from './fences';

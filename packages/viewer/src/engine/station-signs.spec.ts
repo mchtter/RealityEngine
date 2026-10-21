@@ -1,4 +1,4 @@
-import type { CityModel } from '@kavra/core';
+import type { CityModel } from 'reality-engine-core';
 import { describe, expect, it } from 'vitest';
 import { stationSigns } from './station-signs';
 

@@ -7,7 +7,7 @@ import type {
   TerrainGrid,
   TileFrameInput,
   UtilityKind,
-} from '@kavra/core';
+} from 'reality-engine-core';
 import * as THREE from 'three/webgpu';
 import { type MallSign, mallSigns } from './mall-signs';
 import {

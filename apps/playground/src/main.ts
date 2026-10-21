@@ -1,5 +1,5 @@
-import { compileCity, type OsmElement } from '@kavra/core';
-import { KavraEngine } from '@kavra/viewer';
+import { compileCity, type OsmElement } from 'reality-engine-core';
+import { RealityEngine } from 'reality-engine-viewer';
 
 const LOCATIONS: Record<string, { name: string; center: [number, number]; bbox: [number, number, number, number] }> = {
   kadikoy: {
@@ -29,7 +29,7 @@ const citySelect = document.getElementById('city-select') as HTMLSelectElement;
 const loadBtn = document.getElementById('load-btn') as HTMLButtonElement;
 const statusEl = document.getElementById('status') as HTMLSpanElement;
 
-let engine: KavraEngine | null = null;
+let engine: RealityEngine | null = null;
 
 function setStatus(text: string, loading = false) {
   statusEl.innerHTML = loading ? `<span class="spinner"></span> ${text}` : text;
@@ -74,7 +74,7 @@ async function loadCity(locKey: string) {
     });
 
     if (!engine) {
-      engine = new KavraEngine({
+      engine = new RealityEngine({
         container,
         center: loc.center,
         zoom: 16,
@@ -95,4 +95,4 @@ async function loadCity(locKey: string) {
 loadBtn.addEventListener('click', () => loadCity(citySelect.value));
 citySelect.addEventListener('change', () => loadCity(citySelect.value));
 
-console.log('Kavra 3D City Engine Playground initialized.');
+console.log('Reality Engine - Procedural 3D City Engine Playground initialized.');

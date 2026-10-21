@@ -9,7 +9,7 @@ import {
   orientedBox,
   subtractPolygons,
   triangulate,
-} from '@kavra/core';
+} from 'reality-engine-core';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as THREE from 'three/webgpu';
 import { MeshBuilder, toThree } from './geom';

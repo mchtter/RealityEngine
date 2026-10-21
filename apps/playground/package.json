@@ -1,5 +1,5 @@
 {
-  "name": "@kavra/playground",
+  "name": "reality-engine-playground",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,9 +9,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@kavra/core": "workspace:*",
-    "@kavra/geo": "workspace:*",
-    "@kavra/viewer": "workspace:*",
+    "reality-engine-core": "workspace:*",
+    "reality-engine-geo": "workspace:*",
+    "reality-engine-viewer": "workspace:*",
     "three": "^0.183.2"
   },
   "devDependencies": {
