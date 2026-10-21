@@ -54,7 +54,7 @@ describe('overview map geometry', () => {
 
 describe('earthquake helpers', () => {
   it('measures great-circle distances', () => {
-    // Ankara – İstanbul (Kızılay – Taksim) ≈ 350 km.
+    // City A – City B (City Hub – Central Square) ≈ 350 km.
     expect(haversineKm([32.854, 39.92], [28.985, 41.037])).toBeGreaterThan(340);
     expect(haversineKm([32.854, 39.92], [28.985, 41.037])).toBeLessThan(360);
   });

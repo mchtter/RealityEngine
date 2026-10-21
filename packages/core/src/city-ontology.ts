@@ -375,7 +375,7 @@ export const CITY_CLASSES: readonly CityClassDef[] = withPoiBindings([
     theme: t('boundary', { level: 'village' }),
   }),
   c('admin.address', 'Adres (kapı numarası, UAVT)', 'building', 'point', { theme: t('address') }),
-  c('admin.public_office', 'Kamu kurumu (belediye, adliye, valilik)', 'building', 'point'),
+  c('admin.public_office', 'Kamu kurumu (idari, adliye, hükümet konağı)', 'building', 'point'),
 
   // ── Arazi, mülkiyet ve kamusal alan
   c('land.block', 'Ada (yapı adası)', 'block', 'polygon'),
@@ -445,7 +445,7 @@ export const CITY_CLASSES: readonly CityClassDef[] = withPoiBindings([
   c('building.floor', 'Kat', 'floor', 'volume', { parents: ['building.*'] }),
   c('building.unit', 'Bağımsız bölüm (daire, dükkân, ofis)', 'unit', 'volume', {
     parents: ['building.floor', 'building.*'],
-    description: 'MAKS bağımsız bölümü; sayaç, kilit ve sakin hizmetleri buna bağlanır.',
+    description: 'Bağımsız bölüm kaydı; sayaç, kilit ve sakin hizmetleri buna bağlanır.',
   }),
   c('building.room', 'Oda / mahal', 'unit', 'volume', {
     parents: ['building.unit', 'building.floor'],
@@ -1113,7 +1113,7 @@ export const CITY_CLASSES: readonly CityClassDef[] = withPoiBindings([
     capabilities: ['position', 'state'],
     commands: ['dispatch.assign'],
   }),
-  c('operations.service_vehicle', 'Belediye hizmet aracı (canlı)', 'city', 'point', LIVE_VEHICLE),
+  c('operations.service_vehicle', 'Şehir hizmet aracı (canlı)', 'city', 'point', LIVE_VEHICLE),
 
   // ── Sağlık
   c('health.hospital', 'Hastane', 'site', 'volume', {

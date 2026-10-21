@@ -15,14 +15,14 @@ import { dirname, resolve } from 'node:path';
 import { fromUrl } from 'geotiff';
 
 const AREA = {
-  name: 'Zonguldak merkez',
+  name: 'Demo City Center',
   // ~1.4 km x 1.2 km: harbour coast (west), Gazipaşa valley centre, hillside quarters
   bbox: [31.7815, 41.4465, 31.7985, 41.4575],
 };
 const MARGIN_DEG = 0.004;
 const OVERPASS = 'https://overpass-api.de/api/interpreter';
 
-const out = resolve(process.argv[2] ?? 'test/fixtures/zonguldak-merkez.json');
+const out = resolve(process.argv[2] ?? 'test/fixtures/demo-city.json');
 
 function overpassQuery([w, s, e, n]) {
   const b = `${s},${w},${n},${e}`;

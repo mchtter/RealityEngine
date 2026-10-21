@@ -169,7 +169,7 @@ export function makeBuilding(
   id: string,
   footprint: Polygon,
   tags: Record<string, string>,
-  /** Source name ("osm", "maks", …) or "synthetic". */
+  /** Source name ("osm", "cadastre", …) or "synthetic". */
   source: string,
   ctx: BuildingContext,
   osmId?: number,
@@ -377,7 +377,7 @@ export function placeObservedBuildings(
       .map((p) => p.poly);
   };
 
-  // Highest priority first (MAKS before OSM), then by stable ref.
+  // Highest priority first (authoritative before OSM), then by stable ref.
   const ordered = [...source].sort(
     (a, b) => b.priority - a.priority || (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0),
   );
@@ -936,7 +936,7 @@ export function layoutFacades(
 
 /**
  * Columns of the source row (`attr:<column>` tags written by source adapters,
- * e.g. the MAKS table), kept on the building for the building card and for
+ * e.g. the cadastre table), kept on the building for the building card and for
  * joining scenario data (e.g. KIMLIKNO).
  */
 function sourceAttributes(tags: Record<string, string>): Record<string, string> | undefined {

@@ -6,7 +6,7 @@ import { intersection, totalArea } from '../src/poly';
 import { tileFrame } from '../src/tiles';
 import type { CityModel, CitySource, Polygon } from '../src/types';
 
-const FIXTURE = resolve(__dirname, 'fixtures/zonguldak-merkez.json');
+const FIXTURE = resolve(__dirname, 'fixtures/demo-city.json');
 
 /** Footprint in frame-global UTM metres. */
 const globalFootprint = (m: CityModel, p: Polygon): Polygon => {
@@ -21,7 +21,7 @@ describe.skipIf(!existsSync(FIXTURE))(
   'adjacent tiles',
   () => {
     const source = JSON.parse(readFileSync(FIXTURE, 'utf8')) as CitySource;
-    // Zonguldak centre: 31.79E 41.45N is in utm36/398/4589, close to its east edge.
+    // Demo city center: 31.79E 41.45N is in utm36/398/4589, close to its east edge.
     const west = compileCity({ ...source, frame: tileFrame('utm36/398/4589') });
     const east = compileCity({ ...source, frame: tileFrame('utm36/399/4589') });
 

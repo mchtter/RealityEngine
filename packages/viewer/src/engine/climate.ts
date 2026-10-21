@@ -1,7 +1,7 @@
 /**
  * How dry open ground looks in summer (satellite / aerial view), 0 = lush
  * green (eastern Black Sea) … 1 = parched (south-east Anatolia), anywhere in
- * Turkey. A hand-made 1° grid after the country's climate zones — Black Sea
+ * the region. A hand-made 1° grid after the country's climate zones — Black Sea
  * humid (Cfa / Cfb), Marmara transitional, Aegean and Mediterranean dry
  * summers (Csa), the Central Anatolian steppe (BSk), the south-east (BSh) and
  * the greener eastern highland pastures (Dsb) — not measured data: correct a

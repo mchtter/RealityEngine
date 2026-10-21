@@ -1,5 +1,5 @@
 {
-  "name": "Zonguldak merkez",
+  "name": "Demo City Center",
   "bbox": [31.7815, 41.4465, 31.7985, 41.4575],
   "fetchedAt": "2026-09-30T20:43:04.002Z",
   "attribution": [
@@ -11,7 +11,7 @@
       "type": "node",
       "id": 2783761299,
       "tags": {
-        "addr:city": "Zonguldak",
+        "addr:city": "Metropolis",
         "addr:housenumber": "39",
         "addr:postcode": "67100",
         "addr:street": "Uzun Mehmet Caddesi",
@@ -19,7 +19,7 @@
         "bin": "no",
         "bus": "yes",
         "highway": "bus_stop",
-        "name": "Zonguldak Belediye Otobüsü",
+        "name": "Metropolis Belediye Otobüsü",
         "phone": "+90372 252 0023",
         "public_transport": "platform",
         "shelter": "yes",
@@ -269,7 +269,7 @@
       "tags": {
         "bus": "yes",
         "highway": "bus_stop",
-        "name": "Kozlu Belediyesi Özel Halk Otobüsleri",
+        "name": "District Belediyesi Özel Halk Otobüsleri",
         "public_transport": "platform"
       },
       "lon": 31.7862939,
@@ -294,8 +294,8 @@
         "baby_feeding": "no",
         "ele": "10",
         "internet_access": "wlan",
-        "name": "Zonguldak",
-        "network": "Türkiye Cumhuriyeti Devlet Demiryolları",
+        "name": "Metropolis",
+        "network": "Ülke Cumhuriyeti Devlet Demiryolları",
         "network:short": "TCDD",
         "network:wikidata": "Q499967",
         "not:network:wikidata": "Q497844",
@@ -305,7 +305,7 @@
         "railway": "station",
         "train": "yes",
         "wikidata": "Q16968474",
-        "wikipedia": "tr:Zonguldak Garı"
+        "wikipedia": "tr:Metropolis Garı"
       },
       "lon": 31.794162,
       "lat": 41.4469746
@@ -314,7 +314,7 @@
       "type": "node",
       "id": 13761096463,
       "tags": {
-        "name": "Zonguldak",
+        "name": "Metropolis",
         "public_transport": "stop_position",
         "railway": "stop",
         "train": "yes"
@@ -365,7 +365,7 @@
       "tags": {
         "bus": "yes",
         "highway": "bus_stop",
-        "name": "Çaycuma - Devrek - Gökçebey Dolmuş Durağı",
+        "name": "North - Devrek - Gökçebey Dolmuş Durağı",
         "public_transport": "platform"
       },
       "lon": 31.7954217,
@@ -821,7 +821,7 @@
         "highway": "secondary",
         "lanes": "2",
         "maxspeed": "30",
-        "name": "Belediye Bulvarı",
+        "name": "Atatürk Bulvarı",
         "surface": "asphalt"
       },
       "nodes": [
@@ -2209,11 +2209,11 @@
       "type": "way",
       "id": 273532073,
       "tags": {
-        "addr:city": "Zonguldak",
+        "addr:city": "Metropolis",
         "addr:housenumber": "30",
         "addr:street": "Gazi Paşa Caddesi",
         "building": "public",
-        "name": "T.C. Zonguldak Valiliği",
+        "name": "T.C. Metropolis Valiliği",
         "office": "government",
         "phone": "+90 372 253 46 54",
         "smoking": "outside",
@@ -2241,7 +2241,7 @@
       "type": "way",
       "id": 273534686,
       "tags": {
-        "addr:city": "Zonguldak",
+        "addr:city": "Metropolis",
         "addr:street": "Uzun Mehmet Caddesi",
         "amenity": "place_of_worship",
         "building": "mosque",
@@ -2271,7 +2271,7 @@
       "type": "way",
       "id": 273535329,
       "tags": {
-        "addr:city": "zonguldak",
+        "addr:city": "metropolis",
         "addr:housenumber": "7",
         "addr:street": "Gazi Paşa Caddesi",
         "building": "yes",
@@ -2386,7 +2386,7 @@
     {
       "type": "way",
       "id": 278786108,
-      "tags": { "amenity": "police", "building": "yes", "name": "Zonguldak Çocuk Şube Müdürlüğü" },
+      "tags": { "amenity": "police", "building": "yes", "name": "Metropolis Çocuk Şube Müdürlüğü" },
       "nodes": [2830931969, 2830931970, 2830931971, 2830931972, 2830931973, 2830931974, 2830931969],
       "geometry": [
         [31.7883373, 41.4570697],
@@ -2402,7 +2402,7 @@
       "type": "way",
       "id": 278786491,
       "tags": {
-        "addr:city": "Zonguldak",
+        "addr:city": "Metropolis",
         "addr:district": "Merkez",
         "addr:neighbourhood": "Meşrutiyet Mahallesi",
         "addr:street": "Kadırga Caddesi",
@@ -2560,12 +2560,12 @@
       "tags": {
         "building": "train_station",
         "building:levels": "3",
-        "name": "Zonguldak Gar",
+        "name": "Metropolis Gar",
         "network": "TR-railway",
         "operator": "TCDD",
         "public_transport": "station",
         "wikidata": "Q16968474",
-        "wikipedia": "tr:Zonguldak Garı"
+        "wikipedia": "tr:Metropolis Garı"
       },
       "nodes": [
         3537034038, 3537034007, 3537034003, 3537034012, 3537034010, 3537034026, 3537034027,
@@ -3380,7 +3380,7 @@
     {
       "type": "way",
       "id": 855101432,
-      "tags": { "landuse": "harbour", "name": "Zonguldak Limanı" },
+      "tags": { "landuse": "harbour", "name": "Metropolis Limanı" },
       "nodes": [
         7974583540, 13761322018, 7974583541, 11241119231, 11241119230, 11241119229, 11241119228,
         11241119191, 11241119192, 11363881115, 12076796786, 12076796787, 12076796788, 11241119194,
@@ -6523,7 +6523,7 @@
     {
       "type": "way",
       "id": 1028310566,
-      "tags": { "highway": "primary", "name": "Zonguldak-Çaycuma yolu", "source": "GPS" },
+      "tags": { "highway": "primary", "name": "Metropolis-North yolu", "source": "GPS" },
       "nodes": [1364316854, 1883794229, 10130321449, 11241119190, 11237853302, 779058901],
       "geometry": [
         [31.7907721, 41.4517126],
@@ -7078,7 +7078,7 @@
       "id": 1119766877,
       "tags": {
         "building": "civic",
-        "name": "Zonguldak İl Sosyal Güvenlik Müdürlüğü",
+        "name": "Metropolis İl Sosyal Güvenlik Müdürlüğü",
         "office": "government"
       },
       "nodes": [10241663730, 10241663731, 10241663732, 10241663733, 10241663734, 10241663730],
@@ -7108,7 +7108,7 @@
     {
       "type": "way",
       "id": 1119766879,
-      "tags": { "building": "civic", "name": "Zonguldak Vergi Dairesi" },
+      "tags": { "building": "civic", "name": "Metropolis Vergi Dairesi" },
       "nodes": [10241663741, 10241663742, 10241663743, 10241663744, 10241663741],
       "geometry": [
         [31.7892619, 41.4542792],
@@ -7148,7 +7148,7 @@
       "type": "way",
       "id": 1123681168,
       "tags": {
-        "addr:city": "Zonguldak",
+        "addr:city": "Metropolis",
         "addr:district": "Merkez",
         "addr:housenumber": "14",
         "addr:neighbourhood": "Mithatpaşa Mahallesi",
@@ -7328,7 +7328,7 @@
       "id": 1157356576,
       "tags": {
         "highway": "trunk",
-        "name": "Zonguldak-Çaycuma yolu",
+        "name": "Metropolis-North yolu",
         "oneway": "yes",
         "ref": "D750",
         "source": "GPS"
@@ -7483,7 +7483,7 @@
         "amenity": "townhall",
         "building": "yes",
         "layer": "1",
-        "name": "Zonguldak Belediye Başkanlığı"
+        "name": "Metropolis Belediye Başkanlığı"
       },
       "nodes": [
         11241119173, 11241119174, 11241119175, 11241119176, 11241119177, 11241119178, 11241119173
@@ -7746,7 +7746,7 @@
         "highway": "secondary",
         "lanes": "2",
         "maxspeed": "30",
-        "name": "Belediye Bulvarı",
+        "name": "Atatürk Bulvarı",
         "oneway": "yes",
         "surface": "asphalt"
       },
@@ -7770,7 +7770,7 @@
     {
       "type": "way",
       "id": 1229054315,
-      "tags": { "highway": "secondary", "name": "Belediye Bulvarı", "oneway": "yes" },
+      "tags": { "highway": "secondary", "name": "Atatürk Bulvarı", "oneway": "yes" },
       "nodes": [
         1364321395, 11397826068, 11397875969, 2081324077, 11397875970, 11397875971, 11397875972,
         11397875973, 11397875974, 11397875975, 11397875976, 6951321797
@@ -7907,7 +7907,7 @@
       "tags": {
         "highway": "trunk",
         "line": "2",
-        "name": "Zonguldak-Çaycuma Yolu",
+        "name": "Metropolis-North Yolu",
         "oneway": "yes",
         "ref": "D750"
       },
@@ -9351,7 +9351,7 @@
       "type": "way",
       "id": 1553603138,
       "tags": {
-        "addr:city": "Zonguldak",
+        "addr:city": "Metropolis",
         "addr:district": "Merkez",
         "addr:housenumber": "36",
         "addr:neighbourhood": "Mithatpaşa Mahallesi",

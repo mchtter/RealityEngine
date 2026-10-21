@@ -23,8 +23,8 @@ const road = (over: Partial<Road> = {}): Road =>
   }) as Road;
 
 const building = {
-  id: 'b:maks:4711',
-  ref: 'maks:4711',
+  id: 'b:cadastre:4711',
+  ref: 'cadastre:4711',
   entity: 'e-building-1',
   archetype: 'klasik',
   attrs: { name: 'Onay Apt.' },

@@ -22,7 +22,7 @@ const SIGN_SPACING = 24;
 /** A track counts as beside a platform within this distance of its outline's middle (m). */
 const BESIDE = 30;
 
-/** "M1 Line 2" → "M1", "Ankaray Line 1" → "Ankaray". */
+/** "M1 Line 2" → "M1", "Rapid Transit 1" → "RapidTransit". */
 const lineName = (name: string) => name.replace(/\s+(Line|Hat(t[ıi])?)\s*\d+$/i, '').trim();
 
 /** The boards of a compiled tile's platforms (pure: the tile worker builds them). */

@@ -182,7 +182,7 @@ const ID_RULES: CityRuleDef[] = [
     severity: 'reject',
     label: 'Kimlik var',
     description:
-      'Kaynakta kayda ait boş olmayan bir kimlik bulunmalı (şartnamede KIMLIK kolonu; MAKS’ta KIMLIKNO).',
+      'Kaynakta kayda ait boş olmayan bir kimlik bulunmalı (şartnamede KIMLIK kolonu; kayıtta KIMLIKNO).',
   },
   {
     code: 'id.unique',
@@ -229,7 +229,7 @@ export const BUILDING_CONTRACT_V1: CityThemeContract = {
       type: 'string',
       label: 'Parsel kimliği',
       description:
-        'Yapının üzerinde durduğu parselin kimliği (MAKS PARSELKIML). Parsel anahtarlı senaryolar binayı bununla bulur.',
+        'Yapının üzerinde durduğu parselin kimliği (PARSELKIML). Parsel anahtarlı senaryolar binayı bununla bulur.',
     },
   ],
   rules: [
@@ -518,7 +518,7 @@ export const BUILDING_CONTRACT_V2: CityThemeContract = {
   version: '2',
   group: 'buildings',
   file: 'yapi',
-  description: 'Yapı taban alanları (MAKS yapı katmanı ya da belediye CBS).',
+  description: 'Yapı taban alanları (kadastro katmanı ya da yerel CBS).',
   dtUse:
     'Taban alanından, kat sayısı ve yükseklikten 3B bina; kullanım türüne göre cephe ve zemin katı (dükkân), çatı tipi ve renkler verilmişse onlar. Kat sayısı yoksa tahmin edilir ve tahmin olarak işaretlenir.',
   attributes: [
@@ -659,7 +659,7 @@ export const ROAD_CONTRACT_V2: CityThemeContract = {
       valueLabels: ROAD_CLASS_LABELS,
       dt: true,
       description:
-        'Kurumun kendi tip kodları da kabul edilir (ör. MAKS TIP 1–5); eşleme tablosuyla bu listeye çevrilir.',
+        'Kurumun kendi tip kodları da kabul edilir (ör. TIP 1–5); eşleme tablosuyla bu listeye çevrilir.',
     },
     {
       key: 'width',
@@ -1105,7 +1105,7 @@ export const POI_KINDS: Record<string, string> = {
   post_office: 'Postane',
   police: 'Emniyet / karakol',
   fire_station: 'İtfaiye',
-  public_office: 'Kamu kurumu (belediye, adliye)',
+  public_office: 'Kamu kurumu (idari, adliye)',
   bus_station: 'Otogar / otobüs terminali',
   parking: 'Otopark',
 };
@@ -1136,7 +1136,7 @@ export const POI_CONTRACT_V1: CityThemeContract = {
     { ...BRAND, description: 'Zincir işletmelerde marka.' },
   ],
   rules: [...BASE_RULES('Nokta', 'Point'), enumKnown('kind.known', 'Nokta türü')],
-  example: { KIMLIK: 'P-1204', TUR: 'pharmacy', AD: 'Kızılay Eczanesi' },
+  example: { KIMLIK: 'P-1204', TUR: 'pharmacy', AD: 'City Hub Eczanesi' },
 };
 
 export const UTILITY_CONTRACT_V1: CityThemeContract = {
@@ -1372,9 +1372,9 @@ export const CITY_DELIVERY_SPEC: CityThemeContract[] = [
 
 /**
  * Column names (normalised: lower case, Turkish letters folded, only a–z0–9)
- * that carry a parcel identifier: MAKS PARSELKIML (10-character shapefile
+ * that carry a parcel identifier: PARSELKIML (10-character shapefile
  * name), MEGSİS tapukimlik, revenue records' parselKodu / kadastroParselKodu.
- * Measured on Zonguldak 2026-10-01: these hold the same numbering.
+ * Measured on Metropolis 2026-10-01: these hold the same numbering.
  */
 export const PARCEL_KEY_COLUMNS = [
   'parselkiml',
@@ -1435,8 +1435,8 @@ export function isParcelKeyColumn(name: string): boolean {
 
 /**
  * Theme attribute → source column. `classMap` turns source class / type codes
- * into canonical values (e.g. MAKS yol TIP 1 → residential). `idScheme` names
- * the identifier system of the source id ("maks.yapi.kimlikno") for the
+ * into canonical values (e.g. yol TIP 1 → residential). `idScheme` names
+ * the identifier system of the source id ("cadastre.building.id") for the
  * identifier crosswalk.
  */
 export interface CitySourceMapping {
@@ -1457,7 +1457,7 @@ export interface CitySourceInput {
   /** Platform layer (uploads, drawings, WFS imports …). */
   layerId?: string;
   name?: string;
-  /** Short source label shown to users and in identifiers ("maks"). */
+  /** Short source label shown to users and in identifiers ("cadastre"). */
   label?: string;
   priority?: number;
   authoritative?: boolean;
@@ -1479,7 +1479,7 @@ export interface CitySourcePreview {
   layerType?: string;
   /** Column / property names available for mapping. */
   columns: string[];
-  /** Mapping detected from the column names (MAKS, Turkish / English variants). */
+  /** Mapping detected from the column names (cadastre, regional variants). */
   mapping: CitySourceMapping;
   contract: CityThemeContract;
   /**

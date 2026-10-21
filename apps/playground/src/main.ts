@@ -3,7 +3,7 @@ import { KavraEngine } from '@kavra/viewer';
 
 const LOCATIONS: Record<string, { name: string; center: [number, number]; bbox: [number, number, number, number] }> = {
   kadikoy: {
-    name: 'Kadıköy Moda',
+    name: 'Downtown Moda',
     center: [29.027, 40.985],
     bbox: [29.020, 40.980, 29.034, 40.990],
   },

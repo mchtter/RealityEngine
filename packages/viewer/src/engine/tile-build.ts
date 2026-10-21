@@ -47,7 +47,7 @@ function tag(o: THREE.Object3D | null, role: string): void {
  * `tile:obs|synShell(Near|Far)?`, `sub:<i>:obsShell|obsDetail|synShell|synDetail|obsProps|synProps`; with
  * `utilities` also `util:<kind>`. The buried networks are left out by default:
  * they show only in the underground view and were the larger part of the
- * meshing (2.4 s of 3.9 s on a dense İzmir tile) — `buildUtilityPayload`
+ * meshing (2.4 s of 3.9 s on a dense CoastCity tile) — `buildUtilityPayload`
  * builds them when that view opens. Their statistics stay in the summary.
  */
 export function buildTilePayload(

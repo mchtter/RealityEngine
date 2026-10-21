@@ -276,7 +276,7 @@ const metresPerPixelAtZoom0 = (lat: number) =>
 /** Farthest a scenario / bounds fit backs the camera off (metres): a whole district. */
 const FIT_MAX_DISTANCE = 6000;
 
-/** Zonguldak latitude drives the sun's noon elevation (September). */
+/** City latitude drives the sun's noon elevation (September). */
 const NOON_ELEVATION = 48;
 
 /**
@@ -833,7 +833,7 @@ export class DtEngine {
   private quakes: QuakeOverlay | null = null;
   private quakesAt = 0;
 
-  /** Country map data (Natural Earth, /dt/l0/turkey.json); null removes the map. */
+  /** Country map data (Natural Earth, /dt/l0/country.json); null removes the map. */
   setOverviewData(data: OverviewData | null): void {
     this.overviewData = data;
     this.overview?.dispose();

@@ -382,7 +382,7 @@ export class OverviewMap {
 
   // ─── building ─────────────────────────────────────────────────────────────
 
-  /** The parchment: sea, rippled coasts, land (Turkey lighter), lakes, grain, darker edges. */
+  /** The parchment: sea, rippled coasts, land (Country lighter), lakes, grain, darker edges. */
   private paint(): HTMLCanvasElement {
     const [minX, minY, maxX, maxY] = this.extent;
     const W = MAP_PX;
@@ -406,7 +406,7 @@ export class OverviewMap {
         }
       return p;
     };
-    const turkey = path(this.data.provinces.flatMap((p) => p.polygons));
+    const country = path(this.data.provinces.flatMap((p) => p.polygons));
     const abroad = path(this.data.countries.flatMap((c) => c.polygons));
     const lakes = path(this.data.lakes.flatMap((l) => l.polygons));
 
@@ -422,13 +422,13 @@ export class OverviewMap {
     ] as const) {
       ctx.strokeStyle = `rgba(80,104,86,${alpha})`;
       ctx.lineWidth = width;
-      ctx.stroke(turkey);
+      ctx.stroke(country);
       ctx.stroke(abroad);
     }
     ctx.fillStyle = NEIGHBOUR;
     ctx.fill(abroad, 'evenodd');
     ctx.fillStyle = PAPER;
-    ctx.fill(turkey, 'nonzero');
+    ctx.fill(country, 'nonzero');
     // Lakes with a ripple inside their shore.
     ctx.save();
     ctx.clip(lakes, 'evenodd');
@@ -441,7 +441,7 @@ export class OverviewMap {
     // Coast ink.
     ctx.strokeStyle = 'rgba(74,53,32,0.55)';
     ctx.lineWidth = 1.5;
-    ctx.stroke(turkey);
+    ctx.stroke(country);
     // Paper: soft stains and grain over everything.
     let seed = 7;
     const rand = () => {

@@ -4,7 +4,7 @@ import type { OverheadSpan, Prop, Vec2 } from './types';
 /**
  * Shortest and longest span between two pylons of one line (m). Parallel
  * lines run 30–60 m apart, so nothing shorter than MIN_SPAN joins them;
- * high-voltage spans in Turkey are 250–450 m.
+ * high-voltage spans typically are 250–450 m.
  */
 const MIN_SPAN = 120;
 const MAX_SPAN = 560;

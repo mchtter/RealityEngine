@@ -5,7 +5,7 @@ import type { CityModel } from '../src/types';
 const model = (): CityModel =>
   ({
     buildings: [
-      { id: 'b1', entity: 'e-1', ref: 'maks:1', source: 'maks' },
+      { id: 'b1', entity: 'e-1', ref: 'cadastre:1', source: 'cadastre' },
       { id: 'b2', ref: 'osm:w7', osmId: 7, source: 'osm' },
       { id: 'b3', source: 'synthetic' },
     ],

@@ -412,7 +412,7 @@ const COAST_CLIFF = 15;
 const MIN_CLIFF_DROP = 3;
 
 /**
- * Sharpens cliffs the 30 m elevation model smears into slopes (Antalya's 35 m
+ * Sharpens cliffs the 30 m elevation model smears into slopes (Coastal 35 m
  * falez came out as a 110 m long, 17° bank). Along `natural=cliff` lines, and
  * along coastlines whose land stands at least COAST_CLIFF above the sea, the
  * ground on the high (left) side is raised to the plateau up to the line and
@@ -542,7 +542,7 @@ export function sharpenLandforms(
  * and a higher median rose through the asphalt). The one ground layer draws
  * no terrain under a surface (D-004), and that lowering sank verges and
  * medians into pits beside sloping streets: 1.479 street edges with a step
- * over 0.5 m in 12 Kızılay tiles (2026-10-16, street.edge-step); the street's
+ * over 0.5 m in 12 City Hub tiles (2026-10-16, street.edge-step); the street's
  * own level left 546, mostly behind sidewalks (0.24 m up). The viewer closes
  * the step either way (kerb face down, retaining face up).
  */

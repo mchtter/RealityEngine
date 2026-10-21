@@ -251,7 +251,7 @@ export function drapeOnTerrain(
   onFullCell?: (i: number, j: number) => void,
 ): void {
   // The Rust kernel (crates/kavra-geo as WebAssembly) once the worker has
-  // loaded it: the same algorithm ~5× faster on Ankara tiles, and exact where
+  // loaded it: the same algorithm ~5× faster on metro tiles, and exact where
   // the boolean path here lost or doubled area round holes (2026-10-15, D-008).
   if (kavraGeoReady()) {
     const { vertices, triangles, cells, data } = drapeKernel(terrain, poly, lift, step);
@@ -553,7 +553,7 @@ function clipPieces(
  * split along the (i, j) → (i + 1, j + 1) diagonal like the terrain), and only
  * cells on its edge are cut to their two triangles. Heights come from
  * `heightAt` at every vertex, so on the terrain grid each piece lies exactly in
- * its terrain triangle. On a dense İzmir tile: 57 % fewer surface triangles
+ * its terrain triangle. On a dense CoastCity tile: 57 % fewer surface triangles
  * than cutting each triangulation triangle along every grid line, same area.
  */
 export function drapeCells(

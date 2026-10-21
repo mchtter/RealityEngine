@@ -265,7 +265,7 @@ export function classifyRoads(source: SourceRoad[]): Road[] {
 /**
  * Junctions are shared vertices where three or more at-grade road arms meet.
  * Vertices are matched by coordinate (to the centimetre), so this works for
- * OSM ways (shared nodes) and for sources without node ids (MAKS road axes).
+ * OSM ways (shared nodes) and for sources without node ids (CADASTRE road axes).
  * The radius covers the widest arm so markings stop at the junction mouth.
  */
 export function findJunctions(

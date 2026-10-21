@@ -18,7 +18,7 @@ import { summerAridity } from './climate';
  * slightly askew, again and again until the parts are field-sized, so the
  * parts keep the outline's own edges (a wedge between two roads stays a
  * wedge). Each part takes one tone of its class's palette by its id — the
- * same on every load. Palettes are sampled from satellite views of Izmir (dry
+ * same on every load. Palettes are sampled from regional satellite views (dry
  * summer) and the Black Sea coast (wet summer); the region's summer dryness
  * (climate.ts) blends the two. Drawn at twice the resolution and averaged
  * down, so parcel edges are smooth.
@@ -89,7 +89,7 @@ const PALETTE: Record<Klass, [RGB[], RGB[]]> = {
       [122, 128, 90],
       [104, 118, 82],
     ],
-    // Mostly olive-brown dry grass and scrub (the commonest tone on Izmir's
+    // Mostly olive-brown dry grass and scrub (the commonest tone in the region's
     // imagery), some bleached stubble and bare, cleared plots.
     [
       [137, 121, 106],
@@ -177,7 +177,7 @@ const PALETTE: Record<Klass, [RGB[], RGB[]]> = {
 /**
  * Satellite sRGB → albedo for this renderer (linear, before light, AO and
  * the tone curve), so open ground renders near the imagery's value
- * (calibrated on Izmir, 2026-10-12).
+ * (calibrated on regional surveys, 2026-10-12).
  */
 const ALBEDO_GAIN = 1.6;
 const lin = (c: number) => {

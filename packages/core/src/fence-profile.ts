@@ -4,7 +4,7 @@ import type { Fence, FenceStyle, Vec3 } from './types';
  * How far below the ground a garden boundary's body starts (m): sunk 0.3 m
  * so the ground's own folds between its points never show a gap under it.
  * Hedges were sunk 0.1 m and hung 3–11 cm over a lower street surface beside
- * them on slopes (İzmir 2026-10-16: fence.float).
+ * them on slopes (CoastCity 2026-10-16: fence.float).
  */
 export const FENCE_FOOT: Record<FenceStyle, number> = {
   'wall-rail': 0.3,

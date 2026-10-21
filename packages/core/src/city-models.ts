@@ -241,7 +241,7 @@ export const CITY_PREFABS: readonly CityPrefabDef[] = [
   },
   {
     id: 'civic_building',
-    label: 'Kamu binası (belediye, valilik)',
+    label: 'Kamu binası (idari, valilik)',
     classId: 'building.public',
     category: 'public',
     params: [
@@ -485,7 +485,7 @@ export const CITY_PREFABS: readonly CityPrefabDef[] = [
   },
   {
     id: 'city_bus',
-    label: 'Belediye otobüsü',
+    label: 'Şehir içi otobüs',
     classId: 'transit.bus',
     category: 'vehicles',
     params: [P('length', 'Boy', 12, 9, 18, 'm')],

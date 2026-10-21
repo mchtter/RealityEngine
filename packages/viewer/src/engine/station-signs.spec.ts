@@ -33,7 +33,7 @@ describe('stationSigns', () => {
       underground: {
         entrances: [],
         structures: [
-          structure('hall', 'train_station', -1, 854, rect(-40, -20, 40, 20), 'Kızılay'),
+          structure('hall', 'train_station', -1, 854, rect(-40, -20, 40, 20), 'City Hub'),
           structure('p', 'platform', -2, 848, rect(-50, 2, 50, 8)),
         ],
         tracks: [
@@ -73,7 +73,7 @@ describe('stationSigns', () => {
     } as unknown as CityModel;
     const signs = stationSigns(model);
     expect(signs.length).toBeGreaterThan(0);
-    expect(signs[0].title).toBe('Kızılay');
+    expect(signs[0].title).toBe('City Hub');
     expect(signs[0].lines).toBe('M1');
     expect(signs[0].at[2]).toBeCloseTo(848 + 3.2);
   });

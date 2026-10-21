@@ -21,7 +21,7 @@ const DEFAULT_WIDTH: Record<string, number> = { runway: 45, taxiway: 23, stopway
 /** A runway this long and wide is a precision runway: approach lights, TDZ, wing bars. */
 const PRECISION = { length: 2400, width: 40 };
 
-/** Where the wind blows the windsocks to: İzmir's sea breeze (imbat) comes from the north-west. */
+/** Where the wind blows the windsocks to: the region's sea breeze (imbat) comes from the north-west. */
 const WIND_HEADING = -Math.PI / 4;
 
 export interface Airfield {

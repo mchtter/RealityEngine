@@ -1,9 +1,9 @@
 /**
  * Any Turkish city's delivery package from OpenStreetMap alone — the generic
- * part of İzmir's (tools/city/izmir/build-package.ts), same file names, so
+ * part of the region's (tools/city/coastcity/build-package.ts), same file names, so
  * the platform imports it the same way.
  *
- *   npx tsx tools/city/osm-city.ts --city ankara --name "Ankara" [--districts "Çankaya,Keçiören"]
+ *   npx tsx tools/city/osm-city.ts --city metrocity --name "MetroCity" [--districts "DistrictA,DistrictB"]
  *
  * Reads (under data/demo/<city>/raw/osm/, or --data <dir>/<city>/raw/osm/):
  *   <city>.geojsonseq            osmium export of the city extract

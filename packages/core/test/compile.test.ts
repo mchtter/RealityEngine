@@ -276,7 +276,7 @@ describe('compileCity', () => {
         },
         tags: { highway: 'subway', tunnel: 'yes', layer: '-2' },
       },
-      // The other side's track tagged a layer lower than its platform (as at Kızılay).
+      // The other side's track tagged a layer lower than its platform (as at City Hub).
       {
         ref: 'osm:w-metro-low',
         source: 'osm',
@@ -602,8 +602,8 @@ describe('compileCity', () => {
       ...gridSource(),
       features: [
         {
-          ref: 'maks:1',
-          source: 'maks',
+          ref: 'cadastre:1',
+          source: 'cadastre',
           priority: 10,
           authoritative,
           kind: 'building',
@@ -619,11 +619,11 @@ describe('compileCity', () => {
         return Math.abs(x + 20) < 90 && Math.abs(y + 20) < 90;
       });
     const ruled = compileCity(withRegister(true));
-    expect(near(ruled).map((b) => b.source)).toEqual(['maks']);
+    expect(near(ruled).map((b) => b.source)).toEqual(['cadastre']);
     expect(ruled.stats.buildingsSuperseded).toBeGreaterThan(0);
     // Without the flag OSM and procedural buildings fill the same area.
     const open = compileCity(withRegister(false));
-    expect(near(open).filter((b) => b.source !== 'maks').length).toBeGreaterThan(5);
+    expect(near(open).filter((b) => b.source !== 'cadastre').length).toBeGreaterThan(5);
   });
 
   it('lets an authoritative road network replace other sources where it has data', () => {
@@ -639,8 +639,8 @@ describe('compileCity', () => {
       ...gridSource(),
       features: [
         {
-          ref: 'belediye:1',
-          source: 'belediye',
+          ref: 'authority:1',
+          source: 'authority',
           priority: 10,
           authoritative,
           kind: 'road',
@@ -652,7 +652,7 @@ describe('compileCity', () => {
     const along = (m: CityModel, y: number) =>
       m.roads.filter((r) => r.centerline.every(([, py]) => Math.abs(py - y) < 5));
     const ruled = compileCity(withNetwork(true), { infill: false, decorate: false });
-    expect(along(ruled, -59).map((r) => r.ref)).toEqual(['belediye:1']);
+    expect(along(ruled, -59).map((r) => r.ref)).toEqual(['authority:1']);
     // Streets the network does not cover stay.
     expect(along(ruled, 60)).toHaveLength(1);
     const open = compileCity(withNetwork(false), { infill: false, decorate: false });
@@ -730,7 +730,7 @@ describe('compileCity', () => {
       features: [
         // Municipal centreline without grade information.
         road(
-          'belediye:1',
+          'authority:1',
           [
             [-150, 0],
             [0, 0],
@@ -769,7 +769,7 @@ describe('compileCity', () => {
       ],
     };
     const m = compileCity(src, { infill: false, decorate: false });
-    const pieces = m.roads.filter((r) => r.ref?.startsWith('belediye:1'));
+    const pieces = m.roads.filter((r) => r.ref?.startsWith('authority:1'));
     expect(pieces.map((r) => r.grade)).toEqual(['ground', 'bridge', 'ground']);
     expect(pieces[1].layer).toBe(1);
     const refs = m.roads.map((r) => r.ref);
@@ -2847,18 +2847,18 @@ describe('simplifyRing', () => {
   });
 });
 
-const FIXTURE = resolve(__dirname, 'fixtures/zonguldak-merkez.json');
+const FIXTURE = resolve(__dirname, 'fixtures/demo-city.json');
 
 let fixtureModel: ReturnType<typeof compileCity> | null = null;
 /**
- * The Zonguldak fixture compiled once for the file: a compile takes 30–70 s on
+ * The Demo city fixture compiled once for the file: a compile takes 30–70 s on
  * CI, and five tests used to repeat it (one ran past its time limit there).
  * Tests only read the model.
  */
 const compiledFixture = () =>
   (fixtureModel ??= compileCity(JSON.parse(readFileSync(FIXTURE, 'utf8')) as CitySource));
 
-describe.skipIf(!existsSync(FIXTURE))('Zonguldak fixture', () => {
+describe.skipIf(!existsSync(FIXTURE))('Demo city fixture', () => {
   it('keeps street layers off the carriageway (no sidewalk over a road)', () => {
     const m = compiledFixture();
     expect(validateCity(m).counts['surface.over-carriageway'] ?? 0).toBe(0);

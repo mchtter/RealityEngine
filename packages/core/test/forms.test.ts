@@ -56,7 +56,7 @@ describe('building forms', () => {
     expect(formOf({ building: 'retail' }, 300)).toBe('block');
     expect(formOf({ building: 'commercial' }, 5000)).toBe('block');
     expect(formOf({ building: 'retail', 'building:levels': '20' }, 5000)).toBe('block');
-    // A mall said so stays a mall however tall (Kızılay AVM: 8.5 storeys).
+    // A mall said so stays a mall however tall (City Hub AVM: 8.5 storeys).
     expect(formOf({ building: 'retail', shop: 'mall', 'building:levels': '8.5' }, 3000)).toBe(
       'box',
     );

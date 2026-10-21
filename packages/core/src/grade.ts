@@ -13,7 +13,7 @@ import type { Vec2 } from './types';
 
 /**
  * Grade separation (bridges, tunnels, layers) for an authoritative road
- * network that carries none: a municipal centreline register such as MAKS
+ * network that carries none: a municipal centreline register such as CADASTRE
  * lists the street but not that it crosses the valley on a viaduct or dips
  * under a junction. The grade comes from another source's road that runs
  * along the same line (OSM `bridge=*`, `tunnel=*`, `layer=*`).
@@ -93,7 +93,7 @@ interface Span {
  * An authoritative road with a grade of its own keeps it whole (the other
  * source's copy is still absorbed): splitting it by the copy's sampled extent
  * turned the last metre of a viaduct way into ground, and the deck of the next
- * way stopped in mid-air (İzmir, 2026-10-09). Ungraded pieces shorter than
+ * way stopped in mid-air (CoastCity, 2026-10-09). Ungraded pieces shorter than
  * MIN_SPAN between or after graded ones join them: the sampled extent stops
  * up to a sample short of the graded road's end.
  */

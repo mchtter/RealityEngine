@@ -61,17 +61,17 @@ export interface SourceGeometry {
   coordinates: unknown;
 }
 
-/** A canonical feature from the source store (OSM import, MAKS, platform layer…). */
+/** A canonical feature from the source store (OSM import, CADASTRE, platform layer…). */
 export interface SourceFeatureInput {
-  /** Stable identity, e.g. "osm:w123", "maks:4711". */
+  /** Stable identity, e.g. "osm:w123", "cadastre:4711". */
   ref: string;
-  /** Short source name shown to users ("osm", "maks", …). */
+  /** Short source name shown to users ("osm", "cadastre", …). */
   source: string;
   /** Higher wins: a building overrides lower-priority buildings it overlaps. */
   priority?: number;
   /**
    * The source is the complete building register where it has data (e.g. the
-   * municipality's MAKS table): around its buildings no other source's
+   * municipality's CADASTRE table): around its buildings no other source's
    * building and no procedural infill is placed.
    */
   authoritative?: boolean;
@@ -538,13 +538,13 @@ export interface BuildingPalette {
 export interface Building {
   id: string;
   osmId?: number;
-  /** Stable source identity of observed buildings ("osm:w123", "maks:4711"). */
+  /** Stable source identity of observed buildings ("osm:w123", "cadastre:4711"). */
   ref?: string;
   /** Canonical city entity id (city_features.entity_id) when the object comes from the city model. */
   entity?: string;
-  /** Source name ("osm", "maks", …) or "synthetic" for block infill. */
+  /** Source name ("osm", "cadastre", …) or "synthetic" for block infill. */
   source: string;
-  /** Source table columns of observed buildings (MAKS …), by column name. */
+  /** Source table columns of observed buildings (CADASTRE …), by column name. */
   attrs?: Record<string, string>;
   /** Canonical id of the parcel the building stands on (tag `ref:parcel`). */
   parcelRef?: string;
@@ -717,7 +717,7 @@ export interface Prop {
   buildingId?: string;
   /** Street cabinets: the network they serve. */
   network?: UtilityKind;
-  /** Flagpoles: the flag's country (ISO 3166 alpha-2, `EU` for Europe); absent: Turkey's. */
+  /** Flagpoles: the flag's country (ISO 3166 alpha-2, `EU` for Europe); absent: national standard. */
   flag?: string;
   /** Fuel pumps and price signs: the station's brand (fuel.ts FuelBrand). */
   brand?: string;

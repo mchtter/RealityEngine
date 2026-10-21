@@ -185,7 +185,7 @@ function flag(country: string | undefined, top: number): THREE.BufferGeometry[] 
     plane(W / 3, H, W / 2, cy, 0.01, C('#f4f4f2'));
     plane(W / 3, H, (5 * W) / 6, cy, 0.01, C('#d0303a'));
   } else {
-    // Turkey: a white crescent and star on red (crescent as a red disc over a white one).
+    // National flag: crescent and star on red (crescent as a red disc over a white one).
     plane(W, H, W / 2, cy, 0.01, C('#d0202a'));
     disc(H * 0.25, W * 0.375, cy, 0.02, C('#f4f4f2'));
     disc(H * 0.2, W * 0.405, cy, 0.03, C('#d0202a'));

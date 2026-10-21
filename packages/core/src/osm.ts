@@ -11,7 +11,7 @@ import type {
 
 /**
  * Source features in model metres, before any compiler decision. `ref` is the
- * stable source identity (e.g. "osm:w123", "maks:4711"); `priority` decides
+ * stable source identity (e.g. "osm:w123", "cadastre:4711"); `priority` decides
  * which building wins where two sources describe the same place.
  */
 interface SourceBase {
@@ -323,9 +323,9 @@ function geometryLines(g: SourceGeometry, project: (c: Position) => Vec2): Vec2[
 }
 
 /**
- * Converts source-store features (OSM import, MAKS, platform layers) into
+ * Converts source-store features (OSM import, CADASTRE, platform layers) into
  * compiler source features. Tag names follow OSM conventions; adapters
- * normalise their attributes (e.g. MAKS kat sayısı → building:levels).
+ * normalise their attributes (e.g. CADASTRE kat sayısı → building:levels).
  */
 export function readFeatures(features: SourceFeatureInput[], proj: Projection): SourceFeatures {
   const project = ([lon, lat]: Position): Vec2 => proj.forward(lon, lat);

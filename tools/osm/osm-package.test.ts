@@ -382,10 +382,10 @@ describe('readOsm + PackageWriter', () => {
 describe('osm-city districts', () => {
   const fc = {
     features: [
-      { properties: { name: 'Keçiören', admin_level: '6' }, geometry: poly(square(0, 0, 1, 1)) },
-      { properties: { name: 'Çankaya', admin_level: 6 }, geometry: poly(square(1, 0, 2, 1)) },
-      { properties: { name: 'Ankara', admin_level: '4' }, geometry: poly(square(0, 0, 2, 1)) },
-      { properties: { name: 'Çankaya', admin_level: '6' }, geometry: poly(square(1, 0, 2, 1)) },
+      { properties: { name: 'DistrictB', admin_level: '6' }, geometry: poly(square(0, 0, 1, 1)) },
+      { properties: { name: 'DistrictA', admin_level: 6 }, geometry: poly(square(1, 0, 2, 1)) },
+      { properties: { name: 'MetroCity', admin_level: '4' }, geometry: poly(square(0, 0, 2, 1)) },
+      { properties: { name: 'DistrictA', admin_level: '6' }, geometry: poly(square(1, 0, 2, 1)) },
       { properties: { name: 'Altındağ' }, geometry: line([0, 0], [1, 1]) },
       { properties: {}, geometry: poly(square(0, 0, 1, 1)) },
     ],
@@ -394,7 +394,7 @@ describe('osm-city districts', () => {
     const { districts, dropped } = readDistricts(fc);
     assert.deepEqual(
       districts.map((d) => d.name),
-      ['Çankaya', 'Keçiören'],
+      ['DistrictA', 'DistrictB'],
     );
     assert.deepEqual(dropped, {
       'admin_level ≠ 6': 1,
@@ -407,7 +407,7 @@ describe('osm-city districts', () => {
     const { districts } = readDistricts(fc);
     assert.deepEqual(
       selectArea(districts, ['KEÇİÖREN']).map((d) => d.name),
-      ['Keçiören'],
+      ['DistrictB'],
     );
     assert.equal(selectArea(districts).length, 2);
     assert.throws(() => selectArea(districts, ['Mamak']), /Mamak/);

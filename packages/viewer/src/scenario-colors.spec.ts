@@ -7,10 +7,10 @@ const overlay = (over: Partial<ResolvedOverlay> = {}): ResolvedOverlay => ({
   scenarioId: 's',
   scenarioName: 'S',
   layerId: 'l',
-  layerKey: 'KIMLIKNO',
+  layerKey: 'EXT_ID',
   expression: [
     'match',
-    ['to-string', ['get', 'KIMLIKNO']],
+    ['to-string', ['get', 'EXT_ID']],
     '1001',
     '#ff0000',
     '1002',
@@ -24,7 +24,7 @@ const overlay = (over: Partial<ResolvedOverlay> = {}): ResolvedOverlay => ({
 });
 
 const building = (over: Partial<BuildingInfo>): BuildingInfo =>
-  ({ id: 'b', source: 'maks', fixIds: [], ...over }) as BuildingInfo;
+  ({ id: 'b', source: 'cadastre', fixIds: [], ...over }) as BuildingInfo;
 
 describe('overlayKeyColors', () => {
   it('reads key → colour pairs and skips the transparent default', () => {
@@ -37,38 +37,38 @@ describe('overlayKeyColors', () => {
 describe('scenarioColorOf', () => {
   it('matches the join column case-insensitively, with numeric keys normalised', () => {
     const colorOf = scenarioColorOf([overlay()])!;
-    expect(colorOf(building({ attrs: { kimlikno: '1002.0' } }))!.color.getHexString()).toBe(
+    expect(colorOf(building({ attrs: { ext_id: '1002.0' } }))!.color.getHexString()).toBe(
       '00ff00',
     );
-    expect(colorOf(building({ attrs: { KIMLIKNO: '9999' } }))).toBeNull();
+    expect(colorOf(building({ attrs: { EXT_ID: '9999' } }))).toBeNull();
   });
 
   it('falls back to the source id only when the building lacks the join column', () => {
     const colorOf = scenarioColorOf([overlay()])!;
-    expect(colorOf(building({ ref: 'maks:1001' }))!.color.getHexString()).toBe('ff0000');
+    expect(colorOf(building({ ref: 'cadastre:1001' }))!.color.getHexString()).toBe('ff0000');
     // Another numbering scheme must not match by coincidence.
-    expect(colorOf(building({ ref: 'maks:1001', attrs: { KIMLIKNO: '5' } }))).toBeNull();
+    expect(colorOf(building({ ref: 'cadastre:1001', attrs: { EXT_ID: '5' } }))).toBeNull();
   });
 
   it('matches parcel-keyed overlays on the canonical parcel id, never on the building id', () => {
     const colorOf = scenarioColorOf([overlay({ layerKey: 'tapukimlik' })])!;
     expect(colorOf(building({ parcelRef: '1001' }))!.color.getHexString()).toBe('ff0000');
-    expect(colorOf(building({ ref: 'maks:1002', attrs: { kimlikno: '1002' } }))).toBeNull();
+    expect(colorOf(building({ ref: 'cadastre:1002', attrs: { ext_id: '1002' } }))).toBeNull();
   });
 
   it('reports the matched key and the overlay that painted, for the legend counts', () => {
-    const paint = scenarioColorOf([overlay()])!(building({ attrs: { KIMLIKNO: '1002' } }))!;
+    const paint = scenarioColorOf([overlay()])!(building({ attrs: { EXT_ID: '1002' } }))!;
     expect(paint.key).toBe('1002');
     expect(paint.overlay).toBe('s:l');
   });
 
   it('paints only keys inside the selected areas when an area filter is on (as in 2D)', () => {
     const colorOf = scenarioColorOf([overlay()], { l: ['1001.0'] })!;
-    expect(colorOf(building({ attrs: { KIMLIKNO: '1001' } }))!.color.getHexString()).toBe('ff0000');
-    expect(colorOf(building({ attrs: { KIMLIKNO: '1002' } }))).toBeNull();
+    expect(colorOf(building({ attrs: { EXT_ID: '1001' } }))!.color.getHexString()).toBe('ff0000');
+    expect(colorOf(building({ attrs: { EXT_ID: '1002' } }))).toBeNull();
     // Another base layer's filter does not narrow this overlay.
     expect(
-      scenarioColorOf([overlay()], { other: ['1001'] })!(building({ attrs: { KIMLIKNO: '1002' } })),
+      scenarioColorOf([overlay()], { other: ['1001'] })!(building({ attrs: { EXT_ID: '1002' } })),
     ).not.toBeNull();
   });
 

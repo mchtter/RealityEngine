@@ -7,7 +7,7 @@
  * boundary layer and the report (RAPOR.json).
  *
  * No side effects: tools/city/osm-city.ts (any city, OSM only) and
- * tools/city/izmir/build-package.ts (OSM + İzmir's open data) compose it.
+ * tools/city/coastcity/build-package.ts (OSM + the region's open data) compose it.
  * City-specific steps plug into osmLayers() through its hooks.
  */
 import {
@@ -821,7 +821,7 @@ export function aerodromeReaches(g: Geometry, inside: (p: [number, number]) => b
 
 /**
  * Aerodromes that reach into the area: every airfield way inside them is
- * kept (İzmir: Adnan Menderes' runways run on into Menderes district).
+ * kept (CoastCity: Adnan Menderes' runways run on into Menderes district).
  */
 export async function areaAerodromes(
   files: string[],

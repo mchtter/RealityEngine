@@ -229,7 +229,7 @@ function distToRing(p: Vec2, ring: Vec2[]): number {
 /**
  * A track beside a platform runs at the platform's level (rails a platform's
  * height under its floor), easing to and from it at most TRACK_GRADE. The
- * source's layers are an order, not storeys: Kızılay's M2 platforms are
+ * source's layers are an order, not storeys: City Hub's M2 platforms are
  * tagged −2 and their tracks −3, which put the rails 6 m under the platform.
  */
 function alongPlatforms(path: Vec3[], platforms: UndergroundStructure[]): Vec3[] {
@@ -691,7 +691,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
       src.features ? readFeatures(src.features, proj) : EMPTY,
     ),
   );
-  // Buildings under the ground are not surface buildings (Kızılay's metro
+  // Buildings under the ground are not surface buildings (City Hub's metro
   // station under Güvenpark was drawn as a house the streets cut up).
   const undergroundSources = features.buildings.filter((b) => undergroundBuilding(b.tags));
   if (undergroundSources.length)
@@ -762,7 +762,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   // Land the elevation model puts under the sea (reclaimed shore) stays land —
   // before the streets are profiled: profiled first, a shore street kept the
   // DEM's 0 m while the land around it rose to the floor, and the sea plane
-  // lay over it (Izmir, 2026-10-12).
+  // lay over it (coastal survey, 2026-10-12).
   raiseLandAboveSea(terrain, {
     segments: roads.flatMap((r) =>
       r.centerline.slice(1).map((b, k) => [r.centerline[k], b] as [Vec2, Vec2]),
@@ -853,7 +853,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
     })),
   );
 
-  // Authoritative register (e.g. MAKS): around its buildings it is the only building source.
+  // Authoritative register (e.g. CADASTRE): around its buildings it is the only building source.
   const covered = authorityCoverage(
     features.buildings
       .filter((b) => b.authoritative)
@@ -1001,7 +1001,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   settleTrenchRims(cuttings, terrain, streetAt, SURFACE_LIFT.sidewalk);
   // The data's buildings took their base from the terrain before that
   // lowering: their walls reach down to the land cut to a street beside them
-  // (they hung up to 0.5 m over it, Ankara 2026-10-16: building.float).
+  // (they hung up to 0.5 m over it, MetroCity 2026-10-16: building.float).
   for (const b of observed)
     b.baseZ = Math.min(b.baseZ, lowestGroundAround(b.footprint.outer, terrain) - 0.3);
   const pathSurface = net.surfaces.find((sf) => sf.kind === 'path')?.polygons ?? [];
@@ -1510,7 +1510,7 @@ export function compileCity(src: CitySource, opts: CompileOptions = {}): CityMod
   // A station is dug from one ground level: a platform's depth counts from
   // its concourse's ground, not from the street over its own middle (on a
   // slope the two differ by metres, and a platform came up into the floor
-  // over it — Kızılay, 2026-10-18).
+  // over it — City Hub, 2026-10-18).
   for (const p of structures) {
     if (p.kind !== 'platform') continue;
     const hall = concourseOver(p, structures);
@@ -1986,7 +1986,7 @@ function buildBridges(
     // at most DECK_RISE above the ground's own grade to its clearance, as one
     // vertical curve. Its clearance came within the 25 m ramps: down a
     // hillside the deck went in steps, flat then steep, and dropped 19 % into
-    // its landing (Ankara 2026-10-16). A long viaduct
+    // its landing (MetroCity 2026-10-16). A long viaduct
     // follows the ground (averaged over ±60 m) at clearance height: that depends
     // only on nearby terrain, so neighbouring tiles compute the same deck.
     const straight = !startInner && !endInner && total < 400;
@@ -2405,7 +2405,7 @@ function settleJoinedDecks(decks: { bridge: Bridge }[]): void {
  * the node, steps up to a footbridge at an angle, footbridge pieces drawn a
  * metre or two apart in the source) each got their own height there: a ramp
  * ended 5 m above the viaduct it joins, steps 4 m below their footbridge
- * (İzmir, 2026-10-09). Ends at one node, or of the same layer within END_GAP
+ * (CoastCity, 2026-10-09). Ends at one node, or of the same layer within END_GAP
  * of each other, form a joint and are brought to the highest of them; each
  * lifted deck eases back to its own height over up to 60 m (at most 60 % of
  * its length, so a far end that lands on the ground stays there).

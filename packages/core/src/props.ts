@@ -166,7 +166,7 @@ const STRUCTURE_RADIUS: Partial<Record<PropKind, number>> = {
  * Least distance (m) from a generated tree's trunk to an underpass trench or
  * tunnel-mouth lid: the retaining wall (0.4 m) and its parapet stand at the
  * edge. Street and park trees stood in the wall: 110 of 178 trees flagged
- * tree.over-cut in three Kızılay tiles (2026-10-16).
+ * tree.over-cut in three City Hub tiles (2026-10-16).
  */
 export const CUT_TRUNK_CLEAR = 1;
 

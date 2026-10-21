@@ -91,7 +91,7 @@ export function formOf(tags: Record<string, string>, area: number): BuildingForm
   if (tags.amenity === 'place_of_worship' && (tags.religion ?? 'muslim') === 'muslim')
     return 'mosque';
   // A mall / hypermarket, not an office or hotel tower (`commercial`): low and
-  // wide — a mall said so (shop=mall) at any height (Kızılay AVM, 8.5 storeys).
+  // wide — a mall said so (shop=mall) at any height (City Hub AVM, 8.5 storeys).
   const levels = Number.parseInt(tags['building:levels'] ?? '', 10);
   if (
     (['retail', 'supermarket'].includes(b) ||

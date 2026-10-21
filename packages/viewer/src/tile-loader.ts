@@ -77,7 +77,8 @@ export class TileLoader {
 
   /** A fresh worker in `slot` (also replacing one stopped mid-job). */
   private spawn(slot: Slot): void {
-    const worker = new Worker(new URL('./tile.worker.ts', import.meta.url));
+    const workerUrl = new URL('./tile.worker.js', import.meta.url);
+    const worker = new Worker(workerUrl, { type: 'module' });
     slot.worker = worker;
     slot.busy = false;
     slot.job = null;
