@@ -30,8 +30,6 @@ reality-engine/
 │   └── viewer/         # reality-engine-viewer: Three.js WebGPU runtime engine (RealityEngine, CameraRig, TileLoader)
 ├── apps/
 │   └── playground/     # Interactive, standalone demo app (Vite + WebGPU)
-├── scripts/
-│   └── rename-brand.sh # 1-command brand/product rename script
 └── tools/              # OSM data preprocessing and tile tools
 ```
 
@@ -83,18 +81,6 @@ const engine = new RealityEngine({
   theme: 'realistic',
 });
 ```
-
----
-
-## 🏷️ Renaming the Brand / Product Name
-
-To change the working name `Reality Engine` to your final choice (e.g. `City 7D`, `Seven Days`, `City7D`):
-
-```bash
-./scripts/rename-brand.sh "City 7D" "city7d" "city7d"
-```
-
-This single command automatically updates all package names (`@city7d/core`, `@city7d/viewer`), classes (`City7DEngine`), WASM bindings, and configuration files in seconds.
 
 ---
 
