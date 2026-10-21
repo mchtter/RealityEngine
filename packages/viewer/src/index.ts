@@ -10,5 +10,7 @@ export * from './engine/detail-level';
 export * from './engine/overview-map';
 export * from './engine/vehicles';
 export * from './engine/utilities';
+export * from './engine/city-states';
+export * from './engine/tile-build';
 export * from './tile-loader';
 export * from './scenario-colors';
