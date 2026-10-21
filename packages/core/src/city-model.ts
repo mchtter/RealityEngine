@@ -8,7 +8,6 @@
 // Design: docs/architecture/city-data-onboarding.md
 // =============================================================================
 import type { CityLocation } from './locate';
-
 export type CityObjectStateKind = 'damaged' | 'hazard' | 'closed' | 'under_repair' | 'inspected';
 
 export interface CitySearchHit {
@@ -22,6 +21,27 @@ export interface CitySearchHit {
   lat: number;
   bbox: [number, number, number, number];
   score: number;
+}
+
+export type CitySeverity = 1 | 2 | 3 | 4;
+
+export interface CityObjectState {
+  id: string;
+  objectId: string | null;
+  objectKind: string | null;
+  objectName: string | null;
+  state: CityObjectStateKind;
+  severity: CitySeverity;
+  title: string;
+  note: string | null;
+  lon: number;
+  lat: number;
+  outline: [number, number][] | null;
+  source: string;
+  externalRef: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
 }
 
 /** Themes of the canonical city model (one per delivered layer; see CITY_DELIVERY_SPEC). */

@@ -2304,8 +2304,8 @@ export class DtEngine {
     const pts = state.outline?.length
       ? state.outline
       : [[state.lon, state.lat] as [number, number]];
-    const lons = pts.map((p) => p[0]);
-    const lats = pts.map((p) => p[1]);
+    const lons = pts.map((p: number[]) => p[0]);
+    const lats = pts.map((p: number[]) => p[1]);
     const pad = 0.0003;
     this.flyToBounds([
       Math.min(...lons) - pad,

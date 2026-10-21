@@ -1,0 +1,10 @@
+node_modules
+dist
+target
+pkg/*.wasm
+pkg/*.js
+!packages/geo/pkg/kavra_geo.js
+!packages/geo/pkg/kavra_geo_bg.wasm
+.DS_Store
+*.log
+.turbo

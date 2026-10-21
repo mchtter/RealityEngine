@@ -66,7 +66,7 @@ export {
   segmentOutline,
 } from './locate';
 export { FENCE_FOOT, fenceProfile } from './fence-profile';
-export * from './ontology';
+export * from './city-ontology';
 export * from './city-models';
-export * from './facility';
-export * from './city-model-contract';
+export * from './city-facility';
+export * from './city-model';
