@@ -84,6 +84,16 @@ const engine = new RealityEngine({
 
 ---
 
+## 🤝 Contributing & Community
+
+We welcome contributions! Please review our guidelines before submitting pull requests or running AI coding tools:
+
+- 📖 [Contributing Guidelines](CONTRIBUTING.md): Code style, Conventional Commits, and architectural boundaries.
+- 🤖 [AI Agent Guidelines](AGENTS.md): Constraints, operating rules, and headless core invariants for automated coding tools.
+- 📜 [Code of Conduct](CODE_OF_CONDUCT.md): Community standards and pledge.
+
+---
+
 ## 📄 License
 
 MIT License - Copyright (c) 2025-2026 mchtter <mchtter@gmail.com>
